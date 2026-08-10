@@ -37,13 +37,34 @@ async def on_startup():
     async def start_services():
         token = db.get_setting("bot_token")
         zalo_token = db.get_setting("zalo_bot_token")
+        setup_done = db.get_setting("setup_done")
         
         started_any = False
-        print(f"DEBUG: bot_token={bool(token)}, zalo_token={bool(zalo_token)}", flush=True)
-        if token and db.get_setting("setup_done") == "1":
-            print("DEBUG: Start manager.start(token)", flush=True)
-            if await manager.start(token):
+        print(f"DEBUG: bot_token={'SET('+token[:12]+')' if token else 'EMPTY'}, zalo_token={bool(zalo_token)}, setup_done={setup_done!r}", flush=True)
+        
+        if token and setup_done == "1":
+            print("DEBUG: Calling manager.start(token)...", flush=True)
+            tg_ok = await manager.start(token)
+            print(f"DEBUG: manager.start() returned: {tg_ok}", flush=True)
+            if tg_ok:
                 started_any = True
+                # Gửi thông báo khởi động thành công đến admin
+                admin_tg_id = db.get_setting("admin_tg_id")
+                if admin_tg_id:
+                    try:
+                        await manager.bot.send_message(
+                            int(admin_tg_id),
+                            "\u2705 <b>Bot đã kết nối thành công!</b>\n"
+                            f"\u23f0 Thời gian: {__import__('time').strftime('%H:%M:%S %d/%m/%Y')}\n"
+                            "\U0001f916 Đang polling và sẵn sàng nhận lệnh.",
+                            parse_mode="HTML"
+                        )
+                    except Exception as notify_err:
+                        print(f"DEBUG: Could not notify admin: {notify_err}", flush=True)
+            else:
+                print("DEBUG: manager.start() FAILED - check bot token!", flush=True)
+        else:
+            print(f"DEBUG: Skipped TG bot - token={'empty' if not token else 'ok'}, setup_done={setup_done!r}", flush=True)
                 
         if zalo_token:
             print("DEBUG: Start zalo_manager.start(zalo_token)", flush=True)
@@ -56,7 +77,7 @@ async def on_startup():
         if started_any:
             print("DEBUG: Start poller.start()", flush=True)
             poller.start()
-        print("DEBUG: Finish start_services", flush=True)
+        print(f"DEBUG: Finish start_services. tg_running={manager.running}", flush=True)
 
     # Khởi chạy dưới nền để Uvicorn có thể mở port ngay lập tức
     asyncio.create_task(start_services())
