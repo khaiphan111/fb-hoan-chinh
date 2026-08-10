@@ -46,9 +46,9 @@ DEFAULT_SETTINGS = {
     "bank_account": "",
     "bank_owner": "",
     "admin_zalo_id": "",
-    "admin_bot_token": "7712225012:AAEBAFvRGPImyeI_vRK0nctaM44ADNDFrOo",
+    "admin_bot_token": "",
     "admin_tg_id": "5964340237",
     "admin_tg_group_id": "",
-    "zalo_bot_token": "432129301271685100:ixeCEYzILfjbxmpSbxTHwGXxTnkzCPFfflvmQmFDiTKUbJWtnWsXjokv",
+    "zalo_bot_token": "",
     "web_domain": "https://app.khaikhaizzy.indevs.in",
 }
