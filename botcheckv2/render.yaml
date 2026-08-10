@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: fb-live-checker
+    runtime: python
+    region: singapore
+    plan: free
+
+    # Build: cài Python deps + build frontend React
+    buildCommand: >-
+      cd frontend && npm ci && npm run build && cd ../backend && pip install --upgrade pip && pip install -r requirements.txt
+
+    # Start: chạy uvicorn từ thư mục backend
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    # Biến môi trường bắt buộc
+    envVars:
+      - key: RENDER
+        value: "true"
+      - key: SUPABASE_DB_URL
+        sync: false   # Nhập trực tiếp trên Render dashboard (bảo mật)
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: NODE_VERSION
+        value: "20"

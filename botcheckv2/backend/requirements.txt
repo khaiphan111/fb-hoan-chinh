@@ -1,0 +1,10 @@
+fastapi>=0.110,<1
+uvicorn>=0.29,<1
+aiogram>=3.4,<4
+httpx>=0.27,<1
+pydantic>=2.6,<3
+instaloader
+psycopg2-binary
+python-dotenv
+python-multipart
+google-api-python-client

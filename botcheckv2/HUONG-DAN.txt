@@ -1,0 +1,31 @@
+FB LIVE/DIE CHECKER  —  Tác giả: @nhanxp
+Hỗ trợ / nâng cấp: Telegram nhanxp · Facebook nhanxp
+========================================================
+
+CÁCH 1 — CHẠY NGAY (không cần cài gì):
+  Mở thư mục, nháy đúp "FBLiveChecker.exe".
+  Lần mở đầu chờ vài giây để giải nén, sau đó trình duyệt tự mở
+  http://127.0.0.1:8000 (nếu không tự mở, gõ địa chỉ này vào trình duyệt).
+  Mật khẩu quản trị mặc định: admin  (hãy đổi trong mục Cấu hình).
+  Lưu ý: cứ để cửa sổ đen (console) chạy nền — đóng nó là tắt app.
+
+CÁCH 2 — CHẠY TỪ MÃ NGUỒN PYTHON:
+  Nháy đúp "KhoiDong-NguonPython.bat".
+  File này tự tìm Python (và tự cài nếu máy chưa có), rồi khởi động app.
+
+THIẾT LẬP LẦN ĐẦU:
+  1. Vào mục "Cấu hình", dán Bot Token Telegram (lấy từ @BotFather) rồi Lưu.
+     Bot sẽ tự khởi động và tạo menu.
+  2. Đặt giá 1 tháng (2/3 tháng tự nhân lên) và chu kỳ quét.
+
+DÙNG BOT:
+  - Khách nhắn /start cho bot để kết nối.
+  - Admin vào mục "Người dùng" để nạp số dư cho khách.
+  - Khách gõ /sub để mua gói (trừ vào số dư).
+  - Khách gõ:  /check {uid} [ghi chú] [giá] [số ngày]
+    Ví dụ:    /check 123 Mở khoá cho anh D 50000 7
+  - Khi tài khoản đổi trạng thái (live/die), bot báo ngay kèm avatar.
+
+LƯU Ý:
+  - Dữ liệu lưu trong file data.db cạnh app. Sao lưu file này để giữ dữ liệu.
+  - Phần mềm mã nguồn mở, phục vụ nghiên cứu & phát triển.
