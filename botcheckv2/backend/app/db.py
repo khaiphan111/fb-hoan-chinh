@@ -361,7 +361,10 @@ def init_db() -> None:
             """
         )
         for k, v in config.DEFAULT_SETTINGS.items():
-            c.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT DO NOTHING", (k, v))
+            if k == "setup_done":
+                c.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+            else:
+                c.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT DO NOTHING", (k, v))
         c.commit()
         
 def migrate_db():
