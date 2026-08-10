@@ -31,7 +31,7 @@ DB_PATH = os.path.join(base_dir(), "data.db")
 STATIC_DIR = os.path.join(resource_dir(), "static")
 
 DEFAULT_SETTINGS = {
-    "bot_token": "8706191019:AAEq39A1Th4rmJdtp1yxJCOj9rec8sC1o0g",
+    "bot_token": "8706191019:AAE12ytw4hWxjCsla6iLbnBAl9jO2GEMCM4",
     "admin_password": "Khai16022006$",
     "price_1d": "5000",
     "price_7d": "20000",
