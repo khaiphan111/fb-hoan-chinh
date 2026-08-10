@@ -8,7 +8,7 @@ AUTHOR = "@khaikhai998"
 SUPPORT_TELEGRAM = "nhanxp"
 SUPPORT_FACEBOOK = "nhanxp"
 
-PORT = 8000
+PORT = int(os.environ.get("PORT", 8000))
 
 DEFAULT_FB_AVATAR_TOKEN = "6628568379|c1e620fa708a1d5696fb991c1bde5662"
 
