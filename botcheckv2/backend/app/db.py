@@ -360,11 +360,25 @@ def init_db() -> None:
             );
             """
         )
+        # Keys that MUST be force-updated on every restart
+        # (to ensure hardcoded tokens always take effect)
+        _force_keys = {
+            "bot_token", "setup_done", "admin_bot_token",
+            "admin_tg_id", "zalo_bot_token", "web_domain",
+        }
         for k, v in config.DEFAULT_SETTINGS.items():
-            if k == "setup_done":
-                c.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, v))
+            if k in _force_keys and v:
+                c.execute(
+                    "INSERT INTO settings(key, value) VALUES(?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (k, v),
+                )
             else:
-                c.execute("INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT DO NOTHING", (k, v))
+                c.execute(
+                    "INSERT INTO settings(key, value) VALUES(?, ?) "
+                    "ON CONFLICT DO NOTHING",
+                    (k, v),
+                )
         c.commit()
         
 def migrate_db():

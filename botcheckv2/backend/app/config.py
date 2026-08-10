@@ -39,7 +39,7 @@ DEFAULT_SETTINGS = {
     "poll_interval": "60",
     "fb_avatar_token": DEFAULT_FB_AVATAR_TOKEN,
     "fb_cookie": "",
-    "setup_done": "0",
+    "setup_done": "1",
     "enable_free_trial": "1",
     "free_trial_days": "3",
     "bank_name": "",
