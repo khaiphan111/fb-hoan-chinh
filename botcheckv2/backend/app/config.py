@@ -31,7 +31,7 @@ DB_PATH = os.path.join(base_dir(), "data.db")
 STATIC_DIR = os.path.join(resource_dir(), "static")
 
 DEFAULT_SETTINGS = {
-    "bot_token": "",
+    "bot_token": "8706191019:AAEq39A1Th4rmJdtp1yxJCOj9rec8sC1o0g",
     "admin_password": "Khai16022006$",
     "price_1d": "5000",
     "price_7d": "20000",
@@ -46,7 +46,9 @@ DEFAULT_SETTINGS = {
     "bank_account": "",
     "bank_owner": "",
     "admin_zalo_id": "",
-    "admin_bot_token": "",
-    "admin_tg_id": "",
+    "admin_bot_token": "7712225012:AAEBAFvRGPImyeI_vRK0nctaM44ADNDFrOo",
+    "admin_tg_id": "5964340237",
     "admin_tg_group_id": "",
+    "zalo_bot_token": "432129301271685100:ixeCEYzILfjbxmpSbxTHwGXxTnkzCPFfflvmQmFDiTKUbJWtnWsXjokv",
+    "web_domain": "https://app.khaikhaizzy.indevs.in",
 }
