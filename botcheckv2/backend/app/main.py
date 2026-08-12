@@ -102,7 +102,9 @@ def health():
 
 
 if os.path.isdir(config.STATIC_DIR):
-    app.mount("/assets", StaticFiles(directory=os.path.join(config.STATIC_DIR, "assets")), name="assets")
+    assets_dir = os.path.join(config.STATIC_DIR, "assets")
+    if os.path.isdir(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
     images_dir = os.path.join(os.path.dirname(__file__), "..", "data", "images")
     if not os.path.isdir(images_dir):
         os.makedirs(images_dir, exist_ok=True)
