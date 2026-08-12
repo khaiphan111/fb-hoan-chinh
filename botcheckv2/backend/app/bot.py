@@ -224,32 +224,6 @@ async def process_fb_check(msg: Message, uid: str):
             ]
         ])
 
-        if res.get("avatar_url"):
-            try:
-                import httpx
-                from aiogram.types import BufferedInputFile
-                async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-                    img_r = await client.get(res["avatar_url"])
-                    # Nếu lỗi (ví dụ 400 do token hết hạn), thử lấy lại không cần token
-                    if img_r.status_code != 200:
-                        fallback_url = f"https://graph.facebook.com/{res['uid']}/picture?height=500&width=500"
-                        img_r = await client.get(fallback_url)
-                        
-                    if img_r.status_code == 200:
-                        final_url = str(img_r.url).lower()
-                        dead_patterns = ["silhouette", "static.xx.fbcdn", "/static/", "default_pic", "no_photo", "cp_placeholder", "84628273_176159830277856", "176159830277856"]
-                        is_blank = any(pat in final_url for pat in dead_patterns)
-                        
-                        if not is_blank:
-                            await msg.answer_photo(
-                                photo=BufferedInputFile(img_r.content, filename="fb_avatar.jpg"),
-                                caption=caption,
-                                reply_markup=kb
-                            )
-                            await wait.delete()
-                            return
-            except Exception as e:
-                log.error("Lỗi gửi ảnh FB: %s", e)
         await wait.edit_text(caption, disable_web_page_preview=True, reply_markup=kb)
     except Exception as e:
         log.exception("Lỗi check FB %s", uid)

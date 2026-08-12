@@ -59,8 +59,6 @@ async def _is_real_avatar(uid: str, client: httpx.AsyncClient) -> bool:
             "default_pic",
             "no_photo",
             "cp_placeholder",
-            "84628273_176159830277856_972693363922829312_n",
-            "176159830277856"
         ]
         for pat in dead_patterns:
             if pat in final_url:
