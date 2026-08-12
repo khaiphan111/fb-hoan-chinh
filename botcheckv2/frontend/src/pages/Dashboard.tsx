@@ -12,7 +12,7 @@ import {
 } from "@tabler/icons-react";
 import { useState, useEffect } from "react";
 import toast from "react-hot-toast";
-import { Badge, Button, Card, CardContent, Input } from "../components/ui";
+import { Badge, Button, Card, CardContent, Input, Label } from "../components/ui";
 import { api } from "../lib/api";
 import { fromNow, vnd } from "../lib/utils";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -39,6 +39,61 @@ export default function Dashboard({ status, onRefresh }: any) {
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [analytics, setAnalytics] = useState<any>(null);
+
+  // Flex mode states
+  const [showFlex, setShowFlex] = useState(false);
+  const [isFlexMode, setIsFlexMode] = useState(false);
+  
+  const [fRevToday, setFRevToday] = useState(999999);
+  const [fRevMonth, setFRevMonth] = useState(15000000);
+  const [fTotalUsers, setFTotalUsers] = useState(500);
+  const [fNewUsers, setFNewUsers] = useState(15);
+  const [fLive, setFLive] = useState(100);
+  const [fDie, setFDie] = useState(2);
+  const [fTiktokAcc, setFTiktokAcc] = useState(50);
+  const [fTiktokVid, setFTiktokVid] = useState(200);
+
+  const [flexAnalytics, setFlexAnalytics] = useState<any>(null);
+  const [flexStatus, setFlexStatus] = useState<any>(null);
+
+  function applyFlex() {
+    const newChart = [];
+    let remainingRevFor6Days = fRevMonth - fRevToday;
+    if (remainingRevFor6Days < 0) remainingRevFor6Days = fRevToday * 5;
+    
+    for (let i = 6; i >= 1; i--) {
+       const fakeDayRev = Math.floor(Math.random() * (remainingRevFor6Days / 3));
+       const fakeDayUsers = Math.floor(Math.random() * (fNewUsers * 2));
+       
+       const d = new Date();
+       d.setDate(d.getDate() - i);
+       const dayStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth()+1).padStart(2, '0')}`;
+       
+       newChart.push({ date: dayStr, revenue: fakeDayRev, users: fakeDayUsers });
+    }
+    const d = new Date();
+    const todayStr = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth()+1).padStart(2, '0')}`;
+    newChart.push({ date: todayStr, revenue: fRevToday, users: fNewUsers });
+    
+    setFlexAnalytics({
+       revenue_today: fRevToday,
+       revenue_month: fRevMonth,
+       total_users: fTotalUsers,
+       new_users_today: fNewUsers,
+       chart_data: newChart
+    });
+    
+    setFlexStatus({
+       ...status,
+       watches_live: fLive,
+       watches_die: fDie,
+       tracks_total: fTiktokAcc,
+       video_tracks_total: fTiktokVid,
+    });
+    
+    setIsFlexMode(true);
+    setShowFlex(false);
+  }
 
   useEffect(() => {
     loadAnalytics();
@@ -71,6 +126,9 @@ export default function Dashboard({ status, onRefresh }: any) {
 
   if (!status) return <div className="text-muted-foreground">Đang tải...</div>;
 
+  const displayAnalytics = isFlexMode && flexAnalytics ? flexAnalytics : analytics;
+  const displayStatus = isFlexMode && flexStatus ? flexStatus : status;
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -86,37 +144,37 @@ export default function Dashboard({ status, onRefresh }: any) {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {analytics && (
+        {displayAnalytics && (
           <>
-            <Stat icon={IconCoins} label="Doanh thu Hôm nay" value={vnd(analytics.revenue_today)} />
-            <Stat icon={IconTrendingUp} label="Doanh thu Tháng" value={vnd(analytics.revenue_month)} />
-            <Stat icon={IconUsers} label="Tổng Người dùng" value={analytics.total_users} />
-            <Stat icon={IconUserPlus} label="Khách Mới Hôm Nay" value={analytics.new_users_today} />
+            <Stat icon={IconCoins} label="Doanh thu Hôm nay" value={vnd(displayAnalytics.revenue_today)} />
+            <Stat icon={IconTrendingUp} label="Doanh thu Tháng" value={vnd(displayAnalytics.revenue_month)} />
+            <Stat icon={IconUsers} label="Tổng Người dùng" value={displayAnalytics.total_users} />
+            <Stat icon={IconUserPlus} label="Khách Mới Hôm Nay" value={displayAnalytics.new_users_today} />
           </>
         )}
-        <Stat icon={IconCircleCheck} label="Đang LIVE" value={status.watches_live} />
-        <Stat icon={IconCircleX} label="Đang DIE" value={status.watches_die} />
+        <Stat icon={IconCircleCheck} label="Đang LIVE" value={displayStatus.watches_live} />
+        <Stat icon={IconCircleX} label="Đang DIE" value={displayStatus.watches_die} />
         <Stat
           icon={IconRobot}
           label="Trạng thái Bot"
-          value={status.bot_running || status.zalo_running ? "Đang chạy" : "Tắt"}
+          value={displayStatus.bot_running || displayStatus.zalo_running ? "Đang chạy" : "Tắt"}
           sub={
-            <Badge status={status.bot_running || status.zalo_running ? "live" : "die"} className="ml-auto">
-              {status.bot_running || status.zalo_running ? "ON" : "OFF"}
+            <Badge status={displayStatus.bot_running || displayStatus.zalo_running ? "live" : "die"} className="ml-auto">
+              {displayStatus.bot_running || displayStatus.zalo_running ? "ON" : "OFF"}
             </Badge>
           }
         />
-        <Stat icon={IconUsers} label="Tiktok/IG Accounts" value={status.tracks_total || 0} />
-        <Stat icon={IconCircleCheck} label="Tiktok/IG Videos" value={status.video_tracks_total || 0} />
+        <Stat icon={IconUsers} label="Tiktok/IG Accounts" value={displayStatus.tracks_total || 0} />
+        <Stat icon={IconCircleCheck} label="Tiktok/IG Videos" value={displayStatus.video_tracks_total || 0} />
       </div>
 
-      {analytics && analytics.chart_data && (
+      {displayAnalytics && displayAnalytics.chart_data && (
         <Card>
           <CardContent className="flex flex-col gap-4">
             <h2 className="text-lg font-medium">Biểu đồ 7 ngày gần nhất</h2>
             <div className="h-72 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={analytics.chart_data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                <AreaChart data={displayAnalytics.chart_data} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
@@ -180,7 +238,32 @@ export default function Dashboard({ status, onRefresh }: any) {
         </CardContent>
       </Card>
 
-      <p className="text-xs text-muted-foreground">
+      {showFlex && (
+        <Card className="border-dashed border-primary">
+          <CardContent className="flex flex-col gap-4 pt-4">
+            <h2 className="text-lg font-medium">Chế độ Flex (Sống Ảo)</h2>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="flex flex-col gap-1.5"><Label>Doanh thu hôm nay</Label><Input type="number" value={fRevToday} onChange={(e) => setFRevToday(Number(e.target.value))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Doanh thu tháng</Label><Input type="number" value={fRevMonth} onChange={(e) => setFRevMonth(Number(e.target.value))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Tổng người dùng</Label><Input type="number" value={fTotalUsers} onChange={(e) => setFTotalUsers(Number(e.target.value))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Khách mới hôm nay</Label><Input type="number" value={fNewUsers} onChange={(e) => setFNewUsers(Number(e.target.value))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Đang LIVE (FB)</Label><Input type="number" value={fLive} onChange={(e) => setFLive(Number(e.target.value))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Đang DIE (FB)</Label><Input type="number" value={fDie} onChange={(e) => setFDie(Number(e.target.value))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Tiktok/IG Accounts</Label><Input type="number" value={fTiktokAcc} onChange={(e) => setFTiktokAcc(Number(e.target.value))} /></div>
+              <div className="flex flex-col gap-1.5"><Label>Tiktok/IG Videos</Label><Input type="number" value={fTiktokVid} onChange={(e) => setFTiktokVid(Number(e.target.value))} /></div>
+            </div>
+            <div className="flex gap-2 mt-2">
+              <Button onClick={applyFlex}>Áp dụng Flex</Button>
+              {isFlexMode && <Button variant="outline" onClick={() => { setIsFlexMode(false); setShowFlex(false); }}>Tắt Flex (Về số thật)</Button>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <p 
+        className="text-xs text-muted-foreground cursor-default select-none"
+        onDoubleClick={() => setShowFlex(!showFlex)}
+      >
         Vòng quét cuối: {fromNow(status.poller_last_run)} ·{" "}
         {status.poller_running ? "Bộ theo dõi đang chạy" : "Bộ theo dõi chưa chạy"}
       </p>

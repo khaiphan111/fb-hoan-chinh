@@ -1,13 +1,782 @@
-<!doctype html>
-<html lang="vi">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FB Live/Die Checker</title>
-    <script type="module" crossorigin src="/assets/index-l1VeWeHh.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-D26ey9vb.css">
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
+<!DOCTYPE html>
+<html lang="vi" data-theme="dark">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>TikTok Checker V2 — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+
+/* ══ THEME TOKENS ══ */
+[data-theme="dark"]{
+  --bg:#0d0d0d;--bg2:#161616;--bg3:#1e1e1e;--border:#2a2a2a;
+  --text:#e8e8e8;--text2:#aaa;--muted:#666;
+  --primary:#00d4aa;--primary-dim:#00d4aa18;
+  --danger:#ff4757;--danger-dim:#ff475718;
+  --warn:#ffa502;--warn-dim:#ffa50218;
+  --success:#2ed573;--success-dim:#2ed57318;
+  --purple:#a855f7;--purple-dim:#a855f718;
+  --card:#161616;--sidebar:#111;--topbar:#161616;
+  --shadow:0 4px 24px #0006;
+}
+[data-theme="light"]{
+  --bg:#f4f6fa;--bg2:#fff;--bg3:#f0f2f6;--border:#e2e6ef;
+  --text:#1a1a2e;--text2:#555;--muted:#999;
+  --primary:#009e7f;--primary-dim:#009e7f15;
+  --danger:#e53e3e;--danger-dim:#e53e3e15;
+  --warn:#d97706;--warn-dim:#d9770615;
+  --success:#38a169;--success-dim:#38a16915;
+  --purple:#7c3aed;--purple-dim:#7c3aed15;
+  --card:#fff;--sidebar:#fff;--topbar:#fff;
+  --shadow:0 2px 12px #0001;
+}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;overflow:hidden;transition:background .2s,color .2s}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* ══ SIDEBAR ══ */
+#sidebar{width:220px;min-height:100vh;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;padding:18px 12px;gap:3px;box-shadow:var(--shadow)}
+.logo{display:flex;align-items:center;gap:10px;padding:8px 12px 18px;border-bottom:1px solid var(--border);margin-bottom:8px}
+.logo-icon{width:34px;height:34px;background:linear-gradient(135deg,#00d4aa,#0099ff);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.logo-text{font-weight:700;font-size:13px;line-height:1.2}
+.logo-sub{font-size:11px;color:var(--primary);font-weight:600}
+.nav-btn{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;border:none;background:transparent;color:var(--text2);cursor:pointer;font-size:13px;font-family:'Inter',sans-serif;transition:all .15s;width:100%;text-align:left}
+.nav-btn:hover{background:var(--bg3);color:var(--text)}
+.nav-btn.active{background:var(--primary-dim);color:var(--primary);font-weight:600}
+.nav-btn .icon{font-size:15px;width:20px;text-align:center;flex-shrink:0}
+.nav-badge{margin-left:auto;background:var(--primary);color:#000;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;min-width:18px;text-align:center}
+.sidebar-sep{height:1px;background:var(--border);margin:8px 0}
+.sidebar-footer{margin-top:auto;padding-top:10px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:3px}
+.sidebar-ver{text-align:center;font-size:10px;color:var(--muted);padding:6px}
+
+/* ══ TOPBAR ══ */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#topbar{height:54px;background:var(--topbar);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 24px;flex-shrink:0}
+.topbar-title{font-size:15px;font-weight:600}
+.topbar-right{display:flex;align-items:center;gap:12px}
+.topbar-status{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)}
+.dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;display:inline-block}
+.dot-green{background:var(--success);box-shadow:0 0 5px var(--success)}
+.dot-red{background:var(--danger);box-shadow:0 0 5px var(--danger)}
+.dot-gray{background:var(--muted)}
+#content{flex:1;overflow-y:auto;padding:24px}
+
+/* ══ THEME TOGGLE ══ */
+.theme-btn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .15s}
+.theme-btn:hover{border-color:var(--primary);transform:scale(1.05)}
+
+/* ══ LOGIN ══ */
+#login-screen{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:100}
+.login-card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:40px;width:380px;text-align:center;box-shadow:var(--shadow)}
+.login-icon{font-size:46px;margin-bottom:14px}
+.login-title{font-size:20px;font-weight:700;margin-bottom:6px}
+.login-sub{font-size:12px;color:var(--muted);margin-bottom:26px}
+
+/* ══ INPUT / BTN ══ */
+.input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:9px 13px;color:var(--text);font-size:13px;font-family:'Inter',sans-serif;outline:none;transition:border .15s}
+.input:focus{border-color:var(--primary)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;transition:all .15s}
+.btn-primary{background:var(--primary);color:#000}
+.btn-primary:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.btn-danger{background:var(--danger-dim);color:var(--danger);border:1px solid var(--danger)22}
+.btn-danger:hover{background:var(--danger);color:#fff}
+.btn-ghost{background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
+.btn-ghost:hover{color:var(--text);border-color:var(--text2)}
+.btn-sm{padding:4px 10px;font-size:11px}
+.btn-full{width:100%;justify-content:center;margin-top:12px}
+
+/* ══ PAGE HEADER ══ */
+.page-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:22px}
+.page-title{font-size:18px;font-weight:700}
+.page-sub{font-size:12px;color:var(--muted);margin-top:3px}
+
+/* ══ STATS GRID ══ */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:14px;margin-bottom:24px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:6px;transition:border-color .15s,box-shadow .15s;cursor:default}
+.stat-card:hover{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary-dim)}
+.stat-icon{font-size:22px}
+.stat-label{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.stat-value{font-size:26px;font-weight:700}
+.stat-sub{font-size:11px;color:var(--muted)}
+
+/* ══ CARD / TABLE ══ */
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:18px;box-shadow:var(--shadow)}
+.card-header{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)}
+.card-title{font-size:13px;font-weight:600}
+table{width:100%;border-collapse:collapse}
+th{padding:9px 18px;text-align:left;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--border)}
+td{padding:11px 18px;font-size:12px;border-bottom:1px solid var(--border)11;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--bg3)}
+.username{font-weight:600;color:var(--primary);text-decoration:none}
+.username:hover{text-decoration:underline}
+.num{font-variant-numeric:tabular-nums;font-weight:500}
+.empty{text-align:center;padding:44px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:10px}
+
+/* ══ BADGE ══ */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700}
+.badge-green{background:var(--success-dim);color:var(--success)}
+.badge-red{background:var(--danger-dim);color:var(--danger)}
+.badge-gray{background:var(--bg3);color:var(--muted)}
+.badge-purple{background:var(--purple-dim);color:var(--purple)}
+
+/* ══ FORM ══ */
+.form-group{margin-bottom:14px}
+.form-label{display:block;font-size:11px;font-weight:700;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+.form-hint{font-size:10px;color:var(--muted);margin-top:3px}
+.form-row{display:flex;gap:10px}
+.form-row .input{flex:1}
+.settings-sec{margin-bottom:26px}
+.settings-sec-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;padding-bottom:7px;border-bottom:1px solid var(--border)}
+
+/* ══ MODAL ══ */
+.modal-overlay{position:fixed;inset:0;background:#00000080;display:flex;align-items:center;justify-content:center;z-index:50;backdrop-filter:blur(6px)}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:26px;width:440px;max-width:92vw;box-shadow:var(--shadow)}
+.modal-title{font-size:15px;font-weight:700;margin-bottom:18px}
+.modal-actions{display:flex;gap:8px;margin-top:20px;justify-content:flex-end}
+
+/* ══ LOG EVENTS ══ */
+.ev{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;white-space:nowrap}
+.ev-track_add{background:var(--primary-dim);color:var(--primary)}
+.ev-track_remove{background:var(--danger-dim);color:var(--danger)}
+.ev-follower_change{background:var(--warn-dim);color:var(--warn)}
+.ev-video_new{background:var(--purple-dim);color:var(--purple)}
+.ev-video_track_add{background:var(--purple-dim);color:var(--purple)}
+.ev-video_track_remove{background:var(--danger-dim);color:var(--danger)}
+.ev-video_stats{background:var(--success-dim);color:var(--success)}
+.ev-system{background:var(--bg3);color:var(--muted)}
+
+/* ══ TOAST ══ */
+#toast-wrap{position:fixed;top:18px;right:18px;z-index:1000;display:flex;flex-direction:column;gap:7px}
+.toast{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:11px 15px;font-size:12px;display:flex;align-items:center;gap:9px;min-width:240px;animation:slideIn .2s ease;box-shadow:0 8px 24px #0008}
+.toast-s{border-color:var(--success)55;background:color-mix(in srgb,var(--success) 8%,var(--card))}
+.toast-e{border-color:var(--danger)55;background:color-mix(in srgb,var(--danger) 8%,var(--card))}
+@keyframes slideIn{from{transform:translateX(110%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* ══ MISC ══ */
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin 1s linear infinite;display:inline-block}
+.change-up{color:var(--success);font-weight:600}
+.change-dn{color:var(--danger);font-weight:600}
+</style>
+</head>
+<body>
+
+<!-- ─── LOGIN ─── -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-icon">📱</div>
+    <div class="login-title">TikTok Checker V2</div>
+    <div class="login-sub">Đăng nhập vào bảng điều khiển</div>
+    <div class="form-group">
+      <input class="input" id="login-pw" type="password" placeholder="Mật khẩu (mặc định: admin123)" onkeydown="if(event.key==='Enter')doLogin()"/>
+    </div>
+    <button class="btn btn-primary btn-full" onclick="doLogin()">🔐 Đăng nhập</button>
+    <div id="login-err" style="color:var(--danger);font-size:11px;margin-top:10px"></div>
+  </div>
+</div>
+
+<!-- ─── APP ─── -->
+<div id="app" style="display:none;flex:1;overflow:hidden">
+
+  <!-- SIDEBAR -->
+  <div id="sidebar">
+    <div class="logo">
+      <div class="logo-icon">📱</div>
+      <div class="logo-text">TikTok Checker<div class="logo-sub">@khaikhai998</div></div>
+    </div>
+    <button class="nav-btn active" id="nav-dashboard" onclick="nav('dashboard')"><span class="icon">📊</span>Tổng quan</button>
+    <button class="nav-btn" id="nav-tracks" onclick="nav('tracks')"><span class="icon">👁️</span>Theo dõi tài khoản<span class="nav-badge" id="badge-acct" style="display:none">0</span></button>
+    <button class="nav-btn" id="nav-vtrack" onclick="nav('vtrack')"><span class="icon">🎬</span>Theo dõi video<span class="nav-badge" id="badge-vtrack" style="display:none">0</span></button>
+    <button class="nav-btn" id="nav-logs" onclick="nav('logs')"><span class="icon">📋</span>Nhật ký</button>
+    <button class="nav-btn" id="nav-settings" onclick="nav('settings')"><span class="icon">⚙️</span>Cấu hình</button>
+    <div class="sidebar-footer">
+      <button class="nav-btn" onclick="doLogout()"><span class="icon">🚪</span>Đăng xuất</button>
+      <div class="sidebar-ver" id="sidebar-ver">v2.0</div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div id="main">
+    <div id="topbar">
+      <div class="topbar-title" id="topbar-title">📊 Tổng quan</div>
+      <div class="topbar-right">
+        <div class="topbar-status"><span class="dot dot-gray" id="bot-dot"></span><span id="bot-txt">Đang tải...</span></div>
+        <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="Chuyển giao diện">🌙</button>
+      </div>
+    </div>
+    <div id="content">
+
+      <!-- ══ DASHBOARD ══ -->
+      <div id="page-dashboard">
+        <div class="page-header">
+          <div><div class="page-title">Tổng quan hệ thống</div><div class="page-sub">Trạng thái bot & thống kê theo dõi</div></div>
+          <button class="btn btn-ghost btn-sm" onclick="refreshAll(this)">🔄 Làm mới</button>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-icon">🤖</div><div class="stat-label">Bot</div><div class="stat-value" id="d-bot">—</div><div class="stat-sub" id="d-bot-sub">—</div></div>
+          <div class="stat-card"><div class="stat-icon">👁️</div><div class="stat-label">TK đang theo dõi</div><div class="stat-value" id="d-tracks">—</div><div class="stat-sub">Tài khoản</div></div>
+          <div class="stat-card"><div class="stat-icon">🎬</div><div class="stat-label">Video đang theo dõi</div><div class="stat-value" id="d-vtracks">—</div><div class="stat-sub">Video cụ thể</div></div>
+          <div class="stat-card"><div class="stat-icon">🔔</div><div class="stat-label">Thông báo hôm nay</div><div class="stat-value" id="d-notifs">—</div><div class="stat-sub">Follower + Video</div></div>
+          <div class="stat-card"><div class="stat-icon">⏰</div><div class="stat-label">Check gần nhất</div><div class="stat-value" style="font-size:13px;margin-top:4px" id="d-lastrun">—</div><div class="stat-sub" id="d-poller">—</div></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">👁️ Tài khoản đang theo dõi</div><button class="btn btn-ghost btn-sm" onclick="nav('tracks')">Xem tất cả →</button></div>
+          <table><thead><tr><th>Tài khoản</th><th>Followers</th><th>Videos</th><th>Trạng thái</th></tr></thead>
+          <tbody id="d-acct-table"><tr><td colspan="4" class="empty"><div class="empty-icon">📭</div>Chưa có dữ liệu</td></tr></tbody></table>
+        </div>
+      </div>
+
+      <!-- ══ ACCOUNT TRACKS ══ -->
+      <div id="page-tracks" style="display:none">
+        <div class="page-header">
+          <div><div class="page-title">👁️ Theo dõi tài khoản</div><div class="page-sub">Thông báo khi Follower hoặc Video mới thay đổi</div></div>
+          <button class="btn btn-primary btn-sm" onclick="showModal('modal-add-acct')">＋ Thêm tài khoản</button>
+        </div>
+        <div class="card"><table>
+          <thead><tr><th>Tài khoản</th><th>Followers</th><th>Following</th><th>Videos</th><th>Theo dõi bởi</th><th>Kiểm tra</th><th></th></tr></thead>
+          <tbody id="acct-tbody"><tr><td colspan="7" class="empty"><div class="empty-icon">📭</div>Chưa có dữ liệu</td></tr></tbody>
+        </table></div>
+      </div>
+
+      <!-- ══ VIDEO TRACKS ══ -->
+      <div id="page-vtrack" style="display:none">
+        <div class="page-header">
+          <div><div class="page-title">🎬 Theo dõi video cụ thể</div><div class="page-sub">Theo dõi lượt Views, Likes, Comments, Shares theo chu kỳ tùy chỉnh</div></div>
+          <button class="btn btn-primary btn-sm" onclick="showModal('modal-add-video')">＋ Thêm video</button>
+        </div>
+        <div class="card"><table>
+          <thead><tr><th>Video</th><th>▶️ Views</th><th>❤️ Likes</th><th>💬 Comments</th><th>🔁 Shares</th><th>Chu kỳ</th><th>Check gần nhất</th><th></th></tr></thead>
+          <tbody id="vtrack-tbody"><tr><td colspan="8" class="empty"><div class="empty-icon">🎬</div>Chưa theo dõi video nào</td></tr></tbody>
+        </table></div>
+      </div>
+
+      <!-- ══ LOGS ══ -->
+      <div id="page-logs" style="display:none">
+        <div class="page-header">
+          <div><div class="page-title">📋 Nhật ký hoạt động</div><div class="page-sub">150 sự kiện gần nhất</div></div>
+          <button class="btn btn-ghost btn-sm" onclick="loadLogs()">🔄 Làm mới</button>
+        </div>
+        <div class="card"><table>
+          <thead><tr><th>Thời gian</th><th>Sự kiện</th><th>Chi tiết</th><th>TikTok</th></tr></thead>
+          <tbody id="logs-tbody"><tr><td colspan="4" class="empty"><div class="empty-icon">📭</div>Chưa có log</td></tr></tbody>
+        </table></div>
+      </div>
+
+      <!-- ══ SETTINGS ══ -->
+      <div id="page-settings" style="display:none">
+        <div class="page-header"><div><div class="page-title">⚙️ Cấu hình</div><div class="page-sub">Thiết lập bot Telegram và thông số poller</div></div></div>
+        <div class="card" style="padding:22px">
+          <div class="settings-sec">
+            <div class="settings-sec-title">🤖 Bot Telegram</div>
+            <div class="form-group">
+              <label class="form-label">Bot Token</label>
+              <div class="form-row">
+                <input class="input" id="set-tok" type="password" placeholder="1234567890:AAXXXXXXXXXXXXXX"/>
+                <button class="btn btn-ghost btn-sm" onclick="verifyTok()">✅ Test</button>
+              </div>
+              <div class="form-hint">Lấy từ @BotFather • Token hiện tại: <span id="tok-display" style="color:var(--text)">—</span></div>
+            </div>
+            <div class="settings-sec-title" style="margin-top:16px;">🤖 Bot Zalo</div>
+            <div class="form-group">
+              <label class="form-label">Zalo Bot Token</label>
+              <div class="form-row">
+                <input class="input" id="set-zalo-tok" type="password" placeholder="Token lấy từ Zalo Bot Platform..."/>
+              </div>
+              <div class="form-hint">Token hiện tại: <span id="zalo-tok-display" style="color:var(--text)">—</span></div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-primary btn-sm" onclick="saveTok()">💾 Lưu & Khởi động</button>
+              <button class="btn btn-danger btn-sm" onclick="stopBot()">⏹ Dừng Bot</button>
+            </div>
+          </div>
+          <div class="settings-sec">
+            <div class="settings-sec-title">📸 Cấu hình Instagram</div>
+            <div class="form-group">
+              <label class="form-label">Phương thức lấy dữ liệu</label>
+              <select class="input" id="set-ig-method" style="padding:8px; margin-bottom:10px" onchange="toggleIgFields()">
+                <option value="public">Public Web (Miễn phí, không ổn định)</option>
+                <option value="rapidapi">RapidAPI (Ổn định, cần API Key)</option>
+                <option value="instaloader">Instaloader (Ổn định, cần Session Cookie)</option>
+              </select>
+            </div>
+            <div class="form-group" id="ig-rapidapi-group" style="display:none">
+              <label class="form-label">RapidAPI Key</label>
+              <input class="input" id="set-ig-rapidapi" type="password" placeholder="Nhập X-RapidAPI-Key..."/>
+              <div class="form-hint">Dùng cho API: Instagram Data API trên RapidAPI</div>
+            </div>
+            <div class="form-group" id="ig-session-group" style="display:none">
+              <label class="form-label">IG Session Cookie (sessionid)</label>
+              <input class="input" id="set-ig-session" type="password" placeholder="Nhập giá trị cookie sessionid..."/>
+              <div class="form-hint">F12 -> Application -> Cookies -> instagram.com -> sessionid</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="saveIgSettings()">💾 Lưu Cấu Hình IG</button>
+          </div>
+          <div class="settings-sec">
+            <div class="settings-sec-title">📘 Cấu hình Facebook</div>
+            <div class="form-group">
+              <label class="form-label">🔑 FB Cookie (Phân biệt LIVE vs Checkpoint - Chính xác 100%)</label>
+              <textarea class="input" id="set-fb-cookie" rows="3" placeholder="Dán cookie Facebook vào đây: c_user=...;xs=...;datr=..." style="resize:vertical;min-height:70px;font-size:11px;font-family:monospace"></textarea>
+              <div class="form-hint" style="color:var(--warn)">⚠️ Dùng Cookie tài khoản clone FB để check chuẩn xác. F12 → Application → Cookies → facebook.com → Copy hết giá trị</div>
+            </div>
+            <div class="form-group" style="margin-top:6px">
+              <label class="form-label">FB Graph API Token (Tuỳ chọn - chỉ lấy ảnh)</label>
+              <input class="input" id="set-fb-token" type="password" placeholder="Nhập Token lấy ảnh đại diện..."/>
+              <div class="form-hint">Dùng để lấy ảnh đại diện sắc nét hơn. Nếu có Cookie bên trên thì không cần.</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="saveFbSettings()">💾 Lưu Cấu Hình FB</button>
+          </div>
+          <div class="settings-sec">
+            <div class="settings-sec-title">⏱ Poller tài khoản</div>
+            <div class="form-group">
+              <label class="form-label">Chu kỳ check follower/video mới (giây)</label>
+              <input class="input" id="set-int" type="number" placeholder="600 = 10 phút" min="60" max="86400"/>
+              <div class="form-hint">Tối thiểu 60 giây. Khuyến nghị: 600 (10 phút)</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="saveInt()">💾 Lưu</button>
+          </div>
+          <div class="settings-sec">
+            <div class="settings-sec-title">🔐 Bảo mật</div>
+            <div class="form-group">
+              <label class="form-label">Mật khẩu admin mới</label>
+              <input class="input" id="set-pw" type="password" placeholder="Nhập mật khẩu mới"/>
+            </div>
+            <button class="btn btn-ghost btn-sm" onclick="savePw()">💾 Đổi mật khẩu</button>
+          </div>
+        </div>
+        <div class="card" style="padding:18px">
+          <div class="settings-sec-title" style="margin-bottom:14px">🎮 Điều khiển Bot</div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="startBot()">▶ Khởi động</button>
+            <button class="btn btn-danger btn-sm" onclick="stopBot()">⏹ Dừng</button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ══ MODAL: Thêm tài khoản ══ -->
+<div id="modal-add-acct" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal('modal-add-acct')">
+  <div class="modal">
+    <div class="modal-title">➕ Thêm theo dõi tài khoản</div>
+    <div class="form-group">
+      <label class="form-label">Username hoặc Link TikTok</label>
+      <input class="input" id="acct-url" placeholder="@username / link tiktok.com/@username" onkeydown="if(event.key==='Enter')addAcct()"/>
+      <div class="form-hint">Tự động nhận thông báo khi Follower hoặc Video mới thay đổi</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-add-acct')">Huỷ</button>
+      <button class="btn btn-primary" id="btn-add-acct" onclick="addAcct()">✅ Thêm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL: Thêm video ══ -->
+<div id="modal-add-video" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal('modal-add-video')">
+  <div class="modal">
+    <div class="modal-title">🎬 Thêm theo dõi video cụ thể</div>
+    <div class="form-group">
+      <label class="form-label">Link video TikTok</label>
+      <input class="input" id="vid-url" placeholder="https://www.tiktok.com/@user/video/123456..."/>
+      <div class="form-hint">Dán link video đầy đủ từ TikTok</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Chu kỳ kiểm tra</label>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px" id="interval-presets">
+        <button class="btn btn-ghost btn-sm interval-opt" data-val="300" onclick="selectInterval(300)">5 phút</button>
+        <button class="btn btn-ghost btn-sm interval-opt" data-val="1800" onclick="selectInterval(1800)">30 phút</button>
+        <button class="btn btn-ghost btn-sm interval-opt active" data-val="3600" onclick="selectInterval(3600)">1 giờ</button>
+        <button class="btn btn-ghost btn-sm interval-opt" data-val="21600" onclick="selectInterval(21600)">6 giờ</button>
+      </div>
+      <input class="input" id="vid-interval" type="number" value="3600" min="60" placeholder="Giây (ví dụ: 3600 = 1 giờ)"/>
+      <div class="form-hint">Bot gửi thông báo mỗi lần có thay đổi (views, likes, comments, shares)</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-add-video')">Huỷ</button>
+      <button class="btn btn-primary" id="btn-add-vid" onclick="addVideo()">🎬 Thêm theo dõi</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TOAST ══ -->
+<div id="toast-wrap"></div>
+
+<script>
+// ═══════════════════════════════════════
+//  CORE
+// ═══════════════════════════════════════
+let TOKEN = localStorage.getItem('tk2_token')||'';
+const API = location.origin;
+let curPage = 'dashboard';
+
+async function api(path, method='GET', body=null){
+  const o={method,headers:{'Content-Type':'application/json','Authorization':'Bearer '+TOKEN}};
+  if(body) o.body=JSON.stringify(body);
+  const r=await fetch(API+path,o);
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||'Lỗi '+r.status);
+  return d;
+}
+
+function toast(msg,type='s'){
+  const el=document.createElement('div');
+  el.className=`toast toast-${type}`;
+  el.innerHTML=`${type==='s'?'✅':'❌'} ${msg}`;
+  document.getElementById('toast-wrap').appendChild(el);
+  setTimeout(()=>el.remove(),3500);
+}
+
+function fmtN(n){
+  if(n==null) return '—';
+  n=parseInt(n)||0;
+  if(n>=1e9) return (n/1e9).toFixed(1)+'B';
+  if(n>=1e6) return (n/1e6).toFixed(1)+'M';
+  if(n>=1e3) return (n/1e3).toFixed(1)+'K';
+  return n.toLocaleString('vi-VN');
+}
+
+function fmtT(ts){
+  if(!ts) return '—';
+  const d=new Date(ts*1000), now=Date.now(), diff=Math.floor((now-d)/1000);
+  if(diff<60) return diff+'s trước';
+  if(diff<3600) return Math.floor(diff/60)+'ph trước';
+  if(diff<86400) return Math.floor(diff/3600)+'h trước';
+  return d.toLocaleString('vi-VN');
+}
+
+function fmtInterval(s){
+  if(s<60) return s+'s';
+  if(s<3600) return Math.floor(s/60)+'ph';
+  if(s<86400) return Math.floor(s/3600)+'h';
+  return Math.floor(s/86400)+'ngày';
+}
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+// ═══════════════════════════════════════
+//  THEME
+// ═══════════════════════════════════════
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  document.getElementById('theme-btn').textContent = t==='dark'?'🌙':'☀️';
+  localStorage.setItem('tk2_theme',t);
+}
+function toggleTheme(){
+  const t=document.documentElement.getAttribute('data-theme');
+  applyTheme(t==='dark'?'light':'dark');
+}
+// Apply saved theme
+applyTheme(localStorage.getItem('tk2_theme')||'dark');
+
+// ═══════════════════════════════════════
+//  AUTH
+// ═══════════════════════════════════════
+async function doLogin(){
+  const pw=document.getElementById('login-pw').value;
+  if(!pw){document.getElementById('login-err').textContent='Nhập mật khẩu!';return;}
+  try{
+    const r=await fetch(API+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail);
+    TOKEN=d.token; localStorage.setItem('tk2_token',TOKEN); showApp();
+  }catch(e){document.getElementById('login-err').textContent='❌ '+e.message;}
+}
+function doLogout(){
+  localStorage.removeItem('tk2_token'); TOKEN='';
+  document.getElementById('app').style.display='none';
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('login-pw').value='';
+}
+
+// ═══════════════════════════════════════
+//  NAV
+// ═══════════════════════════════════════
+function nav(page){
+  curPage=page;
+  ['dashboard','tracks','vtrack','logs','settings'].forEach(p=>{
+    document.getElementById('page-'+p).style.display=p===page?'block':'none';
+    document.getElementById('nav-'+p)?.classList.toggle('active',p===page);
+  });
+  const T={dashboard:'📊 Tổng quan',tracks:'👁️ Theo dõi tài khoản',vtrack:'🎬 Theo dõi video',logs:'📋 Nhật ký',settings:'⚙️ Cấu hình'};
+  document.getElementById('topbar-title').textContent=T[page]||page;
+  if(page==='tracks') loadAcctTracks();
+  if(page==='vtrack') loadVideoTracks();
+  if(page==='logs') loadLogs();
+  if(page==='settings') loadSettings();
+}
+
+// ═══════════════════════════════════════
+//  APP INIT
+// ═══════════════════════════════════════
+function showApp(){
+  document.getElementById('login-screen').style.display='none';
+  document.getElementById('app').style.display='flex';
+  refreshAll();
+  setInterval(refreshAll,30000);
+}
+
+async function refreshAll(btn){
+  if(btn){const i=btn.innerHTML;btn.innerHTML='<span class="spin">🔄</span>';setTimeout(()=>btn.innerHTML=i,1200);}
+  try{
+    const s=await api('/api/status'); updateStatus(s);
+    if(curPage==='tracks') loadAcctTracks();
+    if(curPage==='vtrack') loadVideoTracks();
+  }catch(e){if(e.message.includes('Chua')||e.message.includes('đăng')) doLogout();}
+}
+
+function updateStatus(s){
+  const isOn=s.bot_running;
+  document.getElementById('bot-dot').className='dot '+(isOn?'dot-green':'dot-red');
+  document.getElementById('bot-txt').textContent=isOn?'Bot đang chạy':'Bot đã dừng';
+  document.getElementById('d-bot').textContent=isOn?'🟢 Online':'🔴 Offline';
+  document.getElementById('d-bot-sub').textContent=isOn?'Đang polling':'Cần khởi động';
+  document.getElementById('sidebar-ver').textContent=s.version||'v2.0';
+  document.getElementById('d-tracks').textContent=s.tracks_total??'—';
+  document.getElementById('d-vtracks').textContent=s.video_tracks_total??'—';
+  document.getElementById('d-notifs').textContent=s.notifs_today??'—';
+  document.getElementById('d-lastrun').textContent=fmtT(s.poller_last_run);
+  document.getElementById('d-poller').textContent=s.poller_running?'🟢 Poller chạy':'⚪ Poller dừng';
+  // Badges
+  const ba=document.getElementById('badge-acct');
+  s.tracks_total>0?(ba.style.display='',ba.textContent=s.tracks_total):ba.style.display='none';
+  const bv=document.getElementById('badge-vtrack');
+  s.video_tracks_total>0?(bv.style.display='',bv.textContent=s.video_tracks_total):bv.style.display='none';
+}
+
+// ═══════════════════════════════════════
+//  ACCOUNT TRACKS
+// ═══════════════════════════════════════
+async function loadAcctTracks(){
+  const tbody=document.getElementById('acct-tbody');
+  const dtbody=document.getElementById('d-acct-table');
+  try{
+    const rows=(await api('/api/tracks')).filter(r=>r.active);
+    if(!rows.length){
+      const e=`<tr><td colspan="7" class="empty"><div class="empty-icon">📭</div>Chưa theo dõi ai<br><small style="color:var(--muted)">Nhấn "+ Thêm tài khoản"</small></td></tr>`;
+      tbody.innerHTML=e; dtbody.innerHTML=`<tr><td colspan="4" class="empty"><div class="empty-icon">📭</div>Chưa có dữ liệu</td></tr>`; return;
+    }
+    tbody.innerHTML=rows.map(r=>`<tr>
+      <td><a href="https://tiktok.com/@${esc(r.tiktok_username)}" target="_blank" class="username">@${esc(r.tiktok_username)}</a></td>
+      <td class="num">${fmtN(r.last_followers)}</td>
+      <td class="num">${fmtN(r.last_following)}</td>
+      <td class="num">${fmtN(r.last_videos)}</td>
+      <td style="color:var(--muted);font-size:11px">${esc(r.tg_username||'admin')}</td>
+      <td style="color:var(--muted);font-size:11px">${fmtT(r.last_checked)}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="delAcct(${r.id},'${esc(r.tiktok_username)}')">🗑</button></td>
+    </tr>`).join('');
+    dtbody.innerHTML=rows.slice(0,5).map(r=>`<tr>
+      <td><a href="https://tiktok.com/@${esc(r.tiktok_username)}" target="_blank" class="username">@${esc(r.tiktok_username)}</a></td>
+      <td class="num">${fmtN(r.last_followers)}</td>
+      <td class="num">${fmtN(r.last_videos)}</td>
+      <td><span class="badge badge-green">🟢 Active</span></td>
+    </tr>`).join('');
+  }catch(e){toast(e.message,'e');}
+}
+
+async function addAcct(){
+  const u=document.getElementById('acct-url').value.trim();
+  if(!u){toast('Nhập username!','e');return;}
+  const btn=document.getElementById('btn-add-acct');
+  btn.disabled=true;btn.textContent='⏳...';
+  try{
+    const r=await api('/api/tracks','POST',{tiktok_username:u});
+    toast(`Đã thêm @${r.info.username}!`); closeModal('modal-add-acct'); loadAcctTracks();
+  }catch(e){toast(e.message,'e');}
+  finally{btn.disabled=false;btn.textContent='✅ Thêm';}
+}
+
+async function delAcct(id,name){
+  if(!confirm(`Huỷ theo dõi @${name}?`)) return;
+  try{await api('/api/tracks/'+id,'DELETE');toast(`Đã huỷ @${name}`);loadAcctTracks();}
+  catch(e){toast(e.message,'e');}
+}
+
+// ═══════════════════════════════════════
+//  VIDEO TRACKS
+// ═══════════════════════════════════════
+let selInterval=3600;
+function selectInterval(v){
+  selInterval=v;
+  document.getElementById('vid-interval').value=v;
+  document.querySelectorAll('.interval-opt').forEach(b=>{
+    b.classList.toggle('active',parseInt(b.dataset.val)===v);
+    b.style.background=parseInt(b.dataset.val)===v?'var(--primary-dim)':'';
+    b.style.color=parseInt(b.dataset.val)===v?'var(--primary)':'';
+    b.style.borderColor=parseInt(b.dataset.val)===v?'var(--primary)':'';
+  });
+}
+
+async function loadVideoTracks(){
+  const tbody=document.getElementById('vtrack-tbody');
+  try{
+    const rows=(await api('/api/video-tracks')).filter(r=>r.active);
+    if(!rows.length){
+      tbody.innerHTML=`<tr><td colspan="8" class="empty"><div class="empty-icon">🎬</div>Chưa theo dõi video nào<br><small style="color:var(--muted)">Nhấn "+ Thêm video"</small></td></tr>`; return;
+    }
+    tbody.innerHTML=rows.map(r=>`<tr>
+      <td style="max-width:200px">
+        <a href="${esc(r.video_url)}" target="_blank" class="username" style="font-size:11px">@${esc(r.tiktok_username)}</a>
+        <div style="color:var(--muted);font-size:10px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px">${esc((r.video_desc||'').substring(0,60))}</div>
+      </td>
+      <td class="num">${fmtN(r.last_plays)}</td>
+      <td class="num">${fmtN(r.last_likes)}</td>
+      <td class="num">${fmtN(r.last_comments)}</td>
+      <td class="num">${fmtN(r.last_shares)}</td>
+      <td><span class="badge badge-purple">⏱ ${fmtInterval(r.check_interval)}</span></td>
+      <td style="color:var(--muted);font-size:11px">${fmtT(r.last_checked)}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="delVideo(${r.id})">🗑</button></td>
+    </tr>`).join('');
+  }catch(e){toast(e.message,'e');}
+}
+
+async function addVideo(){
+  const url=document.getElementById('vid-url').value.trim();
+  const iv=parseInt(document.getElementById('vid-interval').value)||3600;
+  if(!url){toast('Nhập link video!','e');return;}
+  const btn=document.getElementById('btn-add-vid');
+  btn.disabled=true;btn.textContent='⏳ Đang lấy info...';
+  try{
+    const r=await api('/api/video-tracks','POST',{video_url:url,check_interval:iv});
+    toast(`Đã thêm theo dõi video! Check mỗi ${fmtInterval(iv)}`);
+    closeModal('modal-add-video');
+    document.getElementById('vid-url').value='';
+    loadVideoTracks();
+  }catch(e){toast(e.message,'e');}
+  finally{btn.disabled=false;btn.textContent='🎬 Thêm theo dõi';}
+}
+
+async function delVideo(id){
+  if(!confirm('Huỷ theo dõi video này?')) return;
+  try{await api('/api/video-tracks/'+id,'DELETE');toast('Đã huỷ theo dõi video');loadVideoTracks();}
+  catch(e){toast(e.message,'e');}
+}
+
+// ═══════════════════════════════════════
+//  LOGS
+// ═══════════════════════════════════════
+async function loadLogs(){
+  const tbody=document.getElementById('logs-tbody');
+  try{
+    const logs=await api('/api/logs');
+    if(!logs.length){tbody.innerHTML='<tr><td colspan="4" class="empty"><div class="empty-icon">📭</div>Chưa có log</td></tr>';return;}
+    const EV={
+      track_add:'➕ Thêm TK',track_remove:'➖ Huỷ TK',
+      follower_change:'📊 Follower',video_new:'🎬 Video mới',
+      video_track_add:'🎬 Thêm video',video_track_remove:'🗑 Huỷ video',
+      video_stats:'📈 Video stats',system:'⚙️ Hệ thống'
+    };
+    tbody.innerHTML=logs.map(l=>`<tr>
+      <td style="color:var(--muted);font-size:11px;white-space:nowrap">${fmtT(l.created_at)}</td>
+      <td><span class="ev ev-${l.event}">${EV[l.event]||l.event}</span></td>
+      <td style="font-size:11px;max-width:320px;color:var(--text2)">${esc(l.detail)}</td>
+      <td style="color:var(--primary);font-size:11px">${l.tiktok_username?'@'+esc(l.tiktok_username):''}</td>
+    </tr>`).join('');
+  }catch(e){toast(e.message,'e');}
+}
+
+// ═══════════════════════════════════════
+//  SETTINGS
+// ═══════════════════════════════════════
+async function loadSettings(){
+  try{
+    const s=await api('/api/settings');
+    if(s.bot_token){document.getElementById('set-tok').value=s.bot_token;document.getElementById('tok-display').textContent=s.bot_token.substring(0,12)+'...';}
+    if(s.zalo_bot_token){document.getElementById('set-zalo-tok').value=s.zalo_bot_token;document.getElementById('zalo-tok-display').textContent=s.zalo_bot_token.substring(0,12)+'...';}
+    if(s.poll_interval) document.getElementById('set-int').value=s.poll_interval;
+    
+    if(s.ig_method) document.getElementById('set-ig-method').value = s.ig_method;
+    if(s.ig_rapidapi_key) el("set-ig-rapidapi").value = s.ig_rapidapi_key;
+    if(s.ig_session_cookie) el("set-ig-session").value = s.ig_session_cookie;
+    if(s.fb_avatar_token) el("set-fb-token").value = s.fb_avatar_token;
+    if(s.fb_cookie) el("set-fb-cookie").value = s.fb_cookie;
+    toggleIgFields();
+  }catch(e){}
+}
+
+function toggleIgFields() {
+  const v = document.getElementById('set-ig-method').value;
+  document.getElementById('ig-rapidapi-group').style.display = (v==='rapidapi') ? 'block' : 'none';
+  document.getElementById('ig-session-group').style.display = (v==='instaloader') ? 'block' : 'none';
+}
+
+async function saveIgSettings() {
+  const m = document.getElementById('set-ig-method').value;
+  const r = document.getElementById('set-ig-rapidapi').value.trim();
+  const s = document.getElementById('set-ig-session').value.trim();
+  try{
+    await api('/api/settings','POST',{ig_method: m, ig_rapidapi_key: r, ig_session_cookie: s});
+    toast('Đã lưu cấu hình Instagram!');
+  }catch(e){toast(e.message,'e');}
+}
+
+async function saveFbSettings() {
+  const f = document.getElementById('set-fb-token').value.trim();
+  const c = document.getElementById('set-fb-cookie').value.trim();
+  try{
+    await api('/api/settings','POST',{fb_avatar_token: f || null, fb_cookie: c || null});
+    if(c) toast('Đã lưu Cookie FB! Bot sẽ check LIVE vs Checkpoint chính xác 100% 🎯');
+    else toast('Đã lưu cấu hình Facebook!');
+  }catch(e){toast(e.message,'e');}
+}
+
+async function saveTok(){
+  const t=document.getElementById('set-tok').value.trim();
+  const zt=document.getElementById('set-zalo-tok').value.trim();
+  if(!t && !zt){toast('Nhập ít nhất 1 token!','e');return;}
+  try{
+    const r=await api('/api/settings','POST',{bot_token:t||null, zalo_bot_token:zt||null});
+    toast((r.bot_started||r.zalo_started)?'Bot khởi động! 🚀':'Đã lưu token.', (r.bot_started||r.zalo_started||r.bot_running||r.zalo_running)?'s':'e');
+    refreshAll();
+  }catch(e){toast(e.message,'e');}
+}
+
+async function verifyTok(){
+  const t=document.getElementById('set-tok').value.trim();
+  if(!t){toast('Nhập token!','e');return;}
+  try{const r=await api('/api/verify-bot','POST',{token:t});toast(`Token OK! @${r.username}`);}
+  catch(e){toast('Token không hợp lệ!','e');}
+}
+
+async function saveInt(){
+  const v=document.getElementById('set-int').value;
+  if(!v||parseInt(v)<60){toast('Tối thiểu 60s!','e');return;}
+  try{await api('/api/settings','POST',{poll_interval:v});toast('Đã lưu chu kỳ!');}
+  catch(e){toast(e.message,'e');}
+}
+
+async function savePw(){
+  const p=document.getElementById('set-pw').value;
+  if(!p){toast('Nhập mật khẩu!','e');return;}
+  try{await api('/api/settings','POST',{admin_password:p});toast('Đã đổi mật khẩu!');document.getElementById('set-pw').value='';}
+  catch(e){toast(e.message,'e');}
+}
+
+async function startBot(){
+  try{const r=await api('/api/bot/start','POST');toast(r.ok?'Bot khởi động! 🚀':'Lỗi!',r.ok?'s':'e');refreshAll();}
+  catch(e){toast(e.message,'e');}
+}
+
+async function stopBot(){
+  try{await api('/api/bot/stop','POST');toast('Bot đã dừng.');refreshAll();}
+  catch(e){toast(e.message,'e');}
+}
+
+// ═══════════════════════════════════════
+//  MODAL
+// ═══════════════════════════════════════
+function showModal(id){document.getElementById(id).style.display='flex';setTimeout(()=>document.querySelector(`#${id} .input`)?.focus(),80);}
+function closeModal(id){document.getElementById(id).style.display='none';}
+
+// ═══════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════
+if(TOKEN) showApp();
+</script>
+</body>
 </html>
