@@ -26,8 +26,11 @@ class LoginIn(BaseModel):
 
 
 class SettingsIn(BaseModel):
+    model_config = {"extra": "allow"}
     bot_token: str | None = None
     zalo_bot_token: str | None = None
+    price_1d: str | None = None
+    price_7d: str | None = None
     price_1m: str | None = None
     poll_interval: str | None = None
     fb_avatar_token: str | None = None
@@ -65,6 +68,9 @@ class SettingsIn(BaseModel):
     vip3_daily_check: str | None = None
     yt_api_key: str | None = None
     fb_cookie: str | None = None
+    zalo_cookie: str | None = None
+    zalo_imei: str | None = None
+    web_domain: str | None = None
 
 
 class TokenIn(BaseModel):
