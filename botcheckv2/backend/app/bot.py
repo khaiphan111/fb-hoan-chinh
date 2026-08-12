@@ -226,15 +226,20 @@ async def process_fb_check(msg: Message, uid: str):
 
         if res.get("avatar_url"):
             try:
-                await msg.answer_photo(
-                    photo=URLInputFile(res["avatar_url"], filename="fb_avatar.jpg"),
-                    caption=caption,
-                    reply_markup=kb
-                )
-                await wait.delete()
-                return
-            except Exception:
-                pass
+                import httpx
+                from aiogram.types import BufferedInputFile
+                async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                    img_r = await client.get(res["avatar_url"])
+                    if img_r.status_code == 200:
+                        await msg.answer_photo(
+                            photo=BufferedInputFile(img_r.content, filename="fb_avatar.jpg"),
+                            caption=caption,
+                            reply_markup=kb
+                        )
+                        await wait.delete()
+                        return
+            except Exception as e:
+                log.error("Lỗi gửi ảnh FB: %s", e)
         await wait.edit_text(caption, disable_web_page_preview=True, reply_markup=kb)
     except Exception as e:
         log.exception("Lỗi check FB %s", uid)
