@@ -238,8 +238,11 @@ async def process_fb_check(msg: Message, uid: str):
                         )
                         await wait.delete()
                         return
+                    else:
+                        await msg.answer(f"Debug: Không lấy được ảnh, status code {img_r.status_code}")
             except Exception as e:
                 log.error("Lỗi gửi ảnh FB: %s", e)
+                await msg.answer(f"Debug lỗi tải ảnh: {repr(e)}")
         await wait.edit_text(caption, disable_web_page_preview=True, reply_markup=kb)
     except Exception as e:
         log.exception("Lỗi check FB %s", uid)
@@ -731,6 +734,10 @@ async def on_hdcookie(msg: Message):
     )
     await msg.answer(text, parse_mode="HTML")
 
+
+@router.message(Command("ping2"))
+async def on_ping2(msg: Message):
+    await msg.answer("pong version 2 - Đã cập nhật code mới thành công!")
 
 @router.message(Command("tiktok"))
 async def on_tiktok(msg: Message):
