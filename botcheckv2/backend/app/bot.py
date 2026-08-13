@@ -335,8 +335,8 @@ async def on_ref(msg: Message):
     withdrawn = user["ref_withdrawn"] or 0 if user and "ref_withdrawn" in user else 0
     available = earnings - withdrawn
     
-    ref_code = user["ref_code"] if user and user.get("ref_code") else f"REF{msg.chat.id}"
-    if user and not user.get("ref_code"):
+    ref_code = user["ref_code"] if user and dict(user).get("ref_code") else f"REF{msg.chat.id}"
+    if user and not dict(user).get("ref_code"):
         with db._lock:
             db.get_conn().execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (ref_code, msg.chat.id))
             db.get_conn().commit()
@@ -937,7 +937,7 @@ async def on_track(msg: Message):
     
     # VIP Limit check
     user = db.get_user(msg.chat.id)
-    vip_level = user.get("vip_level", 0) if user else 0
+    vip_level = dict(user).get("vip_level", 0) if user else 0
     try:
         max_limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
     except:
@@ -1503,7 +1503,7 @@ async def on_vip(msg: Message):
         await msg.answer("Bạn chưa /start. Gõ /start trước nhé.")
         return
     
-    vip_level = user.get("vip_level", 0)
+    vip_level = dict(user).get("vip_level", 0)
     vip_names = {0: "Thường (Free)", 1: "VIP 1", 2: "VIP 2", 3: "VIP 3"}
     try:
         limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
@@ -1512,12 +1512,12 @@ async def on_vip(msg: Message):
     
     name = vip_names.get(vip_level, "Thường")
     
-    auto_renew_status = "Đang Bật 🟢" if user.get("auto_renew") == 1 else "Đang Tắt 🔴"
+    auto_renew_status = "Đang Bật 🟢" if dict(user).get("auto_renew") == 1 else "Đang Tắt 🔴"
     
     text = (
         f"👑 <b>THÔNG TIN HẠNG VIP</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Tài khoản: <b>{user.get('username') or user.get('full_name', '')}</b>\n"
+        f"👤 Tài khoản: <b>{dict(user).get('username') or dict(user).get('full_name', '')}</b>\n"
         f"💎 Hạng hiện tại: <b>{name}</b>\n"
         f"⏳ Hạn sử dụng: <b>{_sub_text(user)}</b>\n"
         f"📊 Giới hạn theo dõi: <b>{limit} mục</b>\n"
@@ -1531,7 +1531,7 @@ async def on_vip(msg: Message):
 async def on_toggle_autorenew(cb: CallbackQuery):
     user = db.get_user(cb.from_user.id)
     if not user: return
-    new_status = 0 if user.get("auto_renew") == 1 else 1
+    new_status = 0 if dict(user).get("auto_renew") == 1 else 1
     with db._lock:
         db.get_conn().execute("UPDATE tg_users SET auto_renew=? WHERE tg_id=?", (new_status, cb.from_user.id))
         db.get_conn().commit()
@@ -1961,7 +1961,7 @@ async def on_trackyt(msg: Message, command: CommandObject):
         return
         
     user = db.get_user(msg.chat.id)
-    vip_level = user.get("vip_level", 0) if user else 0
+    vip_level = dict(user).get("vip_level", 0) if user else 0
     try: max_limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
     except: max_limit = [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]
     with db._lock: count = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
@@ -1995,7 +1995,7 @@ async def on_trackvyt(msg: Message, command: CommandObject):
         return
         
     user = db.get_user(msg.chat.id)
-    vip_level = user.get("vip_level", 0) if user else 0
+    vip_level = dict(user).get("vip_level", 0) if user else 0
     try: max_limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
     except: max_limit = [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]
     with db._lock: count = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
@@ -2051,7 +2051,7 @@ async def on_trackzalo(msg: Message, command: CommandObject):
         return
         
     user = db.get_user(msg.chat.id)
-    vip_level = user.get("vip_level", 0) if user else 0
+    vip_level = dict(user).get("vip_level", 0) if user else 0
     try: max_limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
     except: max_limit = [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]
     
