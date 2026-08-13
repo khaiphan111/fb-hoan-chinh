@@ -331,8 +331,8 @@ async def on_start(msg: Message):
 async def on_ref(msg: Message):
     bot_info = await msg.bot.get_me()
     user = db.get_user(msg.chat.id)
-    earnings = user["ref_earnings"] if user else 0
-    withdrawn = user["ref_withdrawn"] if user and "ref_withdrawn" in user else 0
+    earnings = user["ref_earnings"] or 0 if user else 0
+    withdrawn = user["ref_withdrawn"] or 0 if user and "ref_withdrawn" in user else 0
     available = earnings - withdrawn
     
     ref_code = user["ref_code"] if user and user.get("ref_code") else f"REF{msg.chat.id}"
@@ -423,8 +423,8 @@ async def on_ruttien(msg: Message):
     c = db.get_conn()
     user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (msg.chat.id,)).fetchone()
     
-    earnings = user["ref_earnings"] if user else 0
-    withdrawn = user["ref_withdrawn"] if user and "ref_withdrawn" in user else 0
+    earnings = user["ref_earnings"] or 0 if user else 0
+    withdrawn = user["ref_withdrawn"] or 0 if user and "ref_withdrawn" in user else 0
     available = earnings - withdrawn
     
     import datetime
@@ -482,8 +482,8 @@ async def on_doitien(msg: Message):
     c = db.get_conn()
     user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (msg.chat.id,)).fetchone()
     
-    earnings = user["ref_earnings"] if user else 0
-    withdrawn = user["ref_withdrawn"] if user and "ref_withdrawn" in user else 0
+    earnings = user["ref_earnings"] or 0 if user else 0
+    withdrawn = user["ref_withdrawn"] or 0 if user and "ref_withdrawn" in user else 0
     available = earnings - withdrawn
     
     if amount > available:
