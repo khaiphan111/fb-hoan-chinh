@@ -382,7 +382,8 @@ async def on_ref(msg: Message):
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
-        await msg.answer(f"Lỗi: {e}\n\n<code>{err_msg[:3000]}</code>", parse_mode="HTML")
+        # Do not use parse_mode="HTML" because tracebacks contain <module> which causes TelegramBadRequest
+        await msg.answer(f"Lỗi: {e}\n\n{err_msg[:3000]}")
 
 @router.message(Command("refcode"))
 async def on_refcode(msg: Message):
