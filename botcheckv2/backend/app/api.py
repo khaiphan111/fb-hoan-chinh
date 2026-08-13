@@ -1144,20 +1144,7 @@ def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
     if available < body.amount + fee:
         raise HTTPException(status_code=400, detail=f"Không đủ số dư. Lưu ý từ lần thứ 3 trong tháng phí rút là {fee} VNĐ.")
         
-    req_id = 0
-    with db._lock:
-        try:
-            cur = c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?) RETURNING id",
-                      (tg_id, body.amount, body.bank_info, fee, 'pending', int(time.time()), int(time.time())))
-            res = cur.fetchone()
-            if res:
-                req_id = res["id"] if isinstance(res, dict) or hasattr(res, "__getitem__") else res[0]
-        except Exception:
-            c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
-                      (tg_id, body.amount, body.bank_info, fee, 'pending', int(time.time()), int(time.time())))
-            req_id = getattr(c, 'lastrowid', 0) or 0
-        c.commit()
-        
+    req_id = db.create_withdrawal_request(tg_id, body.amount, body.bank_info, fee)
     try:
         from .bot import notify_admin_withdrawal_request
         asyncio.create_task(notify_admin_withdrawal_request(req_id, tg_id, body.amount, body.bank_info, fee))

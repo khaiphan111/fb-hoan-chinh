@@ -251,13 +251,18 @@ async def on_admin_withdraw_approve(cb: CallbackQuery):
     amount = int(parts[6])
     
     c = db.get_conn()
-    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+    if req_id == 0:
+        req = c.execute("SELECT * FROM withdrawal_requests WHERE tg_id=? AND status='pending' ORDER BY id DESC LIMIT 1", (tg_id,)).fetchone()
+    else:
+        req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+        
     if not req or req["status"] != "pending":
         await cb.answer("⚠️ Đơn này đã được xử lý từ trước!", show_alert=True)
         return
         
+    actual_req_id = req["id"]
     with db._lock:
-        c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), req_id))
+        c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), actual_req_id))
         c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?", (amount, tg_id))
         c.commit()
         
@@ -271,7 +276,7 @@ async def on_admin_withdraw_approve(cb: CallbackQuery):
         from .bot import manager as main_bot_manager
         cust_msg = (
             "🎉 <b>RÚT TIỀN HOA HỒNG THÀNH CÔNG!</b>\n\n"
-            f"Yêu cầu rút tiền <b>#{req_id}</b> của bạn đã được Admin duyệt và chuyển tiền.\n"
+            f"Yêu cầu rút tiền <b>#{actual_req_id}</b> của bạn đã được Admin duyệt và chuyển tiền.\n"
             f"💰 Số tiền: <b>{amount:,.0f} VNĐ</b>\n"
             f"🏦 Ngân hàng / STK: <b>{req.get('bank_info', '')}</b>\n\n"
             "Cảm ơn bạn đã đồng hành và phát triển cùng hệ thống! ❤️"
@@ -293,13 +298,18 @@ async def on_admin_withdraw_reject(cb: CallbackQuery):
     amount = int(parts[6])
     
     c = db.get_conn()
-    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+    if req_id == 0:
+        req = c.execute("SELECT * FROM withdrawal_requests WHERE tg_id=? AND status='pending' ORDER BY id DESC LIMIT 1", (tg_id,)).fetchone()
+    else:
+        req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+        
     if not req or req["status"] != "pending":
         await cb.answer("⚠️ Đơn này đã được xử lý từ trước!", show_alert=True)
         return
         
+    actual_req_id = req["id"]
     with db._lock:
-        c.execute("UPDATE withdrawal_requests SET status='rejected', updated_at=? WHERE id=?", (int(time.time()), req_id))
+        c.execute("UPDATE withdrawal_requests SET status='rejected', updated_at=? WHERE id=?", (int(time.time()), actual_req_id))
         c.commit()
         
     await cb.answer("❌ Đã từ chối đơn rút tiền.", show_alert=True)
@@ -312,7 +322,7 @@ async def on_admin_withdraw_reject(cb: CallbackQuery):
         from .bot import manager as main_bot_manager
         cust_msg = (
             "❌ <b>YÊU CẦU RÚT TIỀN BỊ TỪ CHỐI</b>\n\n"
-            f"Yêu cầu rút tiền hoa hồng <b>#{req_id}</b> ({amount:,.0f} VNĐ) của bạn đã bị Admin từ chối.\n"
+            f"Yêu cầu rút tiền hoa hồng <b>#{actual_req_id}</b> ({amount:,.0f} VNĐ) của bạn đã bị Admin từ chối.\n"
             "Số dư hoa hồng của bạn vẫn được giữ nguyên.\n"
             "Vui lòng kiểm tra lại thông tin Ngân hàng / STK hoặc liên hệ Admin để được hỗ trợ."
         )

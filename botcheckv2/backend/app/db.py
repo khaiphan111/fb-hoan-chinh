@@ -1495,3 +1495,19 @@ def log_alert_history(tg_id: str, rule_id: int, message: str) -> None:
             (tg_id, rule_id, message, int(time.time()))
         )
         c.commit()
+
+def create_withdrawal_request(tg_id: int, amount: int, bank_info: str, fee: int) -> int:
+    with _lock:
+        now_ts = int(time.time())
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?) RETURNING id",
+            (tg_id, amount, bank_info, fee, 'pending', now_ts, now_ts)
+        )
+        req_id = cur.lastrowid
+        if not req_id:
+            row = c.execute("SELECT id FROM withdrawal_requests WHERE tg_id=? AND status='pending' ORDER BY id DESC LIMIT 1", (tg_id,)).fetchone()
+            if row:
+                req_id = row["id"] if isinstance(row, dict) or hasattr(row, "__getitem__") else row[0]
+        c.commit()
+        return int(req_id or 0)
