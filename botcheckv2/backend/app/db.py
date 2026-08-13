@@ -468,6 +468,7 @@ def migrate_db():
             "ALTER TABLE tg_users ADD COLUMN last_check_date TEXT DEFAULT ''",
             "ALTER TABLE tracks ADD COLUMN zalo_user_id TEXT DEFAULT ''",
             "ALTER TABLE tg_users ADD COLUMN ref_code TEXT",
+            "ALTER TABLE tg_users ADD COLUMN ref_earnings BIGINT DEFAULT 0",
             "ALTER TABLE tg_users ADD COLUMN ref_withdrawn BIGINT DEFAULT 0",
             "CREATE TABLE IF NOT EXISTS ref_commissions (id BIGINT PRIMARY KEY AUTOINCREMENT, referrer_id BIGINT, from_user_id BIGINT, level BIGINT, amount BIGINT, commission BIGINT, created_at BIGINT)",
             "CREATE TABLE IF NOT EXISTS withdrawal_requests (id BIGINT PRIMARY KEY AUTOINCREMENT, tg_id BIGINT, amount BIGINT, status TEXT DEFAULT 'pending', created_at BIGINT, updated_at BIGINT)",
