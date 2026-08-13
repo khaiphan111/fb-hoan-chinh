@@ -238,6 +238,89 @@ async def on_admin_confirm(cb: CallbackQuery):
     else:
         await cb.answer("❌ Lỗi khi cộng tiền!", show_alert=True)
 
+@router.callback_query(F.data.startswith("tg_admin_withdraw_approve_"))
+async def on_admin_withdraw_approve(cb: CallbackQuery):
+    if not is_admin(cb.message.chat.id, cb.from_user.id):
+        await cb.answer("❌ Bạn không có quyền duyệt!", show_alert=True)
+        return
+        
+    parts = cb.data.split("_")
+    # tg_admin_withdraw_approve_{req_id}_{tg_id}_{amount}
+    req_id = int(parts[4])
+    tg_id = int(parts[5])
+    amount = int(parts[6])
+    
+    c = db.get_conn()
+    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+    if not req or req["status"] != "pending":
+        await cb.answer("⚠️ Đơn này đã được xử lý từ trước!", show_alert=True)
+        return
+        
+    with db._lock:
+        c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), req_id))
+        c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?", (amount, tg_id))
+        c.commit()
+        
+    await cb.answer("✅ Đã duyệt đơn rút tiền thành công!", show_alert=True)
+    try:
+        await cb.message.edit_text(f"{cb.message.text}\n\n✅ <b>ĐÃ DUYỆT BỞI {cb.from_user.full_name} ({amount:,.0f} VNĐ)</b>", parse_mode="HTML")
+    except: pass
+    
+    # Notify customer
+    try:
+        from .bot import manager as main_bot_manager
+        cust_msg = (
+            "🎉 <b>RÚT TIỀN HOA HỒNG THÀNH CÔNG!</b>\n\n"
+            f"Yêu cầu rút tiền <b>#{req_id}</b> của bạn đã được Admin duyệt và chuyển tiền.\n"
+            f"💰 Số tiền: <b>{amount:,.0f} VNĐ</b>\n"
+            f"🏦 Ngân hàng / STK: <b>{req.get('bank_info', '')}</b>\n\n"
+            "Cảm ơn bạn đã đồng hành và phát triển cùng hệ thống! ❤️"
+        )
+        if main_bot_manager.bot:
+            await main_bot_manager.bot.send_message(tg_id, cust_msg, parse_mode="HTML")
+    except Exception as notify_err:
+        log.error("Could not notify user of approved withdrawal: %s", notify_err)
+
+@router.callback_query(F.data.startswith("tg_admin_withdraw_reject_"))
+async def on_admin_withdraw_reject(cb: CallbackQuery):
+    if not is_admin(cb.message.chat.id, cb.from_user.id):
+        await cb.answer("❌ Bạn không có quyền từ chối!", show_alert=True)
+        return
+        
+    parts = cb.data.split("_")
+    req_id = int(parts[4])
+    tg_id = int(parts[5])
+    amount = int(parts[6])
+    
+    c = db.get_conn()
+    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+    if not req or req["status"] != "pending":
+        await cb.answer("⚠️ Đơn này đã được xử lý từ trước!", show_alert=True)
+        return
+        
+    with db._lock:
+        c.execute("UPDATE withdrawal_requests SET status='rejected', updated_at=? WHERE id=?", (int(time.time()), req_id))
+        c.commit()
+        
+    await cb.answer("❌ Đã từ chối đơn rút tiền.", show_alert=True)
+    try:
+        await cb.message.edit_text(f"{cb.message.text}\n\n❌ <b>ĐÃ TỪ CHỐI BỞI {cb.from_user.full_name}</b>", parse_mode="HTML")
+    except: pass
+    
+    # Notify customer
+    try:
+        from .bot import manager as main_bot_manager
+        cust_msg = (
+            "❌ <b>YÊU CẦU RÚT TIỀN BỊ TỪ CHỐI</b>\n\n"
+            f"Yêu cầu rút tiền hoa hồng <b>#{req_id}</b> ({amount:,.0f} VNĐ) của bạn đã bị Admin từ chối.\n"
+            "Số dư hoa hồng của bạn vẫn được giữ nguyên.\n"
+            "Vui lòng kiểm tra lại thông tin Ngân hàng / STK hoặc liên hệ Admin để được hỗ trợ."
+        )
+        if main_bot_manager.bot:
+            await main_bot_manager.bot.send_message(tg_id, cust_msg, parse_mode="HTML")
+    except Exception as notify_err:
+        log.error("Could not notify user of rejected withdrawal: %s", notify_err)
+
 class AdminBotManager:
     def __init__(self):
         self.bot = None

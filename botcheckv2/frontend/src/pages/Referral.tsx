@@ -193,13 +193,12 @@ function AdminReferral() {
     }
   }
 
-  async function handleRequest(id: string, action: "approve" | "reject") {
+  async function handleRequest(id: string | number, action: "approve" | "reject") {
     try {
-      await api(`/api/admin/referral/withdraw/${id}`, {
-        method: "POST",
-        body: JSON.stringify({ action })
+      await api(`/api/admin/withdrawals/${id}/${action}`, {
+        method: "POST"
       });
-      toast.success(action === "approve" ? "Đã duyệt" : "Đã từ chối");
+      toast.success(action === "approve" ? "Đã duyệt và chuyển tiền" : "Đã từ chối đơn rút");
       loadData();
     } catch (e: any) {
       toast.error(e.message);
@@ -218,21 +217,27 @@ function AdminReferral() {
           <table className="w-full text-left text-sm">
             <thead className="bg-muted">
               <tr>
-                <th className="p-2">User ID</th>
+                <th className="p-2">User (ID / Username)</th>
                 <th className="p-2">Tổng F1</th>
-                <th className="p-2">Tổng F2</th>
                 <th className="p-2">Tổng hoa hồng</th>
               </tr>
             </thead>
             <tbody>
               {data.leaderboard?.map((u: any, idx: number) => (
-                <tr key={u.id || idx} className="border-b">
-                  <td className="p-2">{u.user_id}</td>
-                  <td className="p-2">{u.f1_count}</td>
-                  <td className="p-2">{u.f2_count}</td>
-                  <td className="p-2 text-green-500">{new Intl.NumberFormat("vi-VN").format(u.commission_total)}đ</td>
+                <tr key={u.tg_id || idx} className="border-b">
+                  <td className="p-2">
+                    <span className="font-medium">{u.username ? `@${u.username}` : (u.name || u.tg_id)}</span>
+                    {u.username && <span className="text-xs text-muted-foreground ml-1.5">({u.tg_id})</span>}
+                  </td>
+                  <td className="p-2">{u.f1_count || 0}</td>
+                  <td className="p-2 text-green-500 font-semibold">{new Intl.NumberFormat("vi-VN").format(u.ref_earnings || 0)}đ</td>
                 </tr>
               ))}
+              {!data.leaderboard?.length && (
+                <tr>
+                  <td colSpan={3} className="p-4 text-center text-muted-foreground">Chưa có dữ liệu</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </CardContent>

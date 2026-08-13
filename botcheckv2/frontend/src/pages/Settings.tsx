@@ -228,14 +228,14 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
             </p>
           </div>
           <div className="flex flex-col gap-1.5 mt-2 border-t border-border pt-4">
-            <Label>Bot Token (Bot Độc lập dành cho Admin)</Label>
+            <Label>Bot Token (Bot Độc lập dành cho Admin - Tùy chọn)</Label>
             <Input
               value={s.admin_bot_token || ""}
               onChange={(e) => up("admin_bot_token", e.target.value)}
               placeholder="123456:ABC-..."
             />
             <p className="text-xs text-muted-foreground">
-              Tạo bot mới từ @BotFather chuyên dùng để duyệt tiền và phát mã Code.
+              Bot riêng để duyệt nạp tiền, duyệt rút tiền hoa hồng và phát mã Code. (Nếu để trống, hệ thống sẽ gửi thẳng qua Bot chính).
             </p>
           </div>
           <div className="flex flex-col gap-1.5 mt-2 border-t border-border pt-4">
@@ -246,7 +246,7 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
               placeholder="Ví dụ: 123456789"
             />
             <p className="text-xs text-muted-foreground">
-              Nhận thông báo nạp tiền qua Bot Admin và nhận backup data.db hàng ngày.
+              Nhận thông báo nạp tiền, duyệt rút tiền hoa hồng trực tiếp qua nút bấm Inline và nhận backup data.db.
             </p>
           </div>
           <div className="flex flex-col gap-1.5 mt-2">
@@ -257,7 +257,7 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
               placeholder="Ví dụ: -100123456789"
             />
             <p className="text-xs text-muted-foreground">
-              Nhận thông báo nạp tiền thẳng vào Nhóm (nhớ thêm Bot Admin vào Nhóm).
+              Nhận thông báo nạp tiền & nút duyệt rút tiền hoa hồng thẳng vào Nhóm Telegram của đội ngũ Admin.
             </p>
           </div>
         </CardContent>

@@ -468,28 +468,177 @@ async def on_ruttien(msg: Message):
         await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)}, Cần: {vnd(amount + fee)} bao gồm phí {vnd(fee)} nếu có)")
         return
         
+    req_id = 0
     with db._lock:
-        c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
-                  (msg.chat.id, amount, bank_info, fee, 'pending', int(time.time()), int(time.time())))
+        try:
+            cur = c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?) RETURNING id",
+                      (msg.chat.id, amount, bank_info, fee, 'pending', int(time.time()), int(time.time())))
+            res = cur.fetchone()
+            if res:
+                req_id = res["id"] if isinstance(res, dict) or hasattr(res, "__getitem__") else res[0]
+        except Exception:
+            c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+                      (msg.chat.id, amount, bank_info, fee, 'pending', int(time.time()), int(time.time())))
+            req_id = getattr(c, 'lastrowid', 0) or 0
         c.commit()
         
-    admin_msg = f"🔔 <b>YÊU CẦU RÚT TIỀN HOA HỒNG</b>\n👤 ID: {msg.chat.id}\n💰 Số tiền: {vnd(amount)}\n🏦 Ngân hàng: {bank_info}\n💸 Phí rút: {vnd(fee)}"
-    
-    # Notify admin somehow
+    await notify_admin_withdrawal_request(req_id, msg.chat.id, amount, bank_info, fee)
+    await msg.answer(f"✅ Đã gửi yêu cầu rút <b>{vnd(amount)}</b>.\nVui lòng chờ Admin kiểm tra và duyệt chuyển khoản!", parse_mode="HTML")
+
+async def notify_admin_withdrawal_request(req_id: int, tg_id: int, amount: int, bank_info: str, fee: int):
     admin_tg_token = db.get_setting("admin_bot_token", "")
-    if admin_tg_token:
+    admin_zalo = db.get_setting("admin_zalo_id", "")
+    
+    c = db.get_conn()
+    user = c.execute("SELECT username, name FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+    username_str = f"@{user['username']}" if user and user['username'] else (user['name'] if user and user['name'] else str(tg_id))
+    
+    actual_amount = amount - fee
+    admin_msg = (
+        "🔔 <b>CÓ YÊU CẦU RÚT TIỀN HOA HỒNG!</b>\n\n"
+        f"🆔 Đơn rút: <b>#{req_id}</b>\n"
+        f"👤 Khách: {username_str} (ID: <code>{tg_id}</code>)\n"
+        f"💰 Số tiền yêu cầu: <b>{vnd(amount)}</b>\n"
+        f"💸 Phí rút: <b>{vnd(fee)}</b>\n"
+        f"💵 <b>Thực nhận chuyển khoản: {vnd(actual_amount)}</b>\n"
+        f"🏦 Ngân hàng / STK: <b>{bank_info}</b>\n\n"
+        "👉 Bấm nút bên dưới để Duyệt hoặc Từ chối:"
+    )
+    
+    if admin_tg_token and admin_tg_token.strip() != (db.get_setting("bot_token") or "").strip():
         from .admin_bot import manager as admin_manager
-        if admin_manager.bot:
-            admins = []
+        admin_sender_bot = admin_manager.bot or manager.bot
+    else:
+        admin_sender_bot = manager.bot
+
+    if admin_sender_bot:
+        admins = []
+        try:
+            if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
+        except: pass
+        try:
+            if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
+        except: pass
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Duyệt & Đã Chuyển", callback_data=f"tg_admin_withdraw_approve_{req_id}_{tg_id}_{amount}"),
+                InlineKeyboardButton(text="❌ Từ Chối", callback_data=f"tg_admin_withdraw_reject_{req_id}_{tg_id}_{amount}")
+            ]
+        ])
+        for admin_id in admins:
             try:
-                if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
-                if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
-                for a in admins:
-                    try: await admin_manager.bot.send_message(a, admin_msg, parse_mode="HTML")
-                    except: pass
-            except: pass
-            
-    await msg.answer(f"✅ Đã gửi yêu cầu rút <b>{vnd(amount)}</b>.\nVui lòng chờ Admin xử lý!", parse_mode="HTML")
+                await admin_sender_bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=kb)
+            except Exception as e:
+                log.error("Failed to notify TG admin %s for withdrawal: %s", admin_id, e)
+                
+    if admin_zalo and zalo_manager.running:
+        zalo_kb = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Đã Chuyển Tiền", "callback_data": f"zalo_withdraw_approve_{req_id}"},
+                    {"text": "❌ Từ Chối", "callback_data": f"zalo_withdraw_reject_{req_id}"}
+                ]
+            ]
+        }
+        asyncio.create_task(zalo_manager.send_message(admin_zalo, admin_msg, reply_markup=zalo_kb))
+
+@router.callback_query(F.data.startswith("tg_admin_withdraw_approve_"))
+async def on_admin_withdraw_approve(cb: CallbackQuery):
+    admins = []
+    try:
+        if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
+    except: pass
+    try:
+        if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
+    except: pass
+    
+    if cb.message.chat.id not in admins and cb.from_user.id not in admins:
+        await cb.answer("❌ Bạn không có quyền duyệt!", show_alert=True)
+        return
+        
+    parts = cb.data.split("_")
+    # tg_admin_withdraw_approve_{req_id}_{tg_id}_{amount}
+    req_id = int(parts[4])
+    tg_id = int(parts[5])
+    amount = int(parts[6])
+    
+    c = db.get_conn()
+    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+    if not req or req["status"] != "pending":
+        await cb.answer("⚠️ Đơn này đã được xử lý từ trước!", show_alert=True)
+        return
+        
+    with db._lock:
+        c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), req_id))
+        c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?", (amount, tg_id))
+        c.commit()
+        
+    await cb.answer("✅ Đã duyệt đơn rút tiền thành công!", show_alert=True)
+    try:
+        await cb.message.edit_text(f"{cb.message.text}\n\n✅ <b>ĐÃ DUYỆT BỞI {cb.from_user.full_name} ({vnd(amount)})</b>", parse_mode="HTML")
+    except: pass
+    
+    # Notify customer
+    try:
+        cust_msg = (
+            "🎉 <b>RÚT TIỀN HOA HỒNG THÀNH CÔNG!</b>\n\n"
+            f"Yêu cầu rút tiền <b>#{req_id}</b> của bạn đã được Admin duyệt và chuyển tiền.\n"
+            f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
+            f"🏦 Ngân hàng / STK: <b>{req.get('bank_info', '')}</b>\n\n"
+            "Cảm ơn bạn đã đồng hành và phát triển cùng hệ thống! ❤️"
+        )
+        if manager.bot:
+            await manager.bot.send_message(tg_id, cust_msg, parse_mode="HTML")
+    except Exception as notify_err:
+        log.error("Could not notify user of approved withdrawal: %s", notify_err)
+
+@router.callback_query(F.data.startswith("tg_admin_withdraw_reject_"))
+async def on_admin_withdraw_reject(cb: CallbackQuery):
+    admins = []
+    try:
+        if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
+    except: pass
+    try:
+        if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
+    except: pass
+    
+    if cb.message.chat.id not in admins and cb.from_user.id not in admins:
+        await cb.answer("❌ Bạn không có quyền từ chối!", show_alert=True)
+        return
+        
+    parts = cb.data.split("_")
+    req_id = int(parts[4])
+    tg_id = int(parts[5])
+    amount = int(parts[6])
+    
+    c = db.get_conn()
+    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+    if not req or req["status"] != "pending":
+        await cb.answer("⚠️ Đơn này đã được xử lý từ trước!", show_alert=True)
+        return
+        
+    with db._lock:
+        c.execute("UPDATE withdrawal_requests SET status='rejected', updated_at=? WHERE id=?", (int(time.time()), req_id))
+        c.commit()
+        
+    await cb.answer("❌ Đã từ chối đơn rút tiền.", show_alert=True)
+    try:
+        await cb.message.edit_text(f"{cb.message.text}\n\n❌ <b>ĐÃ TỪ CHỐI BỞI {cb.from_user.full_name}</b>", parse_mode="HTML")
+    except: pass
+    
+    # Notify customer
+    try:
+        cust_msg = (
+            "❌ <b>YÊU CẦU RÚT TIỀN BỊ TỪ CHỐI</b>\n\n"
+            f"Yêu cầu rút tiền hoa hồng <b>#{req_id}</b> ({vnd(amount)}) của bạn đã bị Admin từ chối.\n"
+            "Số dư hoa hồng của bạn vẫn được giữ nguyên.\n"
+            "Vui lòng kiểm tra lại thông tin Ngân hàng / STK hoặc liên hệ Admin để được hỗ trợ."
+        )
+        if manager.bot:
+            await manager.bot.send_message(tg_id, cust_msg, parse_mode="HTML")
+    except Exception as notify_err:
+        log.error("Could not notify user of rejected withdrawal: %s", notify_err)
 
 @router.message(Command("doitien"))
 async def on_doitien(msg: Message):

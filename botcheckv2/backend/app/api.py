@@ -1131,7 +1131,10 @@ def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
     if not user:
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
         
-    available = user["ref_earnings"] - user["ref_withdrawn"]
+    user_dict = dict(user) if user else {}
+    earnings = user_dict.get("ref_earnings") or 0
+    withdrawn = user_dict.get("ref_withdrawn") or 0
+    available = earnings - withdrawn
     
     import datetime
     current_month_start = int(datetime.datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
@@ -1141,16 +1144,27 @@ def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
     if available < body.amount + fee:
         raise HTTPException(status_code=400, detail=f"Không đủ số dư. Lưu ý từ lần thứ 3 trong tháng phí rút là {fee} VNĐ.")
         
+    req_id = 0
     with db._lock:
         try:
+            cur = c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?) RETURNING id",
+                      (tg_id, body.amount, body.bank_info, fee, 'pending', int(time.time()), int(time.time())))
+            res = cur.fetchone()
+            if res:
+                req_id = res["id"] if isinstance(res, dict) or hasattr(res, "__getitem__") else res[0]
+        except Exception:
             c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
                       (tg_id, body.amount, body.bank_info, fee, 'pending', int(time.time()), int(time.time())))
-        except sqlite3.OperationalError:
-            c.execute("INSERT INTO withdrawal_requests(tg_id, amount, status, created_at, updated_at) VALUES(?,?,?,?,?)",
-                      (tg_id, body.amount, 'pending', int(time.time()), int(time.time())))
+            req_id = getattr(c, 'lastrowid', 0) or 0
         c.commit()
         
-    return {"ok": True}
+    try:
+        from .bot import notify_admin_withdrawal_request
+        asyncio.create_task(notify_admin_withdrawal_request(req_id, tg_id, body.amount, body.bank_info, fee))
+    except Exception as e:
+        log.error("Could not trigger admin notification for web withdrawal: %s", e)
+        
+    return {"ok": True, "id": req_id}
 
 @router.get("/admin/referral")
 def get_referral_admin(_=Depends(auth)):
@@ -1182,6 +1196,48 @@ def approve_withdrawal(id: int, _=Depends(auth)):
         c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), id))
         c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?", (req["amount"], req["tg_id"]))
         c.commit()
+        
+    # Notify customer
+    try:
+        from .bot import manager as main_bot_manager
+        cust_msg = (
+            "🎉 <b>RÚT TIỀN HOA HỒNG THÀNH CÔNG!</b>\n\n"
+            f"Yêu cầu rút tiền <b>#{id}</b> của bạn đã được Admin duyệt và chuyển tiền.\n"
+            f"💰 Số tiền: <b>{req['amount']:,.0f} VNĐ</b>\n"
+            f"🏦 Ngân hàng / STK: <b>{req.get('bank_info', '')}</b>\n\n"
+            "Cảm ơn bạn đã đồng hành và phát triển cùng hệ thống! ❤️"
+        )
+        if main_bot_manager.bot:
+            asyncio.create_task(main_bot_manager.bot.send_message(req["tg_id"], cust_msg, parse_mode="HTML"))
+    except Exception as notify_err:
+        log.error("Could not notify user of approved withdrawal: %s", notify_err)
+        
+    return {"ok": True}
+
+@router.post("/admin/withdrawals/{id}/reject")
+def reject_withdrawal(id: int, _=Depends(auth)):
+    c = db.get_conn()
+    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (id,)).fetchone()
+    if not req or req["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Không tìm thấy yêu cầu hoặc đã xử lý")
+        
+    with db._lock:
+        c.execute("UPDATE withdrawal_requests SET status='rejected', updated_at=? WHERE id=?", (int(time.time()), id))
+        c.commit()
+        
+    # Notify customer
+    try:
+        from .bot import manager as main_bot_manager
+        cust_msg = (
+            "❌ <b>YÊU CẦU RÚT TIỀN BỊ TỪ CHỐI</b>\n\n"
+            f"Yêu cầu rút tiền hoa hồng <b>#{id}</b> ({req['amount']:,.0f} VNĐ) của bạn đã bị Admin từ chối.\n"
+            "Số dư hoa hồng của bạn vẫn được giữ nguyên.\n"
+            "Vui lòng kiểm tra lại thông tin Ngân hàng / STK hoặc liên hệ Admin để được hỗ trợ."
+        )
+        if main_bot_manager.bot:
+            asyncio.create_task(main_bot_manager.bot.send_message(req["tg_id"], cust_msg, parse_mode="HTML"))
+    except Exception as notify_err:
+        log.error("Could not notify user of rejected withdrawal: %s", notify_err)
         
     return {"ok": True}
 
