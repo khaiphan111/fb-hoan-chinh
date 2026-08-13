@@ -452,7 +452,7 @@ def init_db() -> None:
             c.execute(
                 "INSERT INTO admin_users (username, password_hash, display_name, role, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                ("admin", hash_pw, "Super Admin", "super_admin", int(time.time()))
+                ("khaiphan111", hash_pw, "Super Admin", "super_admin", int(time.time()))
             )
             c.commit()
         

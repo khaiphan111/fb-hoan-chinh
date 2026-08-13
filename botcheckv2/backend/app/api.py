@@ -1141,23 +1141,24 @@ def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
         
     return {"ok": True}
 
-@router.get("/admin/referral/leaderboard")
-def get_referral_leaderboard(_=Depends(auth)):
+@router.get("/admin/referral")
+def get_referral_admin(_=Depends(auth)):
     c = db.get_conn()
-    rows = c.execute("""
+    leaderboard_rows = c.execute("""
         SELECT tg_id, username, name, ref_earnings,
         (SELECT COUNT(*) FROM tg_users u2 WHERE u2.referrer_id = u.tg_id) as f1_count
         FROM tg_users u
         WHERE ref_earnings > 0
         ORDER BY ref_earnings DESC LIMIT 100
     """).fetchall()
-    return {"ok": True, "leaderboard": [dict(r) for r in rows]}
-
-@router.get("/admin/withdrawals")
-def get_withdrawals(_=Depends(auth)):
-    c = db.get_conn()
-    rows = c.execute("SELECT * FROM withdrawal_requests ORDER BY created_at DESC LIMIT 100").fetchall()
-    return {"ok": True, "withdrawals": [dict(r) for r in rows]}
+    
+    withdraw_rows = c.execute("SELECT * FROM withdrawal_requests ORDER BY created_at DESC LIMIT 100").fetchall()
+    
+    return {
+        "ok": True,
+        "leaderboard": [dict(r) for r in leaderboard_rows],
+        "history": [dict(r) for r in withdraw_rows]
+    }
 
 @router.post("/admin/withdrawals/{id}/approve")
 def approve_withdrawal(id: int, _=Depends(auth)):
