@@ -480,6 +480,8 @@ def migrate_db():
             "CREATE TABLE IF NOT EXISTS zalo_tracks (id BIGSERIAL PRIMARY KEY, tg_user_id BIGINT DEFAULT 0, tg_username TEXT DEFAULT '', zalo_user_id TEXT DEFAULT '', phone TEXT NOT NULL, name TEXT DEFAULT '', avatar TEXT DEFAULT '', status TEXT DEFAULT 'LIVE', last_checked BIGINT DEFAULT 0, created_at BIGINT NOT NULL, active BIGINT DEFAULT 1)",
             "CREATE TABLE IF NOT EXISTS proxies (id BIGINT PRIMARY KEY AUTOINCREMENT, proxy_url TEXT UNIQUE NOT NULL, fail_count BIGINT DEFAULT 0, is_active BIGINT DEFAULT 1, created_at BIGINT)",
             "CREATE TABLE IF NOT EXISTS track_history (id BIGINT PRIMARY KEY AUTOINCREMENT, track_id BIGINT NOT NULL, platform TEXT NOT NULL, track_type TEXT NOT NULL, stat_value BIGINT DEFAULT 0, created_at BIGINT)",
+            "ALTER TABLE withdrawal_requests ADD COLUMN bank_info TEXT",
+            "ALTER TABLE withdrawal_requests ADD COLUMN fee BIGINT DEFAULT 0",
             "CREATE TABLE IF NOT EXISTS admin_users (id BIGSERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT, role TEXT DEFAULT 'moderator', tg_id BIGINT DEFAULT 0, is_active BIGINT DEFAULT 1, last_login BIGINT DEFAULT 0, created_at BIGINT NOT NULL, created_by BIGINT DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT, action TEXT, target TEXT, details TEXT, ip_address TEXT, created_at BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS alert_rules (id BIGSERIAL PRIMARY KEY, tg_id TEXT, platform TEXT, target TEXT, condition TEXT, is_active BIGINT DEFAULT 1, created_at BIGINT NOT NULL)",
@@ -587,7 +589,14 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
             user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
             if user and user["referrer_id"]:
                 f1_id = user["referrer_id"]
-                f1_bonus = int(amount * 0.1) # 10%
+                f1_topup_row = c.execute("SELECT SUM(total_topup) as s FROM tg_users WHERE referrer_id=?", (f1_id,)).fetchone()
+                total_f1_topup = f1_topup_row["s"] if f1_topup_row and f1_topup_row["s"] else 0
+                percentage = 0.10
+                if total_f1_topup >= 20000000:
+                    percentage = 0.20
+                elif total_f1_topup >= 5000000:
+                    percentage = 0.15
+                f1_bonus = int(amount * percentage)
                 if f1_bonus > 0:
                     c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?", (f1_bonus, f1_id))
                     c.execute(

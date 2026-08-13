@@ -147,6 +147,7 @@ COMMANDS = [
     BotCommand(command="ref",       description="Lấy link giới thiệu kiếm tiền"),
     BotCommand(command="refcode",   description="Đổi mã giới thiệu: /refcode <code>"),
     BotCommand(command="ruttien",   description="Yêu cầu rút tiền: /ruttien <số tiền>"),
+    BotCommand(command="doitien",   description="Đổi hoa hồng sang số dư (+10% Bonus)"),
     BotCommand(command="alert",     description="Bật cảnh báo: /alert <platform> <target>"),
     BotCommand(command="alertlist", description="Danh sách cảnh báo"),
     BotCommand(command="alertoff",  description="Tắt cảnh báo: /alertoff <id>"),
@@ -397,9 +398,9 @@ async def on_refcode(msg: Message):
 
 @router.message(Command("ruttien"))
 async def on_ruttien(msg: Message):
-    parts = msg.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await msg.answer("⚠️ Cú pháp: /ruttien &lt;số_tiền&gt;\nVí dụ: /ruttien 50000")
+    parts = msg.text.split(maxsplit=3)
+    if len(parts) < 4:
+        await msg.answer("⚠️ Cú pháp: /ruttien &lt;số tiền&gt; &lt;Ngân hàng&gt; &lt;STK&gt;\nVí dụ: /ruttien 50000 MBBank 123456789")
         return
         
     try:
@@ -408,6 +409,10 @@ async def on_ruttien(msg: Message):
         await msg.answer("❌ Số tiền không hợp lệ!")
         return
         
+    bank_name = parts[2].strip()
+    bank_account = parts[3].strip()
+    bank_info = f"{bank_name} - {bank_account}"
+
     if amount < 50000:
         await msg.answer("❌ Số tiền rút tối thiểu là 50,000 VNĐ.")
         return
@@ -419,16 +424,24 @@ async def on_ruttien(msg: Message):
     withdrawn = user["ref_withdrawn"] if user and "ref_withdrawn" in user else 0
     available = earnings - withdrawn
     
-    if amount > available:
-        await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)})")
+    import datetime
+    current_month_start = int(datetime.datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+    count_withdrawals = c.execute("SELECT COUNT(*) as c FROM withdrawal_requests WHERE tg_id=? AND created_at >= ?", (msg.chat.id, current_month_start)).fetchone()["c"]
+
+    fee = 0
+    if count_withdrawals >= 2:
+        fee = 10000
+
+    if available < amount + fee:
+        await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)}, Cần: {vnd(amount + fee)} bao gồm phí {vnd(fee)} nếu có)")
         return
         
     with db._lock:
-        c.execute("INSERT INTO withdrawal_requests(tg_id, amount, status, created_at, updated_at) VALUES(?,?,?,?,?)",
-                  (msg.chat.id, amount, 'pending', int(time.time()), int(time.time())))
+        c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+                  (msg.chat.id, amount, bank_info, fee, 'pending', int(time.time()), int(time.time())))
         c.commit()
         
-    admin_msg = f"🔔 <b>YÊU CẦU RÚT TIỀN HOA HỒNG</b>\n👤 ID: {msg.chat.id}\n💰 Số tiền: {vnd(amount)}"
+    admin_msg = f"🔔 <b>YÊU CẦU RÚT TIỀN HOA HỒNG</b>\n👤 ID: {msg.chat.id}\n💰 Số tiền: {vnd(amount)}\n🏦 Ngân hàng: {bank_info}\n💸 Phí rút: {vnd(fee)}"
     
     # Notify admin somehow
     admin_tg_token = db.get_setting("admin_bot_token", "")
@@ -445,6 +458,43 @@ async def on_ruttien(msg: Message):
             except: pass
             
     await msg.answer(f"✅ Đã gửi yêu cầu rút <b>{vnd(amount)}</b>.\nVui lòng chờ Admin xử lý!", parse_mode="HTML")
+
+@router.message(Command("doitien"))
+async def on_doitien(msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: /doitien &lt;số_tiền&gt;\nVí dụ: /doitien 50000")
+        return
+        
+    try:
+        amount = int(parts[1].replace(",", "").replace(".", "").replace("k", "000").replace("K", "000").strip())
+    except:
+        await msg.answer("❌ Số tiền không hợp lệ!")
+        return
+        
+    if amount <= 0:
+        await msg.answer("❌ Số tiền không hợp lệ!")
+        return
+
+    c = db.get_conn()
+    user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (msg.chat.id,)).fetchone()
+    
+    earnings = user["ref_earnings"] if user else 0
+    withdrawn = user["ref_withdrawn"] if user and "ref_withdrawn" in user else 0
+    available = earnings - withdrawn
+    
+    if amount > available:
+        await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)})")
+        return
+        
+    bonus_amount = int(amount * 1.1)
+    
+    with db._lock:
+        c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ?, balance = balance + ? WHERE tg_id=?", (amount, bonus_amount, msg.chat.id))
+        c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)", (int(time.time()), msg.chat.id, bonus_amount, 'Đổi hoa hồng sang số dư (+10% Bonus)'))
+        c.commit()
+        
+    await msg.answer(f"✅ Đã đổi <b>{vnd(amount)}</b> hoa hồng sang <b>{vnd(bonus_amount)}</b> số dư thành công!", parse_mode="HTML")
 
 @router.message(Command("trial"))
 async def on_trial(msg: Message):

@@ -1119,6 +1119,7 @@ def get_user_referral(tg_id: int = Depends(user_auth)):
 
 class WithdrawIn(BaseModel):
     amount: int
+    bank_info: str = ""
 
 @router.post("/user/referral/withdraw")
 def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
@@ -1131,12 +1132,22 @@ def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
         
     available = user["ref_earnings"] - user["ref_withdrawn"]
-    if body.amount > available:
-        raise HTTPException(status_code=400, detail="Không đủ hoa hồng")
+    
+    import datetime
+    current_month_start = int(datetime.datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+    count = c.execute("SELECT COUNT(*) FROM withdrawal_requests WHERE tg_id=? AND created_at >= ?", (tg_id, current_month_start)).fetchone()[0]
+    fee = 10000 if count >= 2 else 0
+    
+    if available < body.amount + fee:
+        raise HTTPException(status_code=400, detail=f"Không đủ số dư. Lưu ý từ lần thứ 3 trong tháng phí rút là {fee} VNĐ.")
         
     with db._lock:
-        c.execute("INSERT INTO withdrawal_requests(tg_id, amount, status, created_at, updated_at) VALUES(?,?,?,?,?)",
-                  (tg_id, body.amount, 'pending', int(time.time()), int(time.time())))
+        try:
+            c.execute("INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, status, created_at, updated_at) VALUES(?,?,?,?,?,?,?)",
+                      (tg_id, body.amount, body.bank_info, fee, 'pending', int(time.time()), int(time.time())))
+        except sqlite3.OperationalError:
+            c.execute("INSERT INTO withdrawal_requests(tg_id, amount, status, created_at, updated_at) VALUES(?,?,?,?,?)",
+                      (tg_id, body.amount, 'pending', int(time.time()), int(time.time())))
         c.commit()
         
     return {"ok": True}
