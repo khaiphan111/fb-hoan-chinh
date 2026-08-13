@@ -96,10 +96,71 @@ def _row(r):
     return dict(r) if r else None
 
 
-def get_admin_token():
-    return "admin-" + secrets.token_hex(24)
+def get_secret():
+    import hmac
+    import hashlib
+    # Dùng bot_token làm secret key cho việc mã hóa JWT-like token (hoặc một string cố định nếu chưa có)
+    return db.get_setting("bot_token", "default_secret_key_12345").encode()
 
-_admin_sessions = {}
+def create_admin_token(admin_id: int):
+    import hmac
+    import hashlib
+    import time
+    expiry = int(time.time()) + 86400 * 7
+    data = f"admin-{admin_id}-{expiry}"
+    signature = hmac.new(get_secret(), data.encode(), hashlib.sha256).hexdigest()
+    return f"{data}-{signature}"
+
+def verify_admin_token(token: str):
+    import hmac
+    import hashlib
+    import time
+    try:
+        parts = token.split("-")
+        if len(parts) != 4 or parts[0] != "admin":
+            return None
+        admin_id = int(parts[1])
+        expiry = int(parts[2])
+        signature = parts[3]
+        if time.time() > expiry:
+            return None
+        data = f"admin-{admin_id}-{expiry}"
+        expected = hmac.new(get_secret(), data.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(signature, expected):
+            return admin_id
+    except:
+        pass
+    return None
+
+def create_user_token(tg_id: int):
+    import hmac
+    import hashlib
+    import time
+    expiry = int(time.time()) + 86400 * 30
+    data = f"user-{tg_id}-{expiry}"
+    signature = hmac.new(get_secret(), data.encode(), hashlib.sha256).hexdigest()
+    return f"{data}-{signature}"
+
+def verify_user_token(token: str):
+    import hmac
+    import hashlib
+    import time
+    try:
+        parts = token.split("-")
+        if len(parts) != 4 or parts[0] != "user":
+            return None
+        tg_id = int(parts[1])
+        expiry = int(parts[2])
+        signature = parts[3]
+        if time.time() > expiry:
+            return None
+        data = f"user-{tg_id}-{expiry}"
+        expected = hmac.new(get_secret(), data.encode(), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(signature, expected):
+            return tg_id
+    except:
+        pass
+    return None
 
 @router.post("/login")
 def login(body: LoginIn, request: Request):
@@ -119,22 +180,21 @@ def login(body: LoginIn, request: Request):
     ip = request.client.host if request.client else ""
     db.log_admin_action(admin["id"], "login", admin["username"], "Admin logged in", ip)
     
-    tok = get_admin_token()
-    _admin_sessions[tok] = admin["id"]
+    tok = create_admin_token(admin["id"])
     return {"ok": True, "token": tok, "role": admin["role"]}
-
-_user_tokens = {}
 
 def user_auth(authorization: str = Header(default="")):
     token = authorization.replace("Bearer ", "").strip()
-    if token not in _user_tokens:
+    tg_id = verify_user_token(token)
+    if not tg_id:
         raise HTTPException(status_code=401, detail="User unauthorized")
-    return _user_tokens[token]
+    return tg_id
 
 def auth(authorization: str = Header(default="")):
     token = authorization.replace("Bearer ", "").strip()
-    if token in _admin_sessions:
-        return _admin_sessions[token]
+    admin_id = verify_admin_token(token)
+    if admin_id:
+        return admin_id
     raise HTTPException(status_code=401, detail="Chưa đăng nhập")
 
 def require_role(min_role: str):
@@ -158,9 +218,9 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         return
         
     is_authenticated = False
-    if token in _admin_sessions:
+    if verify_admin_token(token):
         is_authenticated = True
-    elif token in _user_tokens:
+    elif verify_user_token(token):
         is_authenticated = True
     else:
         tg_id = db.verify_magic_link(token)
@@ -264,8 +324,7 @@ def user_login(body: TokenIn):
     if not user:
         raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
         
-    tok = "user-" + secrets.token_hex(24)
-    _user_tokens[tok] = tg_id
+    tok = create_user_token(tg_id)
     return {"ok": True, "token": tok, "user": dict(user)}
 
 @router.get("/user/me")
