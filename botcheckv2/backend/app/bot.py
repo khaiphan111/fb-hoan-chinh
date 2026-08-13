@@ -329,51 +329,60 @@ async def on_start(msg: Message):
 
 @router.message(Command("ref"))
 async def on_ref(msg: Message):
-    bot_info = await msg.bot.get_me()
-    user = db.get_user(msg.chat.id)
-    earnings = user["ref_earnings"] or 0 if user else 0
-    withdrawn = user["ref_withdrawn"] or 0 if user and "ref_withdrawn" in user else 0
-    available = earnings - withdrawn
-    
-    ref_code = user["ref_code"] if user and dict(user).get("ref_code") else f"REF{msg.chat.id}"
-    if user and not dict(user).get("ref_code"):
-        with db._lock:
-            db.get_conn().execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (ref_code, msg.chat.id))
-            db.get_conn().commit()
-            
-    ref_link = f"https://t.me/{bot_info.username}?start={msg.chat.id}"
-    ref_link_code = f"https://t.me/{bot_info.username}?start={ref_code}"
-    
-    f1_count = 0
-    f2_count = 0
-    if user:
-        c = db.get_conn()
-        f1_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id=?", (msg.chat.id,)).fetchone()[0]
-        f2_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id IN (SELECT tg_id FROM tg_users WHERE referrer_id=?)", (msg.chat.id,)).fetchone()[0]
+    try:
+        bot_info = await msg.bot.get_me()
+        user = db.get_user(msg.chat.id)
+        
+        # Ensure we don't hit KeyError for ref_earnings or ref_withdrawn by converting to dict
+        user_dict = dict(user) if user else {}
+        
+        earnings = user_dict.get("ref_earnings") or 0
+        withdrawn = user_dict.get("ref_withdrawn") or 0
+        available = earnings - withdrawn
+        
+        ref_code = user_dict.get("ref_code") or f"REF{msg.chat.id}"
+        if user and not user_dict.get("ref_code"):
+            with db._lock:
+                db.get_conn().execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (ref_code, msg.chat.id))
+                db.get_conn().commit()
+                
+        ref_link = f"https://t.me/{bot_info.username}?start={msg.chat.id}"
+        ref_link_code = f"https://t.me/{bot_info.username}?start={ref_code}"
+        
+        f1_count = 0
+        f2_count = 0
+        if user:
+            c = db.get_conn()
+            f1_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id=?", (msg.chat.id,)).fetchone()[0]
+            f2_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id IN (SELECT tg_id FROM tg_users WHERE referrer_id=?)", (msg.chat.id,)).fetchone()[0]
 
-    await msg.answer(
-        f"🎁 <b>HỆ THỐNG GIỚI THIỆU - KIẾM TIỀN</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔗 <b>Link giới thiệu của bạn:</b>\n"
-        f"👉 <code>{ref_link}</code>\n"
-        f"Hoặc mã: <code>{ref_link_code}</code>\n\n"
-        f"💰 <b>Hoa hồng nhận được (Tùy cấp độ):</b>\n"
-        f"- <b>F1 Hạng Đồng (Tổng nạp < 5tr): 10%</b>\n"
-        f"- <b>F1 Hạng Bạc (Tổng nạp >= 5tr): 15%</b>\n"
-        f"- <b>F1 Hạng Vàng (Tổng nạp >= 20tr): 20%</b>\n"
-        f"- <b>F2 (Gián tiếp): 3%</b>\n\n"
-        f"📊 <b>Thống kê của bạn:</b>\n"
-        f"• Đã mời F1: <b>{f1_count} người</b>\n"
-        f"• Đã mời F2: <b>{f2_count} người</b>\n"
-        f"• Hoa hồng tổng: <b>{vnd(earnings)}</b>\n"
-        f"• Đã rút: <b>{vnd(withdrawn)}</b>\n"
-        f"• Khả dụng: <b>{vnd(available)}</b>\n\n"
-        f"💡 Lệnh hỗ trợ:\n"
-        f"<code>/refcode &lt;mã&gt;</code> - Đổi mã giới thiệu tùy chỉnh\n"
-        f"<code>/doitien &lt;số_tiền&gt;</code> - Đổi hoa hồng thành số dư xài bot (+10% Bonus)\n"
-        f"<code>/ruttien &lt;số_tiền&gt; &lt;Tên_NH&gt; &lt;STK&gt;</code> - Rút tiền hoa hồng (Min 50k, 2 lần đầu miễn phí, sau đó phí 10k)",
-        parse_mode="HTML"
-    )
+        await msg.answer(
+            f"🎁 <b>HỆ THỐNG GIỚI THIỆU - KIẾM TIỀN</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🔗 <b>Link giới thiệu của bạn:</b>\n"
+            f"👉 <code>{ref_link}</code>\n"
+            f"Hoặc mã: <code>{ref_link_code}</code>\n\n"
+            f"💰 <b>Hoa hồng nhận được (Tùy cấp độ):</b>\n"
+            f"- <b>F1 Hạng Đồng (Tổng nạp < 5tr): 10%</b>\n"
+            f"- <b>F1 Hạng Bạc (Tổng nạp >= 5tr): 15%</b>\n"
+            f"- <b>F1 Hạng Vàng (Tổng nạp >= 20tr): 20%</b>\n"
+            f"- <b>F2 (Gián tiếp): 3%</b>\n\n"
+            f"📊 <b>Thống kê của bạn:</b>\n"
+            f"• Đã mời F1: <b>{f1_count} người</b>\n"
+            f"• Đã mời F2: <b>{f2_count} người</b>\n"
+            f"• Hoa hồng tổng: <b>{vnd(earnings)}</b>\n"
+            f"• Đã rút: <b>{vnd(withdrawn)}</b>\n"
+            f"• Khả dụng: <b>{vnd(available)}</b>\n\n"
+            f"💡 Lệnh hỗ trợ:\n"
+            f"<code>/refcode &lt;mã&gt;</code> - Đổi mã giới thiệu tùy chỉnh\n"
+            f"<code>/doitien &lt;số_tiền&gt;</code> - Đổi hoa hồng thành số dư xài bot (+10% Bonus)\n"
+            f"<code>/ruttien &lt;số_tiền&gt; &lt;Tên_NH&gt; &lt;STK&gt;</code> - Rút tiền hoa hồng (Min 50k, 2 lần đầu miễn phí, sau đó phí 10k)",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
+        await msg.answer(f"Lỗi: {e}\n\n<code>{err_msg[:3000]}</code>", parse_mode="HTML")
 
 @router.message(Command("refcode"))
 async def on_refcode(msg: Message):
@@ -422,9 +431,10 @@ async def on_ruttien(msg: Message):
         
     c = db.get_conn()
     user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (msg.chat.id,)).fetchone()
+    user_dict = dict(user) if user else {}
     
-    earnings = user["ref_earnings"] or 0 if user else 0
-    withdrawn = user["ref_withdrawn"] or 0 if user and "ref_withdrawn" in user else 0
+    earnings = user_dict.get("ref_earnings") or 0
+    withdrawn = user_dict.get("ref_withdrawn") or 0
     available = earnings - withdrawn
     
     import datetime
@@ -481,9 +491,10 @@ async def on_doitien(msg: Message):
 
     c = db.get_conn()
     user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (msg.chat.id,)).fetchone()
+    user_dict = dict(user) if user else {}
     
-    earnings = user["ref_earnings"] or 0 if user else 0
-    withdrawn = user["ref_withdrawn"] or 0 if user and "ref_withdrawn" in user else 0
+    earnings = user_dict.get("ref_earnings") or 0
+    withdrawn = user_dict.get("ref_withdrawn") or 0
     available = earnings - withdrawn
     
     if amount > available:
