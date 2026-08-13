@@ -589,7 +589,7 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
                 f1_id = user["referrer_id"]
                 f1_bonus = int(amount * 0.1) # 10%
                 if f1_bonus > 0:
-                    c.execute("UPDATE tg_users SET balance = balance + ?, ref_earnings = ref_earnings + ? WHERE tg_id=?", (f1_bonus, f1_bonus, f1_id))
+                    c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?", (f1_bonus, f1_id))
                     c.execute(
                         "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
                         (int(time.time()), f1_id, f1_bonus, f"Hoa hồng giới thiệu F1"),
@@ -610,7 +610,7 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
                     f2_id = f1_user["referrer_id"]
                     f2_bonus = int(amount * 0.03) # 3%
                     if f2_bonus > 0:
-                        c.execute("UPDATE tg_users SET balance = balance + ?, ref_earnings = ref_earnings + ? WHERE tg_id=?", (f2_bonus, f2_bonus, f2_id))
+                        c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?", (f2_bonus, f2_id))
                         c.execute(
                             "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
                             (int(time.time()), f2_id, f2_bonus, f"Hoa hồng giới thiệu F2"),
