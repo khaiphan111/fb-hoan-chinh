@@ -146,7 +146,7 @@ COMMANDS = [
     BotCommand(command="untrackfb", description="Huỷ theo dõi FB: /untrackfb <uid>"),
     BotCommand(command="ref",       description="Lấy link giới thiệu kiếm tiền"),
     BotCommand(command="refcode",   description="Đổi mã giới thiệu: /refcode <code>"),
-    BotCommand(command="ruttien",   description="Yêu cầu rút tiền: /ruttien <số tiền>"),
+    BotCommand(command="ruttien",   description="Rút tiền: /ruttien <số_tiền> <Tên_NH> <STK>"),
     BotCommand(command="doitien",   description="Đổi hoa hồng sang số dư (+10% Bonus)"),
     BotCommand(command="alert",     description="Bật cảnh báo: /alert <platform> <target>"),
     BotCommand(command="alertlist", description="Danh sách cảnh báo"),
@@ -357,8 +357,10 @@ async def on_ref(msg: Message):
         f"🔗 <b>Link giới thiệu của bạn:</b>\n"
         f"👉 <code>{ref_link}</code>\n"
         f"Hoặc mã: <code>{ref_link_code}</code>\n\n"
-        f"💰 Hoa hồng nhận được:\n"
-        f"- <b>F1 (Trực tiếp): 10%</b>\n"
+        f"💰 <b>Hoa hồng nhận được (Tùy cấp độ):</b>\n"
+        f"- <b>F1 Hạng Đồng (Tổng nạp < 5tr): 10%</b>\n"
+        f"- <b>F1 Hạng Bạc (Tổng nạp >= 5tr): 15%</b>\n"
+        f"- <b>F1 Hạng Vàng (Tổng nạp >= 20tr): 20%</b>\n"
         f"- <b>F2 (Gián tiếp): 3%</b>\n\n"
         f"📊 <b>Thống kê của bạn:</b>\n"
         f"• Đã mời F1: <b>{f1_count} người</b>\n"
@@ -368,7 +370,8 @@ async def on_ref(msg: Message):
         f"• Khả dụng: <b>{vnd(available)}</b>\n\n"
         f"💡 Lệnh hỗ trợ:\n"
         f"<code>/refcode &lt;mã&gt;</code> - Đổi mã giới thiệu tùy chỉnh\n"
-        f"<code>/ruttien &lt;số_tiền&gt;</code> - Rút tiền hoa hồng (Min 50k)",
+        f"<code>/doitien &lt;số_tiền&gt;</code> - Đổi hoa hồng thành số dư xài bot (+10% Bonus)\n"
+        f"<code>/ruttien &lt;số_tiền&gt; &lt;Tên_NH&gt; &lt;STK&gt;</code> - Rút tiền hoa hồng (Min 50k, 2 lần đầu miễn phí, sau đó phí 10k)",
         parse_mode="HTML"
     )
 
@@ -808,9 +811,15 @@ async def on_help(msg: Message):
         "• /mycodes - Xem kho mã quà tặng\n"
         "• /sub - Xem gói và mua gói\n"
         "• /ref - Lấy link giới thiệu kiếm tiền\n"
+        "• /doitien &lt;số_tiền&gt; - Đổi hoa hồng thành số dư (+10% bonus)\n"
+        "• /ruttien &lt;tiền&gt; &lt;ngân_hàng&gt; &lt;stk&gt; - Rút tiền hoa hồng\n"
         "• /hdcookie - Hướng dẫn lấy Cookie (Dành cho Admin)\n\n"
         "<b>💻 BẢNG ĐIỀU KHIỂN WEB</b>\n"
         "• /web - Đăng nhập Web Dashboard không cần mật khẩu\n\n"
+        "<b>🔔 HỆ THỐNG CẢNH BÁO (ALERTS)</b>\n"
+        "• /alert &lt;platform&gt; &lt;target&gt; - Bật cảnh báo tự động\n"
+        "• /alertlist - Xem danh sách cảnh báo\n"
+        "• /alertoff &lt;id&gt; - Tắt cảnh báo\n\n"
         "<b>1. TIKTOK COMMANDS</b>\n"
         "• /tiktok &lt;user&gt; - Check nhanh\n"
         "• /track &lt;user&gt; - Theo dõi follower\n"
