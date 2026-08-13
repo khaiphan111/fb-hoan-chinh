@@ -247,9 +247,10 @@ class AdminBotManager:
         self.running = False
 
     async def start(self):
-        token = db.get_setting("admin_bot_token")
-        if not token:
-            log.info("Admin bot token not found. Admin bot disabled.")
+        token = (db.get_setting("admin_bot_token") or "").strip()
+        main_token = (db.get_setting("bot_token") or "").strip()
+        if not token or token == main_token:
+            log.info("Admin bot token not set or identical to main bot token. Admin bot polling disabled.")
             return
             
         self.bot = Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"))

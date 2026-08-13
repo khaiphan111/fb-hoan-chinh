@@ -51,6 +51,11 @@ class AntiSpamMiddleware(BaseMiddleware):
             tg_id = event.chat.id
             now_t = time.time()
             
+            # Exempt admin completely from anti-spam / muting
+            admin_id = db.get_setting("admin_tg_id")
+            if admin_id and str(tg_id) == str(admin_id):
+                return await handler(event, data)
+            
             # Check if muted
             if tg_id in _user_muted_until:
                 if now_t < _user_muted_until[tg_id]:
@@ -92,7 +97,13 @@ class AntiSpamMiddleware(BaseMiddleware):
                     db.set_sub_until(event.chat.id, now() + 3650*24*3600)
                 return await handler(event, data)
                 
-            if cmd not in ("/start", "/help", "/balance", "/sub", "/bank", "/ref", "/web"):
+            # Whitelist public / free commands
+            free_cmds = (
+                "/start", "/help", "/balance", "/sub", "/bank", "/ref", "/web",
+                "/refcode", "/ruttien", "/doitien", "/vip", "/trial", "/mycodes",
+                "/hdcookie", "/ping2", "/alert", "/alertlist", "/alertoff"
+            )
+            if cmd not in free_cmds:
                 user = db.get_user(event.chat.id)
                 if not user:
                     await event.answer("Bạn chưa /start. Gõ /start trước nhé.")
@@ -343,8 +354,11 @@ async def on_ref(msg: Message):
         ref_code = user_dict.get("ref_code") or f"REF{msg.chat.id}"
         if user and not user_dict.get("ref_code"):
             with db._lock:
-                db.get_conn().execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (ref_code, msg.chat.id))
-                db.get_conn().commit()
+                try:
+                    db.get_conn().execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (ref_code, msg.chat.id))
+                    db.get_conn().commit()
+                except Exception as db_e:
+                    log.error("Could not update ref_code: %s", db_e)
                 
         ref_link = f"https://t.me/{bot_info.username}?start={msg.chat.id}"
         ref_link_code = f"https://t.me/{bot_info.username}?start={ref_code}"
@@ -352,38 +366,42 @@ async def on_ref(msg: Message):
         f1_count = 0
         f2_count = 0
         if user:
-            c = db.get_conn()
-            f1_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id=?", (msg.chat.id,)).fetchone()[0]
-            f2_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id IN (SELECT tg_id FROM tg_users WHERE referrer_id=?)", (msg.chat.id,)).fetchone()[0]
+            try:
+                c = db.get_conn()
+                f1_res = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id=?", (msg.chat.id,)).fetchone()
+                f1_count = f1_res[0] if f1_res else 0
+                f2_res = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id IN (SELECT tg_id FROM tg_users WHERE referrer_id=?)", (msg.chat.id,)).fetchone()
+                f2_count = f2_res[0] if f2_res else 0
+            except Exception as cnt_e:
+                log.error("Could not count refs: %s", cnt_e)
 
-        await msg.answer(
-            f"🎁 <b>HỆ THỐNG GIỚI THIỆU - KIẾM TIỀN</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🔗 <b>Link giới thiệu của bạn:</b>\n"
+        text = (
+            "🎁 <b>HỆ THỐNG GIỚI THIỆU - KIẾM TIỀN</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔗 <b>Link giới thiệu của bạn:</b>\n"
             f"👉 <code>{ref_link}</code>\n"
             f"Hoặc mã: <code>{ref_link_code}</code>\n\n"
-            f"💰 <b>Hoa hồng nhận được (Tùy cấp độ):</b>\n"
-            f"- <b>F1 Hạng Đồng (Tổng nạp < 5tr): 10%</b>\n"
-            f"- <b>F1 Hạng Bạc (Tổng nạp >= 5tr): 15%</b>\n"
-            f"- <b>F1 Hạng Vàng (Tổng nạp >= 20tr): 20%</b>\n"
-            f"- <b>F2 (Gián tiếp): 3%</b>\n\n"
-            f"📊 <b>Thống kê của bạn:</b>\n"
+            "💰 <b>Hoa hồng nhận được (Tùy cấp độ):</b>\n"
+            "- <b>F1 Hạng Đồng (Tổng nạp dưới 5tr): 10%</b>\n"
+            "- <b>F1 Hạng Bạc (Tổng nạp từ 5tr): 15%</b>\n"
+            "- <b>F1 Hạng Vàng (Tổng nạp từ 20tr): 20%</b>\n"
+            "- <b>F2 (Gián tiếp): 3%</b>\n\n"
+            "📊 <b>Thống kê của bạn:</b>\n"
             f"• Đã mời F1: <b>{f1_count} người</b>\n"
             f"• Đã mời F2: <b>{f2_count} người</b>\n"
             f"• Hoa hồng tổng: <b>{vnd(earnings)}</b>\n"
             f"• Đã rút: <b>{vnd(withdrawn)}</b>\n"
             f"• Khả dụng: <b>{vnd(available)}</b>\n\n"
-            f"💡 Lệnh hỗ trợ:\n"
-            f"<code>/refcode &lt;mã&gt;</code> - Đổi mã giới thiệu tùy chỉnh\n"
-            f"<code>/doitien &lt;số_tiền&gt;</code> - Đổi hoa hồng thành số dư xài bot (+10% Bonus)\n"
-            f"<code>/ruttien &lt;số_tiền&gt; &lt;Tên_NH&gt; &lt;STK&gt;</code> - Rút tiền hoa hồng (Min 50k, 2 lần đầu miễn phí, sau đó phí 10k)",
-            parse_mode="HTML"
+            "💡 Lệnh hỗ trợ:\n"
+            "<code>/refcode &lt;mã&gt;</code> - Đổi mã giới thiệu tùy chỉnh\n"
+            "<code>/doitien &lt;số_tiền&gt;</code> - Đổi hoa hồng thành số dư (+10% Bonus)\n"
+            "<code>/ruttien &lt;số_tiền&gt; &lt;Tên_NH&gt; &lt;STK&gt;</code> - Rút hoa hồng (Min 50k)"
         )
+        await msg.answer(text, parse_mode="HTML")
     except Exception as e:
         import traceback
         err_msg = traceback.format_exc()
-        # Do not use parse_mode="HTML" because tracebacks contain <module> which causes TelegramBadRequest
-        await msg.answer(f"Lỗi: {e}\n\n{err_msg[:3000]}")
+        await msg.answer(f"Lỗi ref: {e}\n\n{err_msg[:3000]}")
 
 @router.message(Command("refcode"))
 async def on_refcode(msg: Message):
