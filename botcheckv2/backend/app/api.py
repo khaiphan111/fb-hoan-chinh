@@ -3,7 +3,7 @@ import secrets
 import time
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File, Request
 from pydantic import BaseModel
 import os
 
@@ -11,6 +11,8 @@ from . import config, db, fb
 from .bot import manager, zalo_manager
 from .poller import poller
 from .util import now
+from .event_bus import event_bus
+from fastapi import WebSocket, WebSocketDisconnect
 
 router = APIRouter(prefix="/api")
 _tokens = set()
@@ -22,6 +24,7 @@ DAY = 86400
 
 
 class LoginIn(BaseModel):
+    username: str = "admin"
     password: str
 
 
@@ -94,18 +97,31 @@ def _row(r):
 
 
 def get_admin_token():
-    admin_pw = db.get_setting("admin_password", "admin")
-    import hashlib
-    hash_pw = hashlib.sha256((admin_pw or "admin").encode()).hexdigest()
-    return "admin-" + hash_pw
+    return "admin-" + secrets.token_hex(24)
+
+_admin_sessions = {}
 
 @router.post("/login")
-def login(body: LoginIn):
-    if body.password != db.get_setting("admin_password", "admin"):
-        raise HTTPException(status_code=401, detail="Sai mật khẩu")
+def login(body: LoginIn, request: Request):
+    admin = db.get_admin_by_username(body.username)
+    if not admin:
+        raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
+        
+    import hashlib
+    hash_pw = hashlib.sha256(body.password.encode()).hexdigest()
+    if admin["password_hash"] != hash_pw:
+        raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
+        
+    if not admin["is_active"]:
+        raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa")
+        
+    db.update_admin_last_login(admin["id"])
+    ip = request.client.host if request.client else ""
+    db.log_admin_action(admin["id"], "login", admin["username"], "Admin logged in", ip)
+    
     tok = get_admin_token()
-    _tokens.add(tok)
-    return {"ok": True, "token": tok}
+    _admin_sessions[tok] = admin["id"]
+    return {"ok": True, "token": tok, "role": admin["role"]}
 
 _user_tokens = {}
 
@@ -117,9 +133,125 @@ def user_auth(authorization: str = Header(default="")):
 
 def auth(authorization: str = Header(default="")):
     token = authorization.replace("Bearer ", "").strip()
-    if token != get_admin_token() and token not in _tokens:
-        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
-    return True
+    if token in _admin_sessions:
+        return _admin_sessions[token]
+    raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+
+def require_role(min_role: str):
+    def role_checker(admin_id: int = Depends(auth)):
+        admin = db.get_admin_by_id(admin_id)
+        if not admin or not admin["is_active"]:
+            raise HTTPException(status_code=403, detail="Tài khoản không hợp lệ hoặc bị khóa")
+        roles = {"super_admin": 3, "admin": 2, "moderator": 1}
+        admin_level = roles.get(admin["role"], 0)
+        min_level = roles.get(min_role, 0)
+        if admin_level < min_level:
+            raise HTTPException(status_code=403, detail="Không đủ quyền")
+        return admin
+    return role_checker
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
+    await websocket.accept()
+    if not token:
+        await websocket.close(code=1008)
+        return
+        
+    is_authenticated = False
+    if token in _admin_sessions:
+        is_authenticated = True
+    elif token in _user_tokens:
+        is_authenticated = True
+    else:
+        tg_id = db.verify_magic_link(token)
+        if tg_id:
+            is_authenticated = True
+            
+    if not is_authenticated:
+        await websocket.close(code=1008)
+        return
+        
+    sub_id, queue = event_bus.subscribe()
+    try:
+        while True:
+            msg = await queue.get()
+            await websocket.send_text(msg)
+    except WebSocketDisconnect:
+        event_bus.unsubscribe(sub_id)
+    except Exception:
+        event_bus.unsubscribe(sub_id)
+
+@router.get("/me")
+def api_me(admin: dict = Depends(require_role("moderator"))):
+    return _row(admin)
+
+class AdminUserIn(BaseModel):
+    username: str
+    password: str | None = None
+    display_name: str | None = None
+    role: str = "moderator"
+    tg_id: int = 0
+    is_active: int = 1
+
+@router.get("/admins")
+def api_get_admins(admin: dict = Depends(require_role("super_admin"))):
+    return [_row(a) for a in db.list_admins()]
+
+@router.post("/admins")
+def api_create_admin(body: AdminUserIn, admin: dict = Depends(require_role("super_admin")), request: Request = None):
+    if not body.password:
+        raise HTTPException(status_code=400, detail="Mật khẩu là bắt buộc khi tạo")
+    existing = db.get_admin_by_username(body.username)
+    if existing:
+        raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
+        
+    import hashlib
+    hash_pw = hashlib.sha256(body.password.encode()).hexdigest()
+    new_id = db.create_admin(
+        body.username, hash_pw, body.display_name or body.username,
+        body.role, body.tg_id, created_by=admin["id"]
+    )
+    ip = request.client.host if request and request.client else ""
+    db.log_admin_action(admin["id"], "create_admin", body.username, f"Created admin {body.username}", ip)
+    return {"ok": True, "id": new_id}
+
+@router.put("/admins/{id}")
+def api_update_admin(id: int, body: AdminUserIn, admin: dict = Depends(require_role("super_admin")), request: Request = None):
+    target_admin = db.get_admin_by_id(id)
+    if not target_admin:
+        raise HTTPException(status_code=404, detail="Không tìm thấy")
+        
+    import hashlib
+    hash_pw = hashlib.sha256(body.password.encode()).hexdigest() if body.password else None
+    
+    db.update_admin(
+        id, 
+        password_hash=hash_pw,
+        display_name=body.display_name,
+        role=body.role,
+        tg_id=body.tg_id,
+        is_active=body.is_active
+    )
+    ip = request.client.host if request and request.client else ""
+    db.log_admin_action(admin["id"], "update_admin", target_admin["username"], f"Updated admin {target_admin['username']}", ip)
+    return {"ok": True}
+
+@router.delete("/admins/{id}")
+def api_delete_admin(id: int, admin: dict = Depends(require_role("super_admin")), request: Request = None):
+    target_admin = db.get_admin_by_id(id)
+    if not target_admin:
+        raise HTTPException(status_code=404, detail="Không tìm thấy")
+    if target_admin["id"] == admin["id"]:
+        raise HTTPException(status_code=400, detail="Không thể tự xóa")
+        
+    db.delete_admin(id)
+    ip = request.client.host if request and request.client else ""
+    db.log_admin_action(admin["id"], "delete_admin", target_admin["username"], f"Deleted admin {target_admin['username']}", ip)
+    return {"ok": True}
+
+@router.get("/admins/audit-log")
+def api_get_audit_log(admin: dict = Depends(require_role("super_admin"))):
+    return [_row(l) for l in db.get_admin_audit_log(200)]
 
 @router.post("/user/login")
 def user_login(body: TokenIn):
@@ -893,4 +1025,122 @@ def api_admin_delete_zalo_track(track_id: int, _=Depends(auth)):
         c = db.get_conn()
         c.execute("DELETE FROM zalo_tracks WHERE id=?", (track_id,))
         c.commit()
+    return {"ok": True}
+
+@router.get("/user/referral")
+def get_user_referral(tg_id: int = Depends(user_auth)):
+    c = db.get_conn()
+    user = c.execute("SELECT ref_code, ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+    
+    if user and not user["ref_code"]:
+        ref_code = f"REF{tg_id}"
+        with db._lock:
+            c.execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (ref_code, tg_id))
+            c.commit()
+        user = c.execute("SELECT ref_code, ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+        
+    f1_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id=?", (tg_id,)).fetchone()[0]
+    
+    f2_count = c.execute("""
+        SELECT COUNT(*) FROM tg_users 
+        WHERE referrer_id IN (SELECT tg_id FROM tg_users WHERE referrer_id=?)
+    """, (tg_id,)).fetchone()[0]
+    
+    history = [dict(r) for r in c.execute("SELECT * FROM ref_commissions WHERE referrer_id=? ORDER BY created_at DESC LIMIT 50", (tg_id,)).fetchall()]
+    
+    return {
+        "ok": True,
+        "ref_code": user["ref_code"] if user else None,
+        "ref_earnings": user["ref_earnings"] if user else 0,
+        "ref_withdrawn": user["ref_withdrawn"] if user else 0,
+        "f1_count": f1_count,
+        "f2_count": f2_count,
+        "history": history
+    }
+
+class WithdrawIn(BaseModel):
+    amount: int
+
+@router.post("/user/referral/withdraw")
+def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Số tiền không hợp lệ")
+    
+    c = db.get_conn()
+    user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng")
+        
+    available = user["ref_earnings"] - user["ref_withdrawn"]
+    if body.amount > available:
+        raise HTTPException(status_code=400, detail="Không đủ hoa hồng")
+        
+    with db._lock:
+        c.execute("INSERT INTO withdrawal_requests(tg_id, amount, status, created_at, updated_at) VALUES(?,?,?,?,?)",
+                  (tg_id, body.amount, 'pending', int(time.time()), int(time.time())))
+        c.commit()
+        
+    return {"ok": True}
+
+@router.get("/admin/referral/leaderboard")
+def get_referral_leaderboard(_=Depends(auth)):
+    c = db.get_conn()
+    rows = c.execute("""
+        SELECT tg_id, username, name, ref_earnings,
+        (SELECT COUNT(*) FROM tg_users u2 WHERE u2.referrer_id = u.tg_id) as f1_count
+        FROM tg_users u
+        WHERE ref_earnings > 0
+        ORDER BY ref_earnings DESC LIMIT 100
+    """).fetchall()
+    return {"ok": True, "leaderboard": [dict(r) for r in rows]}
+
+@router.get("/admin/withdrawals")
+def get_withdrawals(_=Depends(auth)):
+    c = db.get_conn()
+    rows = c.execute("SELECT * FROM withdrawal_requests ORDER BY created_at DESC LIMIT 100").fetchall()
+    return {"ok": True, "withdrawals": [dict(r) for r in rows]}
+
+@router.post("/admin/withdrawals/{id}/approve")
+def approve_withdrawal(id: int, _=Depends(auth)):
+    c = db.get_conn()
+    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (id,)).fetchone()
+    if not req or req["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Không tìm thấy yêu cầu hoặc đã xử lý")
+        
+    with db._lock:
+        c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), id))
+        c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?", (req["amount"], req["tg_id"]))
+        c.commit()
+        
+    return {"ok": True}
+
+# --- ALERTS ---
+class AlertRuleIn(BaseModel):
+    platform: str
+    target: str
+    condition: str = "status_change"
+
+@router.get("/user/alerts")
+def api_get_alerts(token: str = Header(default="")):
+    username = db.verify_magic_link(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    tg_id = str(username)
+    return [_row(a) for a in db.get_alert_rules(tg_id=tg_id)]
+
+@router.post("/user/alerts")
+def api_create_alert(body: AlertRuleIn, token: str = Header(default="")):
+    username = db.verify_magic_link(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    tg_id = str(username)
+    rule_id = db.create_alert_rule(tg_id, body.platform, body.target, body.condition)
+    return {"ok": True, "id": rule_id}
+
+@router.delete("/user/alerts/{id}")
+def api_delete_alert(id: int, token: str = Header(default="")):
+    username = db.verify_magic_link(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    db.delete_alert_rule(id)
     return {"ok": True}

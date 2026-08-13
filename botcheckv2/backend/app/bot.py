@@ -237,8 +237,14 @@ async def on_start(msg: Message):
     parts = (msg.text or "").split(maxsplit=1)
     ref_id = 0
     if len(parts) > 1:
-        try: ref_id = int(parts[1])
-        except: pass
+        code_or_id = parts[1].strip()
+        try: 
+            ref_id = int(code_or_id)
+        except: 
+            c = db.get_conn()
+            row = c.execute("SELECT tg_id FROM tg_users WHERE ref_code=?", (code_or_id,)).fetchone()
+            if row:
+                ref_id = row["tg_id"]
         
     user = db.get_user(u.id)
     if not user:
@@ -318,27 +324,122 @@ async def on_start(msg: Message):
 @router.message(Command("ref"))
 async def on_ref(msg: Message):
     bot_info = await msg.bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start={msg.chat.id}"
     user = db.get_user(msg.chat.id)
     earnings = user["ref_earnings"] if user else 0
+    withdrawn = user["ref_withdrawn"] if user and "ref_withdrawn" in user else 0
+    available = earnings - withdrawn
     
-    ref_count = 0
+    ref_code = user["ref_code"] if user and user.get("ref_code") else f"REF{msg.chat.id}"
+    if user and not user.get("ref_code"):
+        with db._lock:
+            db.get_conn().execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (ref_code, msg.chat.id))
+            db.get_conn().commit()
+            
+    ref_link = f"https://t.me/{bot_info.username}?start={msg.chat.id}"
+    ref_link_code = f"https://t.me/{bot_info.username}?start={ref_code}"
+    
+    f1_count = 0
+    f2_count = 0
     if user:
-        c = db.get_conn().execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id=?", (msg.chat.id,))
-        ref_count = c.fetchone()[0]
+        c = db.get_conn()
+        f1_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id=?", (msg.chat.id,)).fetchone()[0]
+        f2_count = c.execute("SELECT COUNT(*) FROM tg_users WHERE referrer_id IN (SELECT tg_id FROM tg_users WHERE referrer_id=?)", (msg.chat.id,)).fetchone()[0]
 
     await msg.answer(
         f"🎁 <b>HỆ THỐNG GIỚI THIỆU - KIẾM TIỀN</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔗 <b>Link giới thiệu của bạn:</b>\n"
-        f"👉 <code>{ref_link}</code>\n\n"
-        f"💰 Hoa hồng nhận được: <b>10%</b> mỗi khi người được mời nạp tiền!\n\n"
+        f"👉 <code>{ref_link}</code>\n"
+        f"Hoặc mã: <code>{ref_link_code}</code>\n\n"
+        f"💰 Hoa hồng nhận được:\n"
+        f"- <b>F1 (Trực tiếp): 10%</b>\n"
+        f"- <b>F2 (Gián tiếp): 3%</b>\n\n"
         f"📊 <b>Thống kê của bạn:</b>\n"
-        f"• Đã mời: <b>{ref_count} người</b>\n"
-        f"• Hoa hồng đã nhận: <b>{vnd(earnings)}</b>\n\n"
-        f"<i>Hãy copy link trên và gửi cho bạn bè để kiếm tiền ngay nhé!</i>",
+        f"• Đã mời F1: <b>{f1_count} người</b>\n"
+        f"• Đã mời F2: <b>{f2_count} người</b>\n"
+        f"• Hoa hồng tổng: <b>{vnd(earnings)}</b>\n"
+        f"• Đã rút: <b>{vnd(withdrawn)}</b>\n"
+        f"• Khả dụng: <b>{vnd(available)}</b>\n\n"
+        f"💡 Lệnh hỗ trợ:\n"
+        f"<code>/refcode &lt;mã&gt;</code> - Đổi mã giới thiệu tùy chỉnh\n"
+        f"<code>/ruttien &lt;số_tiền&gt;</code> - Rút tiền hoa hồng (Min 50k)",
         parse_mode="HTML"
     )
+
+@router.message(Command("refcode"))
+async def on_refcode(msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: /refcode &lt;mã_mới&gt;\nLưu ý: Mã chỉ gồm chữ và số, không dấu cách.")
+        return
+        
+    code = parts[1].strip()
+    if not code.isalnum():
+        await msg.answer("❌ Mã giới thiệu chỉ được chứa chữ cái và số!")
+        return
+        
+    c = db.get_conn()
+    exists = c.execute("SELECT tg_id FROM tg_users WHERE ref_code=?", (code,)).fetchone()
+    if exists and exists["tg_id"] != msg.chat.id:
+        await msg.answer("❌ Mã này đã có người sử dụng. Vui lòng chọn mã khác.")
+        return
+        
+    with db._lock:
+        c.execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (code, msg.chat.id))
+        c.commit()
+        
+    await msg.answer(f"✅ Đã đổi mã giới thiệu thành công: <code>{code}</code>")
+
+@router.message(Command("ruttien"))
+async def on_ruttien(msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: /ruttien &lt;số_tiền&gt;\nVí dụ: /ruttien 50000")
+        return
+        
+    try:
+        amount = int(parts[1].replace(",", "").replace(".", "").replace("k", "000").replace("K", "000").strip())
+    except:
+        await msg.answer("❌ Số tiền không hợp lệ!")
+        return
+        
+    if amount < 50000:
+        await msg.answer("❌ Số tiền rút tối thiểu là 50,000 VNĐ.")
+        return
+        
+    c = db.get_conn()
+    user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (msg.chat.id,)).fetchone()
+    
+    earnings = user["ref_earnings"] if user else 0
+    withdrawn = user["ref_withdrawn"] if user and "ref_withdrawn" in user else 0
+    available = earnings - withdrawn
+    
+    if amount > available:
+        await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)})")
+        return
+        
+    with db._lock:
+        c.execute("INSERT INTO withdrawal_requests(tg_id, amount, status, created_at, updated_at) VALUES(?,?,?,?,?)",
+                  (msg.chat.id, amount, 'pending', int(time.time()), int(time.time())))
+        c.commit()
+        
+    admin_msg = f"🔔 <b>YÊU CẦU RÚT TIỀN HOA HỒNG</b>\n👤 ID: {msg.chat.id}\n💰 Số tiền: {vnd(amount)}"
+    
+    # Notify admin somehow
+    admin_tg_token = db.get_setting("admin_bot_token", "")
+    if admin_tg_token:
+        from .admin_bot import manager as admin_manager
+        if admin_manager.bot:
+            admins = []
+            try:
+                if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
+                if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
+                for a in admins:
+                    try: await admin_manager.bot.send_message(a, admin_msg, parse_mode="HTML")
+                    except: pass
+            except: pass
+            
+    await msg.answer(f"✅ Đã gửi yêu cầu rút <b>{vnd(amount)}</b>.\nVui lòng chờ Admin xử lý!", parse_mode="HTML")
 
 @router.message(Command("trial"))
 async def on_trial(msg: Message):
@@ -1921,3 +2022,44 @@ async def on_trackzalo(msg: Message, command: CommandObject):
         await wait.edit_text(f"✅ Đã thêm SĐT Zalo <b>{phone}</b> vào danh sách theo dõi!\\nTrạng thái hiện tại: {status}", parse_mode="HTML")
     except Exception as e:
         await wait.edit_text(f"❌ Lỗi: {str(e)}")
+
+# --- ALERTS ---
+@router.message(Command("alert"))
+async def on_alert_cmd(msg: Message):
+    parts = msg.text.split()
+    if len(parts) < 3:
+        await msg.answer("⚠️ Cú pháp: /alert <platform> <target>\nVD: /alert fb_watch 123456789")
+        return
+    platform = parts[1]
+    target = parts[2]
+    rule_id = db.create_alert_rule(str(msg.chat.id), platform, target)
+    await msg.answer(f"✅ Đã thêm cảnh báo cho {platform} mục {target} (ID: {rule_id})")
+
+@router.message(Command("alertlist"))
+async def on_alertlist_cmd(msg: Message):
+    rules = db.get_alert_rules(tg_id=str(msg.chat.id))
+    if not rules:
+        await msg.answer("Bạn không có cảnh báo nào.")
+        return
+    lines = ["🚨 <b>Danh sách Cảnh báo</b>\n"]
+    for r in rules:
+        lines.append(f"• ID {r['id']}: [{r['platform']}] {r['target']} ({r['condition']})")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
+@router.message(Command("alertoff"))
+async def on_alertoff_cmd(msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: /alertoff <target_hoặc_id>")
+        return
+    target = parts[1]
+    rules = db.get_alert_rules(tg_id=str(msg.chat.id))
+    deleted = False
+    for r in rules:
+        if str(r["id"]) == target or r["target"] == target:
+            db.delete_alert_rule(r["id"])
+            deleted = True
+    if deleted:
+        await msg.answer(f"✅ Đã xoá cảnh báo cho {target}.")
+    else:
+        await msg.answer("❌ Không tìm thấy cảnh báo phù hợp.")

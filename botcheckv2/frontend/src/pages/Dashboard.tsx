@@ -16,6 +16,8 @@ import { Badge, Button, Card, CardContent, Input, Label } from "../components/ui
 import { api } from "../lib/api";
 import { fromNow, vnd } from "../lib/utils";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { useWebSocket } from "../lib/useWebSocket";
+import { showRealtimeAlert } from "../components/Toast";
 
 function Stat({ icon: Icon, label, value, sub }: any) {
   return (
@@ -39,6 +41,7 @@ export default function Dashboard({ status, onRefresh }: any) {
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [analytics, setAnalytics] = useState<any>(null);
+  const wsMessage = useWebSocket();
 
   // Flex mode states
   const [showFlex, setShowFlex] = useState(false);
@@ -98,6 +101,20 @@ export default function Dashboard({ status, onRefresh }: any) {
   useEffect(() => {
     loadAnalytics();
   }, []);
+
+  useEffect(() => {
+    if (wsMessage) {
+      if (wsMessage.event === "balance_changed") {
+         showRealtimeAlert(`Số dư thay đổi: ${wsMessage.amount}`, "success");
+      } else if (wsMessage.event === "notification") {
+         showRealtimeAlert(wsMessage.message, "info");
+      } else if (wsMessage.event === "status_update") {
+         showRealtimeAlert(wsMessage.message, "info");
+         onRefresh();
+         loadAnalytics();
+      }
+    }
+  }, [wsMessage]);
 
   async function loadAnalytics() {
     try {

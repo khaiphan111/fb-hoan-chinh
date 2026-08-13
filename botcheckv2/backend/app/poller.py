@@ -3,6 +3,19 @@ from typing import Optional
 from . import config, db, fb
 from . import bot as botmod
 from .util import now
+from .event_bus import event_bus
+
+async def _handle_alerts(platform: str, target: str, condition: str, message: str, bot=None):
+    rules = db.get_alert_rules(target=target)
+    for rule in rules:
+        if rule["platform"] == platform and (rule["condition"] == "status_change" or rule["condition"] == condition):
+            tg_id = rule["tg_id"]
+            db.log_alert_history(tg_id, rule["id"], message)
+            if bot:
+                try:
+                    await bot.send_message(int(tg_id), f"🚨 <b>Alert</b>:\n{message}", parse_mode="HTML")
+                except:
+                    pass
 
 log = logging.getLogger(__name__)
 
@@ -161,9 +174,14 @@ class FollowerPoller:
                 db.update_track_stats(track["id"], new_fl, info["following"], new_vid, new_vid_id)
                 db.record_track_history(track["id"], "tiktok_account", "followers", new_fl)
 
-                # Follower change notify
-                fl_diff = new_fl - old_fl
                 if fl_diff != 0:
+                    asyncio.create_task(event_bus.emit("tiktok_follower_change", {
+                        "username": info["username"],
+                        "old_fl": old_fl,
+                        "new_fl": new_fl,
+                        "tg_user_id": track.get("tg_user_id"),
+                        "zalo_user_id": track.get("zalo_user_id")
+                    }))
                     sign = "+" if fl_diff > 0 else ""
                     dir_ = "tăng 📈" if fl_diff > 0 else "giảm 📉"
                     now_str = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
@@ -414,6 +432,12 @@ class FollowerPoller:
                     w["tg_id"],
                     w["uid"],
                 )
+                asyncio.create_task(event_bus.emit("fb_watch_status_change", {
+                    "uid": w['uid'],
+                    "old_status": old,
+                    "new_status": new_status,
+                    "tg_id": w['tg_id']
+                }))
                 bot = botmod.manager.bot
                 if bot:
                     try:
@@ -423,6 +447,9 @@ class FollowerPoller:
                         )
                     except Exception as e:
                         db.add_log("system", f"Lỗi gửi thông báo {w['tg_id']}: {e}")
+                
+                # Check alerts
+                await _handle_alerts("fb_watch", w["uid"], new_status, f"UID {w['uid']} status changed to {new_status}", botmod.manager.bot)
             await asyncio.sleep(0.3)
 
     async def _check_fb_accounts(self):
@@ -460,6 +487,8 @@ class FollowerPoller:
                         
                     db.add_log("fb_status_change", f"FB {res['uid']}: {old_status.upper()} -> {new_status.upper()}",
                                tg_id or zalo_id, res["uid"])
+                               
+                    await _handle_alerts("fb_track", res["uid"], new_status, msg, self._bot)
             except Exception as e:
                 log.warning("Loi check FB %s: %s", track["fb_uid"], e)
             await asyncio.sleep(3)
@@ -663,6 +692,8 @@ async def _poll_zalo():
                         name_str = f"\nTên Zalo: <b>{res.get('name', '')}</b>" if res.get('name') else ""
                         msg = f"{icon} SĐT Zalo <b>{t['phone']}</b> đã chuyển sang trạng thái <b>{new_status}</b>!{name_str}"
                         await _bot.send_message(t["tg_user_id"], msg, parse_mode="HTML")
+                        
+                        await _handle_alerts("zalo", t["phone"], new_status, msg, _bot)
                         
                     db.update_zalo_track_status(t["id"], new_status, res.get("name", t["name"]), res.get("avatar", t["avatar"]))
                 except Exception as e:

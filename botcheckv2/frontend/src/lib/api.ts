@@ -38,19 +38,19 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
   return data as T;
 }
 
-export async function login(password: string): Promise<string> {
+export async function login(username: string, password: string): Promise<string> {
   let res: Response;
   try {
     res = await fetch("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
   } catch {
     throw new Error("Không kết nối được máy chủ. Hãy chắc chắn ứng dụng đang chạy.");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || "Sai mật khẩu");
+  if (!res.ok) throw new Error(data.detail || "Sai tên đăng nhập hoặc mật khẩu");
   setToken(data.token);
   return data.token;
 }

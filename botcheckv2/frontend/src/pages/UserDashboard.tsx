@@ -2,15 +2,35 @@ import { IconListCheck, IconLogout, IconUser, IconTrash } from "@tabler/icons-re
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "../components/ui";
+import { Card, CardContent, CardHeader, CardTitle, Button } from "../components/ui";
+import { useWebSocket } from "../lib/useWebSocket";
+import { showRealtimeAlert } from "../components/Toast";
+import Referral from "./Referral";
+import Alerts from "./Alerts";
 
 export default function UserDashboard({ onLogout }: { onLogout: () => void }) {
   const [user, setUser] = useState<any>(null);
   const [data, setData] = useState<any>(null);
+  const [tab, setTab] = useState("dashboard");
+  const wsMessage = useWebSocket();
 
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (wsMessage) {
+      if (wsMessage.event === "balance_changed") {
+         showRealtimeAlert(`Số dư thay đổi: ${wsMessage.amount}`, "success");
+         loadData();
+      } else if (wsMessage.event === "notification") {
+         showRealtimeAlert(wsMessage.message, "info");
+      } else if (wsMessage.event === "status_update") {
+         showRealtimeAlert(wsMessage.message, "info");
+         loadData();
+      }
+    }
+  }, [wsMessage]);
 
   async function loadData() {
     try {
@@ -44,7 +64,16 @@ export default function UserDashboard({ onLogout }: { onLogout: () => void }) {
           <h1 className="text-xl font-bold">Xin chào, {user?.name || "Khách hàng"}</h1>
         </div>
         <div className="flex items-center gap-4">
-          <div className="text-sm">
+          <Button variant={tab === "dashboard" ? "default" : "outline"} size="sm" onClick={() => setTab("dashboard")}>
+            Tổng quan
+          </Button>
+          <Button variant={tab === "referral" ? "default" : "outline"} size="sm" onClick={() => setTab("referral")}>
+            Cộng tác viên
+          </Button>
+          <Button variant={tab === "alerts" ? "default" : "outline"} size="sm" onClick={() => setTab("alerts")}>
+            Cảnh báo
+          </Button>
+          <div className="text-sm border-l border-border pl-4">
             <span className="text-muted-foreground">Số dư: </span>
             <span className="font-semibold text-green-500">
               {new Intl.NumberFormat("vi-VN").format(user?.balance || 0)}đ
@@ -66,9 +95,13 @@ export default function UserDashboard({ onLogout }: { onLogout: () => void }) {
       </header>
 
       <main className="p-6 flex-1 flex flex-col gap-6 max-w-6xl mx-auto w-full">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
+        {tab === "alerts" && <Alerts />}
+        {tab === "referral" && <Referral />}
+        {tab === "dashboard" && (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <Card>
+                <CardHeader className="pb-2">
               <CardTitle className="text-sm text-muted-foreground font-normal">Đang theo dõi FB Live/Die</CardTitle>
             </CardHeader>
             <CardContent>
@@ -540,7 +573,8 @@ export default function UserDashboard({ onLogout }: { onLogout: () => void }) {
             </CardContent>
           </Card>
         )}
-
+        </>
+        )}
       </main>
     </div>
   );

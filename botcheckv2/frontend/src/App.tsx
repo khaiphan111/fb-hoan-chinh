@@ -11,6 +11,9 @@ import {
   IconSun,
   IconUsers,
   IconServer,
+  IconUserShield,
+  IconAffiliate,
+  IconBell,
 } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import toast, { Toaster } from "react-hot-toast";
@@ -32,8 +35,11 @@ import Instagram from "./pages/Instagram";
 import Codes from "./pages/Codes";
 import Broadcast from "./pages/Broadcast";
 import Proxies from "./pages/Proxies";
+import Admins from "./pages/Admins";
+import Referral from "./pages/Referral";
+import Alerts from "./pages/Alerts";
 
-const NAV = [
+const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "dashboard", label: "Tổng quan", icon: IconActivity },
   { key: "broadcast", label: "Chiến dịch", icon: IconUsers },
   { key: "watches", label: "Theo dõi FB", icon: IconListCheck },
@@ -43,9 +49,12 @@ const NAV = [
   { key: "instagram", label: "Instagram", icon: IconListCheck },
   { key: "users", label: "Người dùng", icon: IconUsers },
   { key: "codes", label: "Kho Code", icon: IconListCheck },
-  { key: "proxies", label: "Hệ thống Proxy", icon: IconServer },
+  { key: "proxies", label: "Hệ thống Proxy", icon: IconServer, roles: ["super_admin", "admin"] },
   { key: "logs", label: "Nhật ký", icon: IconHistory },
-  { key: "settings", label: "Cấu hình", icon: IconSettings },
+  { key: "admins", label: "Quản lý Admin", icon: IconUserShield, roles: ["super_admin"] },
+  { key: "settings", label: "Cấu hình", icon: IconSettings, roles: ["super_admin", "admin"] },
+  { key: "referral", label: "Cộng tác viên", icon: IconAffiliate },
+  { key: "alerts", label: "Cảnh báo", icon: IconBell },
   { key: "about", label: "Giới thiệu", icon: IconInfoCircle },
 ];
 
@@ -53,17 +62,21 @@ export default function App() {
   const [authed, setAuthed] = useState(!!getToken());
   const [tab, setTab] = useState("dashboard");
   const [status, setStatus] = useState<any>(null);
+  const [adminMe, setAdminMe] = useState<any>(null);
   const { dark, toggle } = useTheme();
+
+  const isUser = getToken().startsWith("user-");
 
   async function refreshStatus() {
     try {
       setStatus(await api("/api/status"));
+      if (authed && !isUser) {
+        setAdminMe(await api("/api/me"));
+      }
     } catch (e: any) {
       if (String(e.message).includes("đăng nhập")) setAuthed(false);
     }
   }
-
-  const isUser = getToken().startsWith("user-");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -139,7 +152,7 @@ export default function App() {
             <div className="text-xs text-muted-foreground font-normal">@khaikhai998</div>
           </div>
         </div>
-        {NAV.map((n) => {
+        {NAV.filter(n => !n.roles || (adminMe && n.roles.includes(adminMe.role))).map((n) => {
           const Icon = n.icon;
           const active = tab === n.key;
           return (
@@ -195,6 +208,9 @@ export default function App() {
         { tab === "about" && <About /> }
         { tab === "broadcast" && <Broadcast /> }
         { tab === "proxies" && <Proxies /> }
+        { tab === "admins" && <Admins /> }
+        { tab === "referral" && <Referral /> }
+        { tab === "alerts" && <Alerts /> }
       </main>
     </div>
   );

@@ -152,7 +152,28 @@ def init_db() -> None:
                 trial_activated BIGINT DEFAULT 0,
                 referrer_id  BIGINT DEFAULT 0,
                 ref_earnings BIGINT DEFAULT 0,
-                expired_notified BIGINT DEFAULT 0
+                expired_notified BIGINT DEFAULT 0,
+                ref_code     TEXT,
+                ref_withdrawn BIGINT DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS ref_commissions (
+                id           BIGINT PRIMARY KEY AUTOINCREMENT,
+                referrer_id  BIGINT,
+                from_user_id BIGINT,
+                level        BIGINT,
+                amount       BIGINT,
+                commission   BIGINT,
+                created_at   BIGINT
+            );
+
+            CREATE TABLE IF NOT EXISTS withdrawal_requests (
+                id           BIGINT PRIMARY KEY AUTOINCREMENT,
+                tg_id        BIGINT,
+                amount       BIGINT,
+                status       TEXT DEFAULT 'pending',
+                created_at   BIGINT,
+                updated_at   BIGINT
             );
 
             CREATE TABLE IF NOT EXISTS watches (
@@ -358,6 +379,47 @@ def init_db() -> None:
                 saved_at        BIGINT NOT NULL,
                 PRIMARY KEY (tg_id, code)
             );
+
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id              BIGINT PRIMARY KEY AUTOINCREMENT,
+                username        TEXT UNIQUE NOT NULL,
+                password_hash   TEXT NOT NULL,
+                display_name    TEXT,
+                role            TEXT DEFAULT 'moderator',
+                tg_id           BIGINT DEFAULT 0,
+                is_active       BIGINT DEFAULT 1,
+                last_login      BIGINT DEFAULT 0,
+                created_at      BIGINT NOT NULL,
+                created_by      BIGINT DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id          BIGINT PRIMARY KEY AUTOINCREMENT,
+                admin_id    BIGINT,
+                action      TEXT,
+                target      TEXT,
+                details     TEXT,
+                ip_address  TEXT,
+                created_at  BIGINT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS alert_rules (
+                id           BIGINT PRIMARY KEY AUTOINCREMENT,
+                tg_id        TEXT,
+                platform     TEXT,
+                target       TEXT,
+                condition    TEXT,
+                is_active    BIGINT DEFAULT 1,
+                created_at   BIGINT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS alert_history (
+                id           BIGINT PRIMARY KEY AUTOINCREMENT,
+                tg_id        TEXT,
+                rule_id      BIGINT,
+                message      TEXT,
+                triggered_at BIGINT NOT NULL
+            );
             """
         )
         # Keys that MUST be force-updated on every restart
@@ -380,6 +442,19 @@ def init_db() -> None:
                     (k, v),
                 )
         c.commit()
+
+        # Seed super admin if empty
+        admin_count = c.execute("SELECT COUNT(*) as c FROM admin_users").fetchone()["c"]
+        if admin_count == 0:
+            import hashlib
+            admin_pw = config.DEFAULT_SETTINGS.get("admin_password", "admin")
+            hash_pw = hashlib.sha256(admin_pw.encode()).hexdigest()
+            c.execute(
+                "INSERT INTO admin_users (username, password_hash, display_name, role, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("admin", hash_pw, "Super Admin", "super_admin", int(time.time()))
+            )
+            c.commit()
         
 def migrate_db():
     c = get_conn()
@@ -392,7 +467,10 @@ def migrate_db():
             "ALTER TABLE tg_users ADD COLUMN daily_checks BIGINT DEFAULT 0",
             "ALTER TABLE tg_users ADD COLUMN last_check_date TEXT DEFAULT ''",
             "ALTER TABLE tracks ADD COLUMN zalo_user_id TEXT DEFAULT ''",
-            "",
+            "ALTER TABLE tg_users ADD COLUMN ref_code TEXT",
+            "ALTER TABLE tg_users ADD COLUMN ref_withdrawn BIGINT DEFAULT 0",
+            "CREATE TABLE IF NOT EXISTS ref_commissions (id BIGINT PRIMARY KEY AUTOINCREMENT, referrer_id BIGINT, from_user_id BIGINT, level BIGINT, amount BIGINT, commission BIGINT, created_at BIGINT)",
+            "CREATE TABLE IF NOT EXISTS withdrawal_requests (id BIGINT PRIMARY KEY AUTOINCREMENT, tg_id BIGINT, amount BIGINT, status TEXT DEFAULT 'pending', created_at BIGINT, updated_at BIGINT)",
             "ALTER TABLE ig_tracks ADD COLUMN avatar_url TEXT DEFAULT ''",
             "ALTER TABLE video_tracks ADD COLUMN zalo_user_id TEXT DEFAULT ''",
             "ALTER TABLE ig_video_tracks ADD COLUMN last_spike_alert_at BIGINT DEFAULT 0",
@@ -401,7 +479,11 @@ def migrate_db():
             "CREATE TABLE IF NOT EXISTS yt_video_tracks (id BIGSERIAL PRIMARY KEY, tg_user_id BIGINT DEFAULT 0, tg_username TEXT DEFAULT '', zalo_user_id TEXT DEFAULT '', video_url TEXT NOT NULL, video_id TEXT NOT NULL, yt_username TEXT DEFAULT '', video_desc TEXT DEFAULT '', cover_url TEXT DEFAULT '', check_interval BIGINT DEFAULT 3600, last_views BIGINT DEFAULT 0, last_likes BIGINT DEFAULT 0, last_comments BIGINT DEFAULT 0, last_checked BIGINT DEFAULT 0, created_at BIGINT NOT NULL, active BIGINT DEFAULT 1)",
             "CREATE TABLE IF NOT EXISTS zalo_tracks (id BIGSERIAL PRIMARY KEY, tg_user_id BIGINT DEFAULT 0, tg_username TEXT DEFAULT '', zalo_user_id TEXT DEFAULT '', phone TEXT NOT NULL, name TEXT DEFAULT '', avatar TEXT DEFAULT '', status TEXT DEFAULT 'LIVE', last_checked BIGINT DEFAULT 0, created_at BIGINT NOT NULL, active BIGINT DEFAULT 1)",
             "CREATE TABLE IF NOT EXISTS proxies (id BIGINT PRIMARY KEY AUTOINCREMENT, proxy_url TEXT UNIQUE NOT NULL, fail_count BIGINT DEFAULT 0, is_active BIGINT DEFAULT 1, created_at BIGINT)",
-            "CREATE TABLE IF NOT EXISTS track_history (id BIGINT PRIMARY KEY AUTOINCREMENT, track_id BIGINT NOT NULL, platform TEXT NOT NULL, track_type TEXT NOT NULL, stat_value BIGINT DEFAULT 0, created_at BIGINT)"
+            "CREATE TABLE IF NOT EXISTS track_history (id BIGINT PRIMARY KEY AUTOINCREMENT, track_id BIGINT NOT NULL, platform TEXT NOT NULL, track_type TEXT NOT NULL, stat_value BIGINT DEFAULT 0, created_at BIGINT)",
+            "CREATE TABLE IF NOT EXISTS admin_users (id BIGSERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT, role TEXT DEFAULT 'moderator', tg_id BIGINT DEFAULT 0, is_active BIGINT DEFAULT 1, last_login BIGINT DEFAULT 0, created_at BIGINT NOT NULL, created_by BIGINT DEFAULT 0)",
+            "CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT, action TEXT, target TEXT, details TEXT, ip_address TEXT, created_at BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS alert_rules (id BIGSERIAL PRIMARY KEY, tg_id TEXT, platform TEXT, target TEXT, condition TEXT, is_active BIGINT DEFAULT 1, created_at BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS alert_history (id BIGSERIAL PRIMARY KEY, tg_id TEXT, rule_id BIGINT, message TEXT, triggered_at BIGINT NOT NULL)"
         ]:
             try:
                 c.execute(sql)
@@ -504,20 +586,45 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
         if amount > 0:
             user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
             if user and user["referrer_id"]:
-                ref_id = user["referrer_id"]
-                ref_bonus = int(amount * 0.1) # 10%
-                if ref_bonus > 0:
-                    c.execute("UPDATE tg_users SET balance = balance + ?, ref_earnings = ref_earnings + ? WHERE tg_id=?", (ref_bonus, ref_bonus, ref_id))
+                f1_id = user["referrer_id"]
+                f1_bonus = int(amount * 0.1) # 10%
+                if f1_bonus > 0:
+                    c.execute("UPDATE tg_users SET balance = balance + ?, ref_earnings = ref_earnings + ? WHERE tg_id=?", (f1_bonus, f1_bonus, f1_id))
                     c.execute(
                         "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
-                        (int(time.time()), ref_id, ref_bonus, f"Hoa hồng giới thiệu"),
+                        (int(time.time()), f1_id, f1_bonus, f"Hoa hồng giới thiệu F1"),
+                    )
+                    c.execute(
+                        "INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at) VALUES(?,?,?,?,?,?)",
+                        (f1_id, tg_id, 1, amount, f1_bonus, int(time.time()))
                     )
                     try:
                         import asyncio
                         from .bot import manager, vnd
                         if manager.running:
-                            asyncio.create_task(manager.bot.send_message(ref_id, f"🎁 <b>Hoa hồng giới thiệu!</b>\nBạn vừa nhận được <b>{vnd(ref_bonus)}</b> từ lượt nạp của bạn bè!", parse_mode="HTML"))
+                            asyncio.create_task(manager.bot.send_message(f1_id, f"🎁 <b>Hoa hồng giới thiệu F1!</b>\nBạn vừa nhận được <b>{vnd(f1_bonus)}</b> từ lượt nạp của F1!", parse_mode="HTML"))
                     except: pass
+                
+                f1_user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (f1_id,)).fetchone()
+                if f1_user and f1_user["referrer_id"]:
+                    f2_id = f1_user["referrer_id"]
+                    f2_bonus = int(amount * 0.03) # 3%
+                    if f2_bonus > 0:
+                        c.execute("UPDATE tg_users SET balance = balance + ?, ref_earnings = ref_earnings + ? WHERE tg_id=?", (f2_bonus, f2_bonus, f2_id))
+                        c.execute(
+                            "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                            (int(time.time()), f2_id, f2_bonus, f"Hoa hồng giới thiệu F2"),
+                        )
+                        c.execute(
+                            "INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at) VALUES(?,?,?,?,?,?)",
+                            (f2_id, tg_id, 2, amount, f2_bonus, int(time.time()))
+                        )
+                        try:
+                            import asyncio
+                            from .bot import manager, vnd
+                            if manager.running:
+                                asyncio.create_task(manager.bot.send_message(f2_id, f"🎁 <b>Hoa hồng giới thiệu F2!</b>\nBạn vừa nhận được <b>{vnd(f2_bonus)}</b> từ lượt nạp của F2!", parse_mode="HTML"))
+                        except: pass
         c.commit()
         
 _magic_links = {}
@@ -803,8 +910,83 @@ def add_log(kind: str, message: str, tg_id: int = 0, uid: str = "") -> None:
         )
         c.commit()
 
-def recent_logs(limit: int = 100) -> list:
+def recent_logs(limit: int = 50) -> list:
     return get_conn().execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+# --- ADMIN USERS & AUDIT LOG ---
+def create_admin(username: str, password_hash: str, display_name: str, role: str = 'moderator', tg_id: int = 0, created_by: int = 0):
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO admin_users (username, password_hash, display_name, role, tg_id, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (username, password_hash, display_name, role, tg_id, int(time.time()), created_by)
+        )
+        c.commit()
+        return cur.lastrowid
+
+def get_admin_by_username(username: str):
+    return get_conn().execute("SELECT * FROM admin_users WHERE username=?", (username,)).fetchone()
+
+def get_admin_by_id(admin_id: int):
+    return get_conn().execute("SELECT * FROM admin_users WHERE id=?", (admin_id,)).fetchone()
+
+def list_admins():
+    return get_conn().execute("SELECT * FROM admin_users ORDER BY created_at DESC").fetchall()
+
+def update_admin(admin_id: int, password_hash: str = None, display_name: str = None, role: str = None, tg_id: int = None, is_active: int = None):
+    with _lock:
+        c = get_conn()
+        updates = []
+        params = []
+        if password_hash is not None:
+            updates.append("password_hash=?")
+            params.append(password_hash)
+        if display_name is not None:
+            updates.append("display_name=?")
+            params.append(display_name)
+        if role is not None:
+            updates.append("role=?")
+            params.append(role)
+        if tg_id is not None:
+            updates.append("tg_id=?")
+            params.append(tg_id)
+        if is_active is not None:
+            updates.append("is_active=?")
+            params.append(is_active)
+        if updates:
+            params.append(admin_id)
+            c.execute(f"UPDATE admin_users SET {', '.join(updates)} WHERE id=?", tuple(params))
+            c.commit()
+
+def update_admin_last_login(admin_id: int):
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE admin_users SET last_login=? WHERE id=?", (int(time.time()), admin_id))
+        c.commit()
+
+def delete_admin(admin_id: int):
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM admin_users WHERE id=?", (admin_id,))
+        c.commit()
+
+def log_admin_action(admin_id: int, action: str, target: str, details: str, ip_address: str = ""):
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO admin_audit_log (admin_id, action, target, details, ip_address, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (admin_id, action, target, details, ip_address, int(time.time()))
+        )
+        c.commit()
+
+def get_admin_audit_log(limit: int = 100):
+    return get_conn().execute(
+        "SELECT a.*, u.username as admin_username FROM admin_audit_log a "
+        "LEFT JOIN admin_users u ON a.admin_id = u.id ORDER BY a.created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+
 
 # --- TIKTOK ACCOUNT TRACKS ---
 def add_track(tg_user_id, tg_username, tiktok_username, followers=0, following=0, videos=0, zalo_user_id="", avatar_url=""):
@@ -1265,3 +1447,41 @@ def remove_zalo_track(tg_user_id: int, phone: str) -> bool:
         res = c.execute("DELETE FROM zalo_tracks WHERE tg_user_id=? AND phone=?", (tg_user_id, phone))
         c.commit()
         return res.rowcount > 0
+
+# --- ALERTS ---
+def create_alert_rule(tg_id: str, platform: str, target: str, condition: str = 'status_change') -> int:
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO alert_rules (tg_id, platform, target, condition, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+            (tg_id, platform, target, condition, int(time.time()))
+        )
+        c.commit()
+        return c.lastrowid
+
+def get_alert_rules(tg_id: str = None, target: str = None) -> list:
+    c = get_conn()
+    query = "SELECT * FROM alert_rules WHERE is_active=1"
+    params = []
+    if tg_id:
+        query += " AND tg_id=?"
+        params.append(tg_id)
+    if target:
+        query += " AND target=?"
+        params.append(target)
+    return c.execute(query, tuple(params)).fetchall()
+
+def delete_alert_rule(rule_id: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM alert_rules WHERE id=?", (rule_id,))
+        c.commit()
+
+def log_alert_history(tg_id: str, rule_id: int, message: str) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO alert_history (tg_id, rule_id, message, triggered_at) VALUES (?, ?, ?, ?)",
+            (tg_id, rule_id, message, int(time.time()))
+        )
+        c.commit()
