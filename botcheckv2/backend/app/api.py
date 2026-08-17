@@ -1258,3 +1258,70 @@ def api_delete_alert(id: int, token: str = Header(default="")):
         raise HTTPException(status_code=401, detail="Chưa đăng nhập")
     db.delete_alert_rule(id)
     return {"ok": True}
+
+# --- V2 PRO API ---
+
+@router.get("/admin/audit-logs")
+def api_get_audit_logs(admin_id: int = Depends(auth)):
+    admin = db.get_admin(admin_id)
+    if not admin or admin["role"] not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return db.get_audit_logs(limit=100)
+
+class CampaignIn(BaseModel):
+    name: str
+
+@router.get("/user/campaigns")
+def api_get_campaigns(token: str = Header(default="")):
+    username = db.verify_magic_link(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    tg_id = int(username)
+    return db.get_campaigns(tg_id)
+
+@router.post("/user/campaigns")
+def api_create_campaign(body: CampaignIn, token: str = Header(default="")):
+    username = db.verify_magic_link(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    tg_id = int(username)
+    cid = db.add_campaign(tg_id, body.name)
+    return {"ok": True, "id": cid}
+
+@router.delete("/user/campaigns/{id}")
+def api_delete_campaign(id: int, token: str = Header(default="")):
+    username = db.verify_magic_link(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    tg_id = int(username)
+    success = db.delete_campaign(id, tg_id)
+    return {"ok": success}
+
+class BulkDeleteIn(BaseModel):
+    ids: list[int]
+    platform: str
+
+@router.post("/user/bulk-delete")
+def api_bulk_delete(body: BulkDeleteIn, token: str = Header(default="")):
+    username = db.verify_magic_link(token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    tg_id = int(username)
+    
+    count = 0
+    with db._lock:
+        c = db.get_conn()
+        for id in body.ids:
+            if body.platform == 'watches':
+                c.execute("UPDATE watches SET active=0 WHERE id=? AND tg_id=?", (id, tg_id))
+            elif body.platform == 'tiktok':
+                c.execute("UPDATE tracks SET active=0 WHERE id=? AND tg_user_id=?", (id, tg_id))
+            elif body.platform == 'tiktok_video':
+                c.execute("UPDATE video_tracks SET active=0 WHERE id=? AND tg_user_id=?", (id, tg_id))
+            elif body.platform == 'ig':
+                c.execute("UPDATE ig_tracks SET active=0 WHERE id=? AND tg_user_id=?", (id, tg_id))
+            elif body.platform == 'fb':
+                c.execute("DELETE FROM fb_tracks WHERE id=? AND tg_user_id=?", (id, tg_id))
+            count += 1
+        c.commit()
+    return {"ok": True, "deleted": count}

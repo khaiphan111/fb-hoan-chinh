@@ -36,7 +36,7 @@ export default function Admins() {
   async function fetchAuditLogs() {
     setLoading(true);
     try {
-      const data = await api("/api/admins/audit-log");
+      const data = await api("/api/admin/audit-logs");
       setAuditLogs(Array.isArray(data) ? data : data.logs || []);
     } catch (e: any) {
       toast.error(e.message);
@@ -223,22 +223,22 @@ export default function Admins() {
               <thead>
                 <tr className="border-b border-border bg-muted/50">
                   <th className="px-4 py-3 font-medium">Thời gian</th>
-                  <th className="px-4 py-3 font-medium">Admin</th>
+                  <th className="px-4 py-3 font-medium">Admin ID</th>
                   <th className="px-4 py-3 font-medium">Hành động</th>
-                  <th className="px-4 py-3 font-medium">Đối tượng</th>
-                  <th className="px-4 py-3 font-medium">ID</th>
+                  <th className="px-4 py-3 font-medium">Mục tiêu</th>
+                  <th className="px-4 py-3 font-medium">Chi tiết</th>
                 </tr>
               </thead>
               <tbody>
                 {auditLogs.map(l => (
                   <tr key={l.id} className="border-b border-border last:border-0 hover:bg-muted/50">
-                    <td className="px-4 py-3">{new Date(l.created_at).toLocaleString()}</td>
-                    <td className="px-4 py-3 font-medium">{l.admin_username}</td>
+                    <td className="px-4 py-3">{new Date(l.created_at * 1000).toLocaleString()}</td>
+                    <td className="px-4 py-3 font-medium">{l.admin_id}</td>
                     <td className="px-4 py-3">
                       <Badge status="neutral">{l.action}</Badge>
                     </td>
-                    <td className="px-4 py-3">{l.entity}</td>
-                    <td className="px-4 py-3">{l.entity_id}</td>
+                    <td className="px-4 py-3">{l.target}</td>
+                    <td className="px-4 py-3">{l.details}</td>
                   </tr>
                 ))}
                 {auditLogs.length === 0 && (

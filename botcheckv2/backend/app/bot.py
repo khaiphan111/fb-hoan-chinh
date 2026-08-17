@@ -403,6 +403,61 @@ async def on_ref(msg: Message):
         err_msg = traceback.format_exc()
         await msg.answer(f"Lỗi ref: {e}\n\n{err_msg[:3000]}")
 
+@router.message(Command("daily"))
+async def on_daily(msg: Message):
+    success, streak, reward = db.checkin_daily(msg.from_user.id)
+    if success:
+        await msg.answer(f"🎉 <b>Điểm danh thành công!</b>\n\nBạn nhận được <b>{vnd(reward)}</b>.\n🔥 Chuỗi điểm danh: <b>{streak} ngày</b>.", parse_mode="HTML")
+    else:
+        await msg.answer(f"⚠️ Bạn đã điểm danh hôm nay rồi!\n🔥 Chuỗi hiện tại: <b>{streak} ngày</b>.\nQuay lại vào ngày mai nhé.", parse_mode="HTML")
+
+@router.message(Command("scan_all"))
+async def on_scan_all(msg: Message):
+    wait = await msg.answer("⏳ Đang tổng hợp dữ liệu toàn bộ dàn tài khoản của bạn...")
+    try:
+        tg_id = msg.from_user.id
+        fb_tracks = db.user_fb_tracks(tg_id)
+        tk_tracks = db.user_tracks(tg_id)
+        ig_tracks = db.user_ig_tracks(tg_id)
+        
+        import csv
+        import io
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Platform", "Target", "Status/Followers"])
+        
+        fb_die = 0
+        for t in fb_tracks:
+            writer.writerow(["FB", t["fb_uid"], t["last_status"]])
+            if t.get("last_status") == "die":
+                fb_die += 1
+                
+        tk_total = 0
+        for t in tk_tracks:
+            writer.writerow(["TikTok", t["tiktok_username"], t.get("last_followers", 0)])
+            tk_total += t.get("last_followers", 0)
+            
+        for t in ig_tracks:
+            writer.writerow(["IG", t["ig_username"], t.get("last_followers", 0)])
+            
+        output.seek(0)
+        from aiogram.types import BufferedInputFile
+        file = BufferedInputFile(output.getvalue().encode('utf-8'), filename="scan_all_report.csv")
+        
+        summary = (
+            f"📊 <b>BÁO CÁO TỔNG QUAN</b>\n\n"
+            f"🔹 <b>Facebook:</b> {len(fb_tracks)} nick ({fb_die} chết)\n"
+            f"🔹 <b>TikTok:</b> {len(tk_tracks)} nick (Tổng {fmt_num(tk_total)} follow)\n"
+            f"🔹 <b>Instagram:</b> {len(ig_tracks)} nick\n\n"
+            "Tải file CSV đính kèm để xem chi tiết."
+        )
+        
+        await msg.answer_document(document=file, caption=summary, parse_mode="HTML")
+        await wait.delete()
+    except Exception as e:
+        await wait.edit_text(f"❌ Lỗi khi quét: {e}")
+
 @router.message(Command("refcode"))
 async def on_refcode(msg: Message):
     parts = msg.text.split(maxsplit=1)

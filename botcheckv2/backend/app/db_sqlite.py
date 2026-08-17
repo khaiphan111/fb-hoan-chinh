@@ -194,8 +194,19 @@ def migrate_db():
             "ALTER TABLE video_tracks ADD COLUMN last_favorites INTEGER DEFAULT 0",
             "ALTER TABLE tg_users ADD COLUMN trial_activated INTEGER DEFAULT 0",
             "ALTER TABLE tg_users ADD COLUMN referrer_id INTEGER DEFAULT 0",
-            "ALTER TABLE tg_users ADD COLUMN ref_earnings INTEGER DEFAULT 0",
-            "ALTER TABLE tg_users ADD COLUMN expired_notified INTEGER DEFAULT 0"
+            "ALTER TABLE tg_users ADD COLUMN expired_notified INTEGER DEFAULT 0",
+            "CREATE TABLE IF NOT EXISTS admin_audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, admin_id INTEGER, action TEXT, target TEXT, details TEXT, ip_address TEXT, created_at INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS campaigns (id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER, name TEXT, created_at INTEGER NOT NULL)",
+            "ALTER TABLE watches ADD COLUMN campaign_id INTEGER",
+            "ALTER TABLE watches ADD COLUMN tags TEXT",
+            "ALTER TABLE tracks ADD COLUMN campaign_id INTEGER",
+            "ALTER TABLE tracks ADD COLUMN tags TEXT",
+            "ALTER TABLE ig_tracks ADD COLUMN campaign_id INTEGER",
+            "ALTER TABLE ig_tracks ADD COLUMN tags TEXT",
+            "ALTER TABLE fb_tracks ADD COLUMN campaign_id INTEGER",
+            "ALTER TABLE fb_tracks ADD COLUMN tags TEXT",
+            "CREATE TABLE IF NOT EXISTS daily_checkins (tg_id INTEGER PRIMARY KEY, last_checkin INTEGER, streak INTEGER DEFAULT 1, total_checkins INTEGER DEFAULT 1)",
+            "CREATE TABLE IF NOT EXISTS batch_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER, message TEXT, created_at INTEGER NOT NULL)"
         ]:
             try:
                 c.execute(sql)
@@ -728,3 +739,91 @@ def delete_user(tg_id: int) -> None:
         c.execute("DELETE FROM fb_post_tracks WHERE tg_user_id=?", (tg_id,))
         c.execute("DELETE FROM txns WHERE tg_id=?", (tg_id,))
         c.commit()
+
+# --- V2 PRO FEATURES ---
+
+# Audit Logs
+def add_audit_log(admin_id: int, action: str, target: str, details: str, ip_address: str = "") -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("INSERT INTO admin_audit_log(admin_id, action, target, details, ip_address, created_at) VALUES(?,?,?,?,?,?)",
+                  (admin_id, action, target, details, ip_address, int(time.time())))
+        c.commit()
+
+def get_audit_logs(limit: int = 100, offset: int = 0) -> list:
+    return [dict(r) for r in get_conn().execute("SELECT * FROM admin_audit_log ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()]
+
+# Campaigns
+def add_campaign(tg_id: int, name: str) -> int:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("INSERT INTO campaigns(tg_id, name, created_at) VALUES(?,?,?)",
+                        (tg_id, name, int(time.time())))
+        c.commit()
+        return cur.lastrowid
+
+def get_campaigns(tg_id: int) -> list:
+    return [dict(r) for r in get_conn().execute("SELECT * FROM campaigns WHERE tg_id=? ORDER BY created_at DESC", (tg_id,)).fetchall()]
+
+def delete_campaign(campaign_id: int, tg_id: int) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("DELETE FROM campaigns WHERE id=? AND tg_id=?", (campaign_id, tg_id))
+        c.commit()
+        return cur.rowcount > 0
+
+# Gamification Daily Check-in
+def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
+    with _lock:
+        now_ts = int(time.time())
+        day_start = now_ts - (now_ts % 86400)
+        c = get_conn()
+        row = c.execute("SELECT * FROM daily_checkins WHERE tg_id=?", (tg_id,)).fetchone()
+        
+        streak = 1
+        reward = 1000
+        
+        if row:
+            last = row["last_checkin"]
+            if last >= day_start:
+                return False, row["streak"], 0
+            
+            if last >= day_start - 86400:
+                streak = row["streak"] + 1
+            else:
+                streak = 1
+                
+            c.execute("UPDATE daily_checkins SET last_checkin=?, streak=?, total_checkins=total_checkins+1 WHERE tg_id=?", (now_ts, streak, tg_id))
+        else:
+            c.execute("INSERT INTO daily_checkins(tg_id, last_checkin, streak, total_checkins) VALUES(?,?,1,1)", (tg_id, now_ts))
+            
+        if streak % 7 == 0:
+            reward = 5000
+        elif streak % 30 == 0:
+            reward = 50000
+            
+        c.commit()
+    adjust_balance(tg_id, reward, f"Điểm danh hằng ngày (Chuỗi {streak} ngày)")
+    return True, streak, reward
+
+# Batch Notifications
+def add_batch_notification(tg_id: int, message: str) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("INSERT INTO batch_notifications(tg_id, message, created_at) VALUES(?,?,?)", (tg_id, message, int(time.time())))
+        c.commit()
+
+def get_and_clear_batch_notifications() -> dict:
+    with _lock:
+        c = get_conn()
+        rows = c.execute("SELECT * FROM batch_notifications ORDER BY created_at ASC").fetchall()
+        c.execute("DELETE FROM batch_notifications")
+        c.commit()
+        
+    res = {}
+    for r in rows:
+        tg_id = r["tg_id"]
+        if tg_id not in res:
+            res[tg_id] = []
+        res[tg_id].append(r["message"])
+    return res

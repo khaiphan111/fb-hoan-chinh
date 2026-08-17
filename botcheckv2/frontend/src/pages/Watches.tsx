@@ -8,6 +8,7 @@ import { fromNow, vnd } from "../lib/utils";
 
 export default function Watches() {
   const [rows, setRows] = useState<any[]>([]);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
   async function load() {
     try {
@@ -21,6 +22,7 @@ export default function Watches() {
   }, []);
 
   async function del(id: number) {
+    if (!confirm("Dừng theo dõi mục này?")) return;
     try {
       await api(`/api/watches/${id}`, { method: "DELETE" });
       toast.success("Đã dừng theo dõi");
@@ -30,13 +32,46 @@ export default function Watches() {
     }
   }
 
+  async function bulkDelete() {
+    if (!selectedIds.length) return;
+    if (!confirm(`Xoá ${selectedIds.length} mục đã chọn?`)) return;
+    try {
+      await api('/api/user/bulk-delete', { method: "POST", body: JSON.stringify({ ids: selectedIds, platform: "watches" }) });
+      toast.success("Đã xoá các mục đã chọn");
+      setSelectedIds([]);
+      load();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.length === rows.length) setSelectedIds([]);
+    else setSelectedIds(rows.map(r => r.id));
+  }
+
+  function toggleSelect(id: number) {
+    if (selectedIds.includes(id)) setSelectedIds(selectedIds.filter(i => i !== id));
+    else setSelectedIds([...selectedIds, id]);
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">UID đang theo dõi</h1>
-        <Button variant="outline" size="sm" onClick={load}>
-          <IconRefresh size={16} /> Làm mới
-        </Button>
+        <div className="flex gap-2">
+          {selectedIds.length > 0 && (
+            <Button variant="outline" size="sm" onClick={bulkDelete} className="text-red-500 border-red-500 hover:bg-red-500/10">
+              <IconTrash size={16} /> Xoá ({selectedIds.length})
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={toggleSelectAll}>
+             Chọn tất cả
+          </Button>
+          <Button variant="outline" size="sm" onClick={load}>
+            <IconRefresh size={16} /> Làm mới
+          </Button>
+        </div>
       </div>
 
       {rows.length === 0 && (
@@ -51,6 +86,12 @@ export default function Watches() {
         {rows.map((w) => (
           <Card key={w.id} className={w.active ? "" : "opacity-50"}>
             <CardContent className="flex items-center gap-4 py-3">
+              <input 
+                type="checkbox" 
+                checked={selectedIds.includes(w.id)} 
+                onChange={() => toggleSelect(w.id)} 
+                className="w-5 h-5 rounded border-gray-300"
+              />
               <img
                 src={w.avatar_url}
                 alt=""

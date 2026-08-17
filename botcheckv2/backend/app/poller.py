@@ -55,7 +55,34 @@ class FollowerPoller:
             self._backup_task = asyncio.create_task(self._backup_loop())
         if not hasattr(self, '_proxy_task') or not (self._proxy_task and not self._proxy_task.done()):
             self._proxy_task = asyncio.create_task(self._proxy_loop())
-        log.info("Poller khoi dong (account + video + backup + proxy).")
+        if not hasattr(self, '_daily_summary_task') or not (self._daily_summary_task and not self._daily_summary_task.done()):
+            self._daily_summary_task = asyncio.create_task(self._daily_summary_loop())
+        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary).")
+
+    async def _daily_summary_loop(self):
+        while True:
+            # Run at 20:00 every day
+            now_t = time.localtime()
+            if now_t.tm_hour == 20 and getattr(self, '_last_summary_day', -1) != now_t.tm_mday:
+                self._last_summary_day = now_t.tm_mday
+                try:
+                    batches = db.get_and_clear_batch_notifications()
+                    for tg_id, msgs in batches.items():
+                        if not msgs: continue
+                        summary = f"📋 <b>BÁO CÁO CUỐI NGÀY (20:00)</b>\n━━━━━━━━━━━━━━━━━\n"
+                        # Group logic: Just list them compactly or count them if too many
+                        if len(msgs) > 10:
+                            summary += f"Bạn có <b>{len(msgs)}</b> biến động trong ngày. Dưới đây là 10 thông báo mới nhất:\n"
+                            msgs = msgs[-10:]
+                        for m in msgs:
+                            summary += f"• {m}\n"
+                        summary += "━━━━━━━━━━━━━━━━━\n<i>TikTok/FB Checker V2</i>"
+                        if self._bot:
+                            await self._bot.send_message(tg_id, summary, parse_mode="HTML")
+                except Exception as e:
+                    log.error("Lỗi gửi daily summary: %s", e)
+            
+            await asyncio.sleep(60) # Check every minute
 
     async def stop(self):
         tasks = [self._account_task, self._video_task, self._backup_task]
@@ -202,8 +229,12 @@ class FollowerPoller:
                         try: await self._zalo_bot.send_message(zalo_id, msg)
                         except Exception as e: log.warning("Notify Zalo: %s", e)
                     elif tg_id and self._bot:
-                        try: await self._bot.send_message(tg_id, msg)
-                        except Exception as e: log.warning("Notify Telegram: %s", e)
+                        if fl_diff <= -1000:
+                            smart_msg = f"⚠️ <b>CẢNH BÁO BẤT THƯỜNG:</b> Tụt Follow nhanh!\n\n{msg}"
+                            try: await self._bot.send_message(tg_id, smart_msg)
+                            except Exception as e: log.warning("Notify Telegram: %s", e)
+                        else:
+                            db.add_batch_notification(tg_id, f"TikTok @{info['username']} {dir_} {abs(fl_diff):,} followers (Tổng: {tk.fmt_num(new_fl)})")
                         
                     db.add_log("follower_change", f"@{info['username']}: {old_fl:,}→{new_fl:,} ({sign}{fl_diff:,})",
                                tg_id or zalo_id, info["username"])
@@ -442,12 +473,9 @@ class FollowerPoller:
                 bot = botmod.manager.bot
                 if bot:
                     try:
-                        await botmod._send_card(
-                            bot, w["tg_id"], w["uid"], new_status, w["note"], w["price"],
-                            avatar, header="Thay đổi trạng thái:",
-                        )
+                        db.add_batch_notification(w["tg_id"], f"FB UID {w['uid']}: {old} ➡️ {new_status}")
                     except Exception as e:
-                        db.add_log("system", f"Lỗi gửi thông báo {w['tg_id']}: {e}")
+                        db.add_log("system", f"Lỗi lưu batch_notification {w['tg_id']}: {e}")
                 
                 # Check alerts
                 await _handle_alerts("fb_watch", w["uid"], new_status, f"UID {w['uid']} status changed to {new_status}", botmod.manager.bot)
@@ -483,8 +511,7 @@ class FollowerPoller:
                         try: await self._zalo_bot.send_message(zalo_id, msg)
                         except Exception as e: log.warning("Notify Zalo FB: %s", e)
                     elif tg_id and self._bot:
-                        try: await self._bot.send_message(tg_id, msg)
-                        except Exception as e: log.warning("Notify Telegram FB: %s", e)
+                        db.add_batch_notification(tg_id, f"Tài khoản FB {res['uid']}: {old_status.upper()} ➡️ {new_status.upper()}")
                         
                     db.add_log("fb_status_change", f"FB {res['uid']}: {old_status.upper()} -> {new_status.upper()}",
                                tg_id or zalo_id, res["uid"])

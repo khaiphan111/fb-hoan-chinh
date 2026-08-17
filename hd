@@ -1,0 +1,11 @@
+Nhấn Deploy là xong!
+Cách 2: Chạy tất cả trên Vercel (Cần sửa code Backend)
+Nếu bạn bắt buộc muốn mọi thứ nằm trên Vercel:
+
+Đổi Database: Bạn bắt buộc phải từ bỏ file data.db và chuyển sang sử dụng một database online thực thụ (như Supabase, MongoDB Atlas, PostgreSQL,...).
+Cấu hình Vercel: Bạn phải đổi cấu trúc thư mục backend vào chung một folder tên là api ở thư mục gốc của dự án, và viết một file vercel.json để Vercel biết cách chạy code Python của bạn.
+Bạn muốn chọn theo hướng nào, hoặc nếu bạn muốn chọn Cách 1 mà chưa biết cách deploy backend lên Render/Railway, mình có thể hướng dẫn chi tiết tiếp cho bạn nhé!
+
+
+Khai0856981085$
+postgresql://postgres.pdfassogpzdlkxykunvw:Khai0856981085%24@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres
