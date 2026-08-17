@@ -2381,9 +2381,12 @@ async def on_camp_giveaway(cb: CallbackQuery):
     try: config = json.loads(camp.get("config", "{}"))
     except: config = {}
     
-    min_reward = int(config.get("min_reward", 1000))
-    max_reward = int(config.get("max_reward", 5000))
-    max_winners = int(config.get("max_winners", 0))
+    min_reward = int(config.get("min_reward") or 1000)
+    max_reward = int(config.get("max_reward") or 5000)
+    max_winners = int(config.get("max_winners") or 0)
+    
+    if min_reward > max_reward:
+        min_reward, max_reward = max_reward, min_reward
     
     # check max winners
     try: stats = json.loads(camp.get("stats", "{}"))
