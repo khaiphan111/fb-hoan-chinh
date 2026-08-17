@@ -33,7 +33,7 @@ import Youtube from "./pages/Youtube";
 import Zalo from "./pages/Zalo";
 import Instagram from "./pages/Instagram";
 import Codes from "./pages/Codes";
-import Broadcast from "./pages/Broadcast";
+import Campaigns from "./pages/Campaigns";
 import Proxies from "./pages/Proxies";
 import Admins from "./pages/Admins";
 import Referral from "./pages/Referral";
@@ -41,7 +41,7 @@ import Alerts from "./pages/Alerts";
 
 const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "dashboard", label: "Tổng quan", icon: IconActivity },
-  { key: "broadcast", label: "Chiến dịch", icon: IconUsers },
+  { key: "campaigns", label: "Chiến dịch", icon: IconUsers },
   { key: "watches", label: "Theo dõi FB", icon: IconListCheck },
   { key: "tiktok", label: "Tiktok", icon: IconListCheck },
   { key: "youtube", label: "Youtube", icon: IconListCheck },
@@ -206,7 +206,7 @@ export default function App() {
         { tab === "logs" && <Logs /> }
         { tab === "settings" && <Settings onSaved={refreshStatus} /> }
         { tab === "about" && <About /> }
-        { tab === "broadcast" && <Broadcast /> }
+        { tab === "campaigns" && <Campaigns /> }
         { tab === "proxies" && <Proxies /> }
         { tab === "admins" && <Admins /> }
         { tab === "referral" && <Referral /> }

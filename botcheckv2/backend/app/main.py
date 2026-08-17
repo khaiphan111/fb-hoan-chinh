@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, db, util
 from .api import router as api_router
+from .campaigns_api import router as campaigns_router
 from .bot import manager, zalo_manager
 from .admin_bot import manager as admin_manager
 from .poller import poller
@@ -23,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(campaigns_router, prefix="/api")
 
 
 import asyncio

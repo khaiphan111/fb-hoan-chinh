@@ -2361,3 +2361,63 @@ async def on_alertoff_cmd(msg: Message):
         await msg.answer(f"✅ Đã xoá cảnh báo cho {target}.")
     else:
         await msg.answer("❌ Không tìm thấy cảnh báo phù hợp.")
+
+@router.callback_query(lambda c: c.data and c.data.startswith("camp_giveaway_"))
+async def on_camp_giveaway(cb: CallbackQuery):
+    camp_id = int(cb.data.split("_")[-1])
+    tg_id = cb.from_user.id
+    
+    if db.check_campaign_participation(camp_id, tg_id):
+        await cb.answer("Bạn đã nhận lì xì từ chiến dịch này rồi!", show_alert=True)
+        return
+        
+    camp = db.get_campaign(camp_id)
+    if not camp or camp["status"] != "finished":
+        await cb.answer("Chiến dịch này không khả dụng!", show_alert=True)
+        return
+        
+    import json
+    import random
+    try: config = json.loads(camp.get("config", "{}"))
+    except: config = {}
+    
+    min_reward = int(config.get("min_reward", 1000))
+    max_reward = int(config.get("max_reward", 5000))
+    max_winners = int(config.get("max_winners", 0))
+    
+    # check max winners
+    try: stats = json.loads(camp.get("stats", "{}"))
+    except: stats = {}
+    claims = stats.get("claims", 0)
+    
+    if max_winners > 0 and claims >= max_winners:
+        await cb.answer("Rất tiếc, số lượng lì xì đã hết!", show_alert=True)
+        return
+        
+    reward = random.randint(min_reward, max_reward)
+    
+    db.adjust_balance(tg_id, reward, f"Lì xì chiến dịch #{camp_id}")
+    db.add_campaign_participant(camp_id, tg_id, "claimed", f"{reward}")
+    
+    stats["claims"] = claims + 1
+    db.update_campaign_stats(camp_id, json.dumps(stats))
+    
+    await cb.answer(f"🎉 Chúc mừng bạn nhận được {fmt_num(reward)}đ lì xì!", show_alert=True)
+
+@router.callback_query(lambda c: c.data and c.data.startswith("camp_bounty_"))
+async def on_camp_bounty(cb: CallbackQuery):
+    camp_id = int(cb.data.split("_")[-1])
+    tg_id = cb.from_user.id
+    
+    if db.check_campaign_participation(camp_id, tg_id):
+        await cb.answer("Bạn đã tham gia nhiệm vụ này rồi! (Đang chờ duyệt)", show_alert=True)
+        return
+        
+    db.add_campaign_participant(camp_id, tg_id, "pending_review", "")
+    await cb.answer("Hệ thống đã ghi nhận yêu cầu tham gia của bạn! Admin sẽ kiểm tra và duyệt sau.", show_alert=True)
+
+@router.callback_query(lambda c: c.data and c.data.startswith("use_code_"))
+async def on_use_code_camp(cb: CallbackQuery):
+    code = cb.data.replace("use_code_", "")
+    # Try to process the code
+    await cb.answer(f"Sử dụng mã {code} (Nhập thủ công trong bot: /code {code})", show_alert=True)

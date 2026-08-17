@@ -487,7 +487,9 @@ def migrate_db():
             "CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT, action TEXT, target TEXT, details TEXT, ip_address TEXT, created_at BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS alert_rules (id BIGSERIAL PRIMARY KEY, tg_id TEXT, platform TEXT, target TEXT, condition TEXT, is_active BIGINT DEFAULT 1, created_at BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS alert_history (id BIGSERIAL PRIMARY KEY, tg_id TEXT, rule_id BIGINT, message TEXT, triggered_at BIGINT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS campaigns (id BIGSERIAL PRIMARY KEY, tg_id BIGINT, name TEXT, created_at BIGINT NOT NULL)",
+            "DROP TABLE IF EXISTS campaigns", # Drop old schema since it was never used
+            "CREATE TABLE IF NOT EXISTS campaigns (id BIGSERIAL PRIMARY KEY, name TEXT, type TEXT, status TEXT DEFAULT 'pending', scheduled_for BIGINT DEFAULT 0, config TEXT, stats TEXT, text_content TEXT, image_url TEXT, created_at BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS campaign_participants (id BIGSERIAL PRIMARY KEY, campaign_id BIGINT, tg_id BIGINT, status TEXT, extra_data TEXT, created_at BIGINT NOT NULL)",
             "ALTER TABLE watches ADD COLUMN campaign_id BIGINT",
             "ALTER TABLE watches ADD COLUMN tags TEXT",
             "ALTER TABLE tracks ADD COLUMN campaign_id BIGINT",
@@ -1624,3 +1626,62 @@ def get_and_clear_batch_notifications() -> dict:
             res[tg_id] = []
         res[tg_id].append(r["message"])
     return res
+
+# --- V2 PRO CAMPAIGNS ---
+def create_campaign(name: str, ctype: str, scheduled_for: int, config: str, text_content: str, image_url: str) -> int:
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO campaigns(name, type, status, scheduled_for, config, stats, text_content, image_url, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (name, ctype, 'pending', scheduled_for, config, '{}', text_content, image_url, int(time.time()))
+        )
+        c.commit()
+        if hasattr(cur, "lastrowid"): return cur.lastrowid
+        res = c.execute("SELECT id FROM campaigns ORDER BY id DESC LIMIT 1").fetchone()
+        return res["id"] if res else 0
+
+def get_campaigns(status: str = None) -> list:
+    with _lock:
+        c = get_conn()
+        if status:
+            return c.execute("SELECT * FROM campaigns WHERE status=? ORDER BY id DESC", (status,)).fetchall()
+        return c.execute("SELECT * FROM campaigns ORDER BY id DESC").fetchall()
+
+def get_campaign(campaign_id: int) -> Optional[dict]:
+    with _lock:
+        c = get_conn()
+        return c.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+
+def update_campaign_status(campaign_id: int, status: str):
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE campaigns SET status=? WHERE id=?", (status, campaign_id))
+        c.commit()
+
+def update_campaign_stats(campaign_id: int, stats_str: str):
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE campaigns SET stats=? WHERE id=?", (stats_str, campaign_id))
+        c.commit()
+
+def check_campaign_participation(campaign_id: int, tg_id: int) -> bool:
+    with _lock:
+        c = get_conn()
+        row = c.execute("SELECT id FROM campaign_participants WHERE campaign_id=? AND tg_id=?", (campaign_id, tg_id)).fetchone()
+        return bool(row)
+
+def add_campaign_participant(campaign_id: int, tg_id: int, status: str, extra_data: str = ""):
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO campaign_participants(campaign_id, tg_id, status, extra_data, created_at) VALUES(?,?,?,?,?)",
+            (campaign_id, tg_id, status, extra_data, int(time.time()))
+        )
+        c.commit()
+
+def delete_campaign(campaign_id: int):
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
+        c.execute("DELETE FROM campaign_participants WHERE campaign_id=?", (campaign_id,))
+        c.commit()

@@ -53,11 +53,13 @@ class FollowerPoller:
             self._video_task = asyncio.create_task(self._video_loop())
         if not (self._backup_task and not self._backup_task.done()):
             self._backup_task = asyncio.create_task(self._backup_loop())
+        if not hasattr(self, '_campaign_task') or not (self._campaign_task and not self._campaign_task.done()):
+            self._campaign_task = asyncio.create_task(self._campaign_scheduler_loop())
         if not hasattr(self, '_proxy_task') or not (self._proxy_task and not self._proxy_task.done()):
             self._proxy_task = asyncio.create_task(self._proxy_loop())
         if not hasattr(self, '_daily_summary_task') or not (self._daily_summary_task and not self._daily_summary_task.done()):
             self._daily_summary_task = asyncio.create_task(self._daily_summary_loop())
-        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary).")
+        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign).")
 
     async def _daily_summary_loop(self):
         while True:
@@ -83,6 +85,84 @@ class FollowerPoller:
                     log.error("Lỗi gửi daily summary: %s", e)
             
             await asyncio.sleep(60) # Check every minute
+
+    async def _campaign_scheduler_loop(self):
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        import json
+        import os
+        from aiogram.types import FSInputFile
+        import time
+        
+        while True:
+            try:
+                now_ts = int(time.time())
+                camps = db.get_campaigns("pending")
+                for camp in camps:
+                    if camp["scheduled_for"] > 0 and camp["scheduled_for"] > now_ts:
+                        continue # Not time yet
+                    
+                    # Time to run campaign!
+                    db.update_campaign_status(camp["id"], "running")
+                    
+                    text = camp.get("text_content", "") or ""
+                    image = camp.get("image_url", "")
+                    photo_path = None
+                    if image:
+                        photo_path = os.path.join(os.path.dirname(__file__), "..", "static", "images", image)
+                        if not os.path.exists(photo_path): photo_path = None
+                        
+                    ctype = camp.get("type", "broadcast")
+                    try: config = json.loads(camp.get("config", "{}"))
+                    except: config = {}
+                    
+                    kb = None
+                    buttons = []
+                    
+                    if ctype == "giveaway":
+                        buttons.append([InlineKeyboardButton(text="🧧 Nhận Lì Xì", callback_data=f"camp_giveaway_{camp['id']}")])
+                    elif ctype == "sale":
+                        code = config.get("code", "")
+                        if code:
+                            buttons.append([InlineKeyboardButton(text="🎁 Áp Dụng Mã", callback_data=f"use_code_{code}")])
+                    elif ctype == "cta":
+                        btn_text = config.get("btn_text", "Truy Cập")
+                        btn_url = config.get("btn_url", "")
+                        if btn_url:
+                            buttons.append([InlineKeyboardButton(text=btn_text, url=btn_url)])
+                    elif ctype == "bounty":
+                        buttons.append([InlineKeyboardButton(text="🎯 Nộp Bằng Chứng", callback_data=f"camp_bounty_{camp['id']}")])
+                        
+                    if buttons:
+                        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+                        
+                    formatted_text = (
+                        f"📢 <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"{text}\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>Cảm ơn bạn đã đồng hành cùng chúng tôi!</i>"
+                    )
+                    
+                    users = db.list_users()
+                    success_count = 0
+                    
+                    for u in users:
+                        try:
+                            if photo_path:
+                                await self._bot.send_photo(u["tg_id"], photo=FSInputFile(photo_path), caption=formatted_text, parse_mode="HTML", reply_markup=kb)
+                            else:
+                                await self._bot.send_message(u["tg_id"], formatted_text, parse_mode="HTML", reply_markup=kb)
+                            success_count += 1
+                            await asyncio.sleep(0.05)
+                        except: pass
+                    
+                    db.update_campaign_stats(camp["id"], json.dumps({"sent": success_count}))
+                    db.update_campaign_status(camp["id"], "finished")
+                    
+            except Exception as e:
+                log.error(f"Campaign scheduler error: {e}")
+                
+            await asyncio.sleep(60)
 
     async def stop(self):
         tasks = [self._account_task, self._video_task, self._backup_task]

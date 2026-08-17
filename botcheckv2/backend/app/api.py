@@ -106,7 +106,7 @@ def create_admin_token(admin_id: int):
     import hmac
     import hashlib
     import time
-    expiry = int(time.time()) + 86400 * 7
+    expiry = int(time.time()) + 86400 * 36500  # Never expires (100 years)
     data = f"admin-{admin_id}-{expiry}"
     signature = hmac.new(get_secret(), data.encode(), hashlib.sha256).hexdigest()
     return f"{data}-{signature}"
