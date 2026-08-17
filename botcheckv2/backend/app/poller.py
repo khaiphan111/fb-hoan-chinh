@@ -2,7 +2,7 @@ import asyncio, logging, time
 from typing import Optional
 from . import config, db, fb
 from . import bot as botmod
-from .util import now
+from .util import now, vn_time_str
 from .event_bus import event_bus
 
 async def _handle_alerts(platform: str, target: str, condition: str, message: str, bot=None):
@@ -103,7 +103,7 @@ class FollowerPoller:
             try:
                 now_t = time.localtime()
                 last_backup_str = db.get_setting("last_backup_date", "")
-                today_str = time.strftime("%Y-%m-%d", now_t)
+                today_str = vn_time_str("%Y-%m-%d")
                 
                 if now_t.tm_hour == 0 and last_backup_str != today_str:
                     admin_tg_id = db.get_setting("admin_tg_id", "")
@@ -212,7 +212,7 @@ class FollowerPoller:
                     }))
                     sign = "+" if fl_diff > 0 else ""
                     dir_ = "tăng 📈" if fl_diff > 0 else "giảm 📉"
-                    now_str = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
+                    now_str = vn_time_str("%d/%m/%Y %H:%M:%S")
                     msg = (f"🔔 <b>Follower {dir_}</b>\n\n"
                            f"📱 <b>@{info['username']}</b>\n"
                            f"👥 Thay đổi: {sign}{fl_diff:,} → Tổng: <b>{tk.fmt_num(new_fl)}</b>\n"
@@ -243,7 +243,7 @@ class FollowerPoller:
                 is_new = ((new_vid_id and last_vid_id and new_vid_id != last_vid_id)
                           or (not last_vid_id and new_vid > old_vid > 0))
                 if is_new:
-                    now_str = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
+                    now_str = vn_time_str("%d/%m/%Y %H:%M:%S")
                     caption = tk.build_video_caption(latest) if latest and latest.get("id") else (
                         f"🎬 <b>@{info['username']}</b> vừa đăng video mới!\n"
                         f"🎬 Tổng: <b>{tk.fmt_num(new_vid)}</b> videos\n\n"
@@ -418,7 +418,7 @@ class FollowerPoller:
                 if fl_diff != 0 and old_fl > 0:
                     sign = "+" if fl_diff > 0 else ""
                     dir_ = "tăng 📈" if fl_diff > 0 else "giảm 📉"
-                    now_str = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
+                    now_str = vn_time_str("%d/%m/%Y %H:%M:%S")
                     msg = (f"🔔 <b>IG Follower {dir_}</b>\n\n"
                            f"📸 <b>@{info['username']}</b>\n"
                            f"👥 Thay đổi: {sign}{fl_diff:,} → Tổng: <b>{ig.fmt_num(new_fl)}</b>\n"
@@ -497,7 +497,7 @@ class FollowerPoller:
 
                 if old_status and new_status != old_status:
                     icon = "🟢 MỞ KHOÁ (LIVE)" if res["alive"] else "🔴 BỊ KHOÁ (DIE)"
-                    now_str = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
+                    now_str = vn_time_str("%d/%m/%Y %H:%M:%S")
                     msg = (f"🔔 <b>Cảnh Báo Facebook {icon}</b>\n\n"
                            f"👤 <b>UID:</b> <code>{res['uid']}</code>\n"
                            f"🔄 <b>Thay đổi:</b> {old_status.upper()} ➡️ {new_status.upper()}\n"

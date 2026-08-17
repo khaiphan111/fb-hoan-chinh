@@ -4,6 +4,7 @@ import httpx
 from . import db
 
 log = logging.getLogger(__name__)
+from . import util
 
 def parse_ig_username(raw: str) -> Optional[str]:
     raw = raw.strip().rstrip("/")
@@ -363,7 +364,7 @@ def build_ig_video_caption(v: dict, old: dict = None) -> str:
         ]
         if v.get("views"): lines.append(f"▶️ Views  : <b>{d2s(dv)}</b>")
         
-    now_str = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
+    now_str = util.vn_time_str("%d/%m/%Y %H:%M:%S")
     lines += [
         "", f"⏰ Thời gian: <b>{now_str}</b>",
         "", f"🔗 <a href=\"{v['url']}\">▶ Xem bài viết ngay</a>",

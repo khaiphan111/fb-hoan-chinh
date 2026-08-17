@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, db
+from . import config, db, util
 from .api import router as api_router
 from .bot import manager, zalo_manager
 from .admin_bot import manager as admin_manager
@@ -55,7 +55,7 @@ async def on_startup():
                         await manager.bot.send_message(
                             int(admin_tg_id),
                             "\u2705 <b>Bot đã kết nối thành công!</b>\n"
-                            f"\u23f0 Thời gian: {__import__('time').strftime('%H:%M:%S %d/%m/%Y')}\n"
+                            f"\u23f0 Thời gian: {util.vn_time_str('%H:%M:%S %d/%m/%Y')}\n"
                             "\U0001f916 Đang polling và sẵn sàng nhận lệnh.",
                             parse_mode="HTML"
                         )

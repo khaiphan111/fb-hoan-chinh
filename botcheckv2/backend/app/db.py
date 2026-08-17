@@ -1564,7 +1564,6 @@ def delete_campaign(campaign_id: int, tg_id: int) -> bool:
 
 # Gamification Daily Check-in
 def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
-    # Returns (success, streak, reward)
     with _lock:
         now_ts = int(time.time())
         day_start = now_ts - (now_ts % 86400)
@@ -1572,14 +1571,12 @@ def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
         row = c.execute("SELECT * FROM daily_checkins WHERE tg_id=?", (tg_id,)).fetchone()
         
         streak = 1
-        reward = 1000 # default 1000 balance
         
         if row:
             last = row["last_checkin"]
             if last >= day_start:
-                return False, row["streak"], 0 # Already checked in today
+                return False, row["streak"], 0
             
-            # Check if streak continues (last checkin was yesterday)
             if last >= day_start - 86400:
                 streak = row["streak"] + 1
             else:
@@ -1589,11 +1586,18 @@ def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
         else:
             c.execute("INSERT INTO daily_checkins(tg_id, last_checkin, streak, total_checkins) VALUES(?,?,1,1)", (tg_id, now_ts))
             
-        # Bonus for streaks
-        if streak % 7 == 0:
-            reward = 5000
-        elif streak % 30 == 0:
-            reward = 50000
+        try:
+            reward = int(get_setting("daily_reward_base", "1000"))
+        except: reward = 1000
+        
+        if streak % 30 == 0:
+            try:
+                reward = int(get_setting("daily_reward_30d", "50000"))
+            except: reward = 50000
+        elif streak % 7 == 0:
+            try:
+                reward = int(get_setting("daily_reward_7d", "5000"))
+            except: reward = 5000
             
         c.commit()
     adjust_balance(tg_id, reward, f"Điểm danh hằng ngày (Chuỗi {streak} ngày)")

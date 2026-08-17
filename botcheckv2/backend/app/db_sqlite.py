@@ -781,7 +781,6 @@ def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
         row = c.execute("SELECT * FROM daily_checkins WHERE tg_id=?", (tg_id,)).fetchone()
         
         streak = 1
-        reward = 1000
         
         if row:
             last = row["last_checkin"]
@@ -797,10 +796,18 @@ def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
         else:
             c.execute("INSERT INTO daily_checkins(tg_id, last_checkin, streak, total_checkins) VALUES(?,?,1,1)", (tg_id, now_ts))
             
-        if streak % 7 == 0:
-            reward = 5000
-        elif streak % 30 == 0:
-            reward = 50000
+        try:
+            reward = int(get_setting("daily_reward_base", "1000"))
+        except: reward = 1000
+        
+        if streak % 30 == 0:
+            try:
+                reward = int(get_setting("daily_reward_30d", "50000"))
+            except: reward = 50000
+        elif streak % 7 == 0:
+            try:
+                reward = int(get_setting("daily_reward_7d", "5000"))
+            except: reward = 5000
             
         c.commit()
     adjust_balance(tg_id, reward, f"Điểm danh hằng ngày (Chuỗi {streak} ngày)")

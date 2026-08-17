@@ -435,6 +435,27 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
 
       <Card>
         <CardHeader>
+          <CardTitle>Thưởng Điểm Danh Hằng Ngày</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label>Thưởng Cơ Bản (VNĐ / Ngày)</Label>
+            <Input type="number" value={s.daily_reward_base || ""} onChange={(e) => up("daily_reward_base", e.target.value)} placeholder="Mặc định: 1000" />
+            <p className="text-xs text-muted-foreground">Phần thưởng nhận được khi người dùng gõ lệnh /daily.</p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Thưởng Chuỗi 7 Ngày (VNĐ)</Label>
+            <Input type="number" value={s.daily_reward_7d || ""} onChange={(e) => up("daily_reward_7d", e.target.value)} placeholder="Mặc định: 5000" />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Thưởng Chuỗi 30 Ngày (VNĐ)</Label>
+            <Input type="number" value={s.daily_reward_30d || ""} onChange={(e) => up("daily_reward_30d", e.target.value)} placeholder="Mặc định: 50000" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Bảng giá nâng cấp VIP tự động (Tổng nạp)</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">

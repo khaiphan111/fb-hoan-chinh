@@ -12,6 +12,12 @@ def vnd(n) -> str:
 def now() -> int:
     return int(time.time())
 
+def vn_time_str(fmt="%H:%M:%S %d/%m/%Y", ts=None) -> str:
+    import datetime
+    tz_vn = datetime.timezone(datetime.timedelta(hours=7))
+    dt = datetime.datetime.now(tz_vn) if ts is None else datetime.datetime.fromtimestamp(ts, tz_vn)
+    return dt.strftime(fmt)
+
 
 def parse_check_args(text: str):
     parts = (text or "").split()

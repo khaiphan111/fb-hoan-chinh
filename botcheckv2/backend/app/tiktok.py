@@ -3,6 +3,7 @@ from typing import Optional
 import httpx
 
 log = logging.getLogger(__name__)
+from . import util
 
 # Danh sách User-Agent thực tế từ các thiết bị phổ biến
 USER_AGENTS = [
@@ -362,7 +363,7 @@ def build_video_caption(v: dict, old: dict = None) -> str:
             f"🔁 Shares  : <b>{d2s(ds)}</b>",
             f"⭐ Favorites: <b>{d2s(df)}</b>",
         ]
-    now_str = time.strftime("%d/%m/%Y %H:%M:%S", time.localtime())
+    now_str = util.vn_time_str("%d/%m/%Y %H:%M:%S")
     lines += [
         "", f"⏰ Thời gian: <b>{now_str}</b>",
         "", f"🔗 <a href=\"{v['url']}\">▶ Xem video ngay</a>",

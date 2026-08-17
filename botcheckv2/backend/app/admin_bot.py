@@ -86,8 +86,8 @@ async def cmd_phatcode(msg: Message):
         
         expire_text = "Vĩnh viễn"
         if expire_at > 0:
-            import datetime
-            expire_text = datetime.datetime.fromtimestamp(expire_at).strftime('%H:%M %d/%m/%Y')
+            from . import util
+            expire_text = util.vn_time_str('%H:%M %d/%m/%Y', expire_at)
             
         await msg.answer(
             f"✅ <b>TẠO MÃ THÀNH CÔNG</b>\n\n"
@@ -148,8 +148,8 @@ async def broadcast_code_to_all(main_bot_manager, code: str, amount: int, expire
     
     expire_text = "Vĩnh viễn"
     if expire_at > 0:
-        import datetime
-        expire_text = datetime.datetime.fromtimestamp(expire_at).strftime('%H:%M %d/%m/%Y')
+        from . import util
+        expire_text = util.vn_time_str('%H:%M %d/%m/%Y', expire_at)
         
     text = (
         f"🎉 <b>QUÀ TẶNG TỪ ADMIN</b> 🎉\n\n"

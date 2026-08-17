@@ -25,7 +25,7 @@ class FBNoteState(StatesGroup):
     uid = None
 
 from . import db
-from .util import now, parse_check_args, vnd
+from .util import now, parse_check_args, vnd, vn_time_str
 DAY = 86400
 from .tiktok import parse_username, fetch_tiktok_info, fmt_num, build_info_caption
 from .ig import (
@@ -274,7 +274,7 @@ async def on_start(msg: Message):
             f"👤 <b>Tên:</b> {u.full_name}\n"
             f"🔗 <b>Username:</b> @{u.username if u.username else 'Không có'}\n"
             f"🆔 <b>ID:</b> <code>{u.id}</code>\n"
-            f"🕒 <b>Thời gian:</b> {time.strftime('%H:%M:%S %d/%m/%Y')}\n"
+            f"🕒 <b>Thời gian:</b> {vn_time_str('%H:%M:%S %d/%m/%Y')}\n"
         )
         if ref_id > 0 and ref_id != u.id:
             admin_msg += f"🤝 <b>Mời bởi:</b> <code>{ref_id}</code>\n"
@@ -876,7 +876,7 @@ async def on_mycodes(msg: Message):
         
         expire_text = "Vĩnh viễn"
         if expire_at > 0:
-            expire_text = datetime.datetime.fromtimestamp(expire_at).strftime('%H:%M %d/%m')
+            expire_text = vn_time_str('%H:%M %d/%m', expire_at)
             
         text += f"• <code>{code_str}</code>: <b>{vnd(amount)}</b> (Hạn: {expire_text})\n"
         keyboard.append([InlineKeyboardButton(text=f"🎁 Dùng mã {vnd(amount)}", callback_data=f"use_code_{code_str}")])
@@ -1790,7 +1790,7 @@ async def on_chart(cb: CallbackQuery):
         await cb.answer("Chưa đủ dữ liệu để vẽ biểu đồ (Cần ít nhất 2 lần quét).", show_alert=True)
         return
         
-    labels = [time.strftime("%d/%m %H:%M", time.localtime(r["created_at"])) for r in rows]
+    labels = [vn_time_str("%d/%m %H:%M", r["created_at"]) for r in rows]
     data = [r["stat_value"] for r in rows]
     
     chart_config = {
