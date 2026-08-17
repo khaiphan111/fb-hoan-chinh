@@ -131,6 +131,30 @@ export default function Campaigns() {
               </div>
 
               <div>
+                <label className="text-sm font-medium mb-1 block">Đối tượng nhận thông báo</label>
+                <select 
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  value={config.target_type || 'all'} 
+                  onChange={e => setConfig({...config, target_type: e.target.value})}
+                >
+                  <option value="all">Tất cả người dùng hệ thống</option>
+                  <option value="specific">Chỉ định Telegram ID (Dùng để test)</option>
+                </select>
+              </div>
+
+              {config.target_type === 'specific' && (
+                <div className="p-3 border border-blue-500/30 rounded-md bg-blue-500/5 animate-in slide-in-from-top-2">
+                  <label className="text-sm font-medium mb-1 block">Nhập Telegram ID (cách nhau bởi dấu phẩy)</label>
+                  <Input 
+                    value={config.target_users || ''} 
+                    onChange={e => setConfig({...config, target_users: e.target.value})} 
+                    placeholder="VD: 5964340237, 123456789" 
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">Gợi ý: Dùng tính năng này để gửi thử nghiệm đến máy bạn trước khi gửi hàng loạt.</p>
+                </div>
+              )}
+
+              <div>
                 <label className="text-sm font-medium mb-1 block">Nội dung tin nhắn (Hỗ trợ HTML)</label>
                 <textarea 
                   rows={4} 

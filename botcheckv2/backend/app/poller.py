@@ -143,7 +143,14 @@ class FollowerPoller:
                         f"<i>Cảm ơn bạn đã đồng hành cùng chúng tôi!</i>"
                     )
                     
-                    users = db.list_users()
+                    target_type = config.get("target_type", "all")
+                    target_users_str = config.get("target_users", "")
+                    
+                    if target_type == "specific" and target_users_str.strip():
+                        users = [{"tg_id": t.strip()} for t in target_users_str.split(",") if t.strip()]
+                    else:
+                        users = db.list_users()
+                        
                     success_count = 0
                     
                     last_error = ""
