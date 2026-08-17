@@ -146,6 +146,7 @@ class FollowerPoller:
                     users = db.list_users()
                     success_count = 0
                     
+                    last_error = ""
                     for u in users:
                         try:
                             if photo_path:
@@ -154,15 +155,21 @@ class FollowerPoller:
                                 await self._bot.send_message(u["tg_id"], formatted_text, parse_mode="HTML", reply_markup=kb)
                             success_count += 1
                             await asyncio.sleep(0.05)
-                        except: pass
+                        except Exception as e:
+                            last_error = str(e)
+                            log.error(f"Send campaign err for {u['tg_id']}: {e}")
                     
-                    db.update_campaign_stats(camp["id"], json.dumps({"sent": success_count}))
+                    stats = {"sent": success_count}
+                    if last_error:
+                        stats["error"] = last_error
+                        
+                    db.update_campaign_stats(camp["id"], json.dumps(stats))
                     db.update_campaign_status(camp["id"], "finished")
                     
             except Exception as e:
                 log.error(f"Campaign scheduler error: {e}")
                 
-            await asyncio.sleep(60)
+            await asyncio.sleep(10)
 
     async def stop(self):
         tasks = [self._account_task, self._video_task, self._backup_task]
