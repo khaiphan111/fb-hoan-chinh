@@ -130,6 +130,52 @@ export default function Campaigns() {
                 </select>
               </div>
 
+              {/* Dynamic Config Area */}
+              {type === 'giveaway' && (
+                <div className="flex flex-col gap-3 p-3 border border-red-500/30 rounded-md bg-red-500/5 animate-in slide-in-from-top-2">
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Tiền Min (VNĐ)</label>
+                    <Input type="number" value={config.min_reward || ''} onChange={e => setConfig({...config, min_reward: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Tiền Max (VNĐ)</label>
+                    <Input type="number" value={config.max_reward || ''} onChange={e => setConfig({...config, max_reward: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Số người tối đa (0=vô hạn)</label>
+                    <Input type="number" value={config.max_winners || ''} onChange={e => setConfig({...config, max_winners: e.target.value})} />
+                  </div>
+                </div>
+              )}
+
+              {type === 'sale' && (
+                <div className="flex flex-col gap-3 p-3 border border-orange-500/30 rounded-md bg-orange-500/5 animate-in slide-in-from-top-2">
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Mã Code áp dụng</label>
+                    <Input value={config.code || ''} onChange={e => setConfig({...config, code: e.target.value})} placeholder="VD: TET2026" />
+                  </div>
+                </div>
+              )}
+
+              {type === 'cta' && (
+                <div className="flex flex-col gap-3 p-3 border border-blue-500/30 rounded-md bg-blue-500/5 animate-in slide-in-from-top-2">
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Tên Nút Bấm</label>
+                    <Input value={config.btn_text || ''} onChange={e => setConfig({...config, btn_text: e.target.value})} placeholder="VD: Tham Gia Ngay" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium mb-1 block">Đường Link (URL)</label>
+                    <Input value={config.btn_url || ''} onChange={e => setConfig({...config, btn_url: e.target.value})} placeholder="https://..." />
+                  </div>
+                </div>
+              )}
+
+              {type === 'bounty' && (
+                <div className="p-3 border border-purple-500/30 rounded-md bg-purple-500/5 animate-in slide-in-from-top-2">
+                  <p className="text-xs text-muted-foreground">Loại chiến dịch này sẽ đính kèm nút "Nộp Bằng Chứng" vào tin nhắn.</p>
+                </div>
+              )}
+
               <div>
                 <label className="text-sm font-medium mb-1 block">Đối tượng nhận thông báo</label>
                 <select 
@@ -174,46 +220,6 @@ export default function Campaigns() {
                   <Input type="file" accept="image/*" onChange={(e: any) => e.target.files && setFile(e.target.files[0])} />
                 </div>
               </div>
-
-              {/* Dynamic Config Area */}
-              {type === 'giveaway' && (
-                <div className="flex flex-col gap-3 p-3 border border-red-500/30 rounded-md bg-red-500/5">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Tiền Min (VNĐ)</label>
-                    <Input type="number" value={config.min_reward || ''} onChange={e => setConfig({...config, min_reward: e.target.value})} />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Tiền Max (VNĐ)</label>
-                    <Input type="number" value={config.max_reward || ''} onChange={e => setConfig({...config, max_reward: e.target.value})} />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Số người tối đa (0=vô hạn)</label>
-                    <Input type="number" value={config.max_winners || ''} onChange={e => setConfig({...config, max_winners: e.target.value})} />
-                  </div>
-                </div>
-              )}
-
-              {type === 'sale' && (
-                <div className="flex flex-col gap-3 p-3 border border-orange-500/30 rounded-md bg-orange-500/5">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Mã Code áp dụng</label>
-                    <Input value={config.code || ''} onChange={e => setConfig({...config, code: e.target.value})} placeholder="VD: TET2026" />
-                  </div>
-                </div>
-              )}
-
-              {type === 'cta' && (
-                <div className="flex flex-col gap-3 p-3 border border-blue-500/30 rounded-md bg-blue-500/5">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Tên Nút Bấm</label>
-                    <Input value={config.btn_text || ''} onChange={e => setConfig({...config, btn_text: e.target.value})} placeholder="VD: Tham Gia Ngay" />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Đường Link (URL)</label>
-                    <Input value={config.btn_url || ''} onChange={e => setConfig({...config, btn_url: e.target.value})} placeholder="https://..." />
-                  </div>
-                </div>
-              )}
 
               <Button className="w-full mt-2" onClick={handleCreate} disabled={loading}>
                 {loading ? "Đang xử lý..." : (scheduledFor ? "Lưu Lịch Gửi" : "Gửi Ngay")}
