@@ -174,6 +174,7 @@ class FollowerPoller:
                 db.update_track_stats(track["id"], new_fl, info["following"], new_vid, new_vid_id)
                 db.record_track_history(track["id"], "tiktok_account", "followers", new_fl)
 
+                fl_diff = new_fl - old_fl
                 if fl_diff != 0:
                     asyncio.create_task(event_bus.emit("tiktok_follower_change", {
                         "username": info["username"],

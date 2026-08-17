@@ -654,7 +654,7 @@ def user_fb_tracks(tg_user_id: int, zalo_user_id: str = "") -> list:
 def all_active_fb_tracks() -> list:
     return [dict(r) for r in get_conn().execute("SELECT * FROM fb_tracks").fetchall()]
 
-def update_fb_track_status_new(track_id: int, status: str, avatar_url: str):
+def update_fb_track_status(track_id: int, status: str, avatar_url: str):
     with _lock:
         c = get_conn()
         c.execute("""
