@@ -45,3 +45,12 @@ def delete_campaign(id: int, _=Depends(auth)):
         raise HTTPException(status_code=404, detail="Campaign not found")
     db.delete_campaign(id)
     return {"ok": True}
+
+@router.post("/{id}/retry")
+def retry_campaign(id: int, _=Depends(auth)):
+    camp = db.get_campaign(id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    db.update_campaign_status(id, "pending")
+    return {"ok": True}
+

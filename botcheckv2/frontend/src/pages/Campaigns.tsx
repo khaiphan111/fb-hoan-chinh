@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import toast from "react-hot-toast";
 import { Button, Card, CardContent, Input } from "../components/ui";
 import { api } from "../lib/api";
-import { IconSend, IconPlus, IconTrash, IconClock, IconGift, IconTarget, IconTicket, IconBroadcast } from "@tabler/icons-react";
+import { IconSend, IconPlus, IconTrash, IconClock, IconGift, IconTarget, IconTicket, IconBroadcast, IconRefresh } from "@tabler/icons-react";
+
 
 export default function Campaigns() {
   const [camps, setCamps] = useState<any[]>([]);
@@ -29,6 +30,16 @@ export default function Campaigns() {
     fetchCamps();
   }, []);
 
+  const handleRetry = async (id: number) => {
+    try {
+      await api(`/api/admin/campaigns/${id}/retry`, { method: "POST" });
+      toast.success("Đã đưa chiến dịch vào hàng chờ gửi lại!");
+      fetchCamps();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  };
+
   const handleDelete = async (id: number) => {
     if (!window.confirm("Xóa chiến dịch này?")) return;
     try {
@@ -39,6 +50,7 @@ export default function Campaigns() {
       toast.error(e.message);
     }
   };
+
 
   const handleCreate = async () => {
     if (!name || (!text.trim() && !file)) return toast.error("Vui lòng nhập tên và nội dung");
@@ -277,11 +289,15 @@ export default function Campaigns() {
                           <div>{statsObj.claims !== undefined ? `Lượt nhận: ${statsObj.claims}` : ''}</div>
                           {statsObj.error && <div className="text-red-500 text-xs mt-1" title={statsObj.error}>Lỗi: {statsObj.error}</div>}
                         </td>
-                        <td className="px-4 py-3 text-right">
-                          <Button variant="ghost" size="sm" onClick={() => handleDelete(c.id)} className="text-red-500 hover:text-red-600 hover:bg-red-500/10">
+                        <td className="px-4 py-3 text-right flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => handleRetry(c.id)} title="Gửi Lại Chiến Dịch" className="text-blue-500 hover:text-blue-600 hover:bg-blue-500/10">
+                            <IconRefresh size={16} />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleDelete(c.id)} title="Xóa" className="text-red-500 hover:text-red-600 hover:bg-red-500/10">
                             <IconTrash size={16} />
                           </Button>
                         </td>
+
                       </tr>
                     );
                   })}

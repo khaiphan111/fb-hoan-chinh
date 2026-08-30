@@ -152,27 +152,54 @@ class FollowerPoller:
             try:
                 now_ts = int(time.time())
                 camps = db.get_campaigns("pending")
+                
+                # Lấy bot instance từ self._bot hoặc fallback sang manager.bot
+                bot_inst = self._bot
+                if not bot_inst:
+                    try:
+                        from .bot import manager
+                        if manager and manager.bot:
+                            bot_inst = manager.bot
+                    except Exception:
+                        pass
+                
+                if camps and not bot_inst:
+                    log.warning("Campaign loop: Bot instance chưa sẵn sàng, chờ 5s...")
+                    await asyncio.sleep(5)
+                    continue
+
                 for camp in camps:
-                    if camp["scheduled_for"] > 0 and camp["scheduled_for"] > now_ts:
-                        continue # Not time yet
-                    
-                    # Time to run campaign!
+                    if camp.get("scheduled_for", 0) > 0 and camp["scheduled_for"] > now_ts:
+                        continue # Chưa tới giờ gửi
+
+                    # Cập nhật trạng thái đang chạy
                     db.update_campaign_status(camp["id"], "running")
-                    
+
                     text = camp.get("text_content", "") or ""
                     image = camp.get("image_url", "")
                     photo_path = None
                     if image:
-                        photo_path = os.path.join(os.path.dirname(__file__), "..", "static", "images", image)
-                        if not os.path.exists(photo_path): photo_path = None
-                        
+                        # Kiểm tra nhiều đường dẫn khả thi của ảnh
+                        candidates = [
+                            os.path.join(os.path.dirname(__file__), "..", "static", "images", image),
+                            os.path.join(os.path.dirname(__file__), "static", "images", image),
+                            os.path.join(os.getcwd(), "static", "images", image),
+                            os.path.join(os.getcwd(), "app", "static", "images", image),
+                        ]
+                        for cand in candidates:
+                            if os.path.exists(cand):
+                                photo_path = cand
+                                break
+
                     ctype = camp.get("type", "broadcast")
-                    try: config = json.loads(camp.get("config", "{}"))
-                    except: config = {}
-                    
+                    try:
+                        config = json.loads(camp.get("config", "{}"))
+                    except Exception:
+                        config = {}
+
                     kb = None
                     buttons = []
-                    
+
                     if ctype == "giveaway":
                         buttons.append([InlineKeyboardButton(text="🧧 Nhận Lì Xì", callback_data=f"camp_giveaway_{camp['id']}")])
                     elif ctype == "sale":
@@ -186,52 +213,57 @@ class FollowerPoller:
                             buttons.append([InlineKeyboardButton(text=btn_text, url=btn_url)])
                     elif ctype == "bounty":
                         buttons.append([InlineKeyboardButton(text="🎯 Nộp Bằng Chứng", callback_data=f"camp_bounty_{camp['id']}")])
-                        
+
                     if buttons:
                         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-                        
-                    formatted_text = (
-                        f"📢 <b>THÔNG BÁO TỪ HỆ THỐNG</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"{text}\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"<i>Cảm ơn bạn đã đồng hành cùng chúng tôi!</i>"
-                    )
-                    
+
                     target_type = config.get("target_type", "all")
                     target_users_str = config.get("target_users", "")
-                    
+
                     if target_type == "specific" and target_users_str.strip():
                         users = [{"tg_id": t.strip()} for t in target_users_str.split(",") if t.strip()]
                     else:
                         users = db.list_users()
-                        
+
                     success_count = 0
-                    
                     last_error = ""
                     for u in users:
                         try:
+                            tg_id = int(u["tg_id"])
                             if photo_path:
-                                await self._bot.send_photo(u["tg_id"], photo=FSInputFile(photo_path), caption=formatted_text, parse_mode="HTML", reply_markup=kb)
+                                await bot_inst.send_photo(
+                                    tg_id,
+                                    photo=FSInputFile(photo_path),
+                                    caption=text if text else None,
+                                    parse_mode="HTML" if text else None,
+                                    reply_markup=kb
+                                )
                             else:
-                                await self._bot.send_message(u["tg_id"], formatted_text, parse_mode="HTML", reply_markup=kb)
+                                await bot_inst.send_message(
+                                    tg_id,
+                                    text,
+                                    parse_mode="HTML",
+                                    reply_markup=kb
+                                )
                             success_count += 1
                             await asyncio.sleep(0.05)
                         except Exception as e:
                             last_error = str(e)
-                            log.error(f"Send campaign err for {u['tg_id']}: {e}")
-                    
+                            log.error(f"Send campaign #{camp['id']} err for {u.get('tg_id')}: {e}")
+
                     stats = {"sent": success_count}
                     if last_error:
                         stats["error"] = last_error
-                        
+
                     db.update_campaign_stats(camp["id"], json.dumps(stats))
                     db.update_campaign_status(camp["id"], "finished")
-                    
+                    log.info(f"Campaign #{camp['id']} finished! Sent to {success_count} users.")
+
             except Exception as e:
                 log.error(f"Campaign scheduler error: {e}")
-                
-            await asyncio.sleep(10)
+
+            await asyncio.sleep(5)
+
 
     async def stop(self):
         tasks = [self._account_task, self._video_task, self._backup_task]
