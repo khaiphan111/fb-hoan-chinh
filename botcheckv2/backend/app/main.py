@@ -35,6 +35,8 @@ async def on_startup():
     db.init_db()
     print("DEBUG: Start migrate_db", flush=True)
     db.migrate_db()
+    print("DEBUG: Start migrate_new_features", flush=True)
+    db.migrate_new_features()
     
     async def start_services():
         token = db.get_setting("bot_token")

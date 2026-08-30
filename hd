@@ -1,11 +1,93 @@
-Nhấn Deploy là xong!
-Cách 2: Chạy tất cả trên Vercel (Cần sửa code Backend)
-Nếu bạn bắt buộc muốn mọi thứ nằm trên Vercel:
+================================================================================
+           📖 HƯỚNG DẪN CÁC LỆNH ADMIN & USER - CHECKER V2 PRO
+================================================================================
 
-Đổi Database: Bạn bắt buộc phải từ bỏ file data.db và chuyển sang sử dụng một database online thực thụ (như Supabase, MongoDB Atlas, PostgreSQL,...).
-Cấu hình Vercel: Bạn phải đổi cấu trúc thư mục backend vào chung một folder tên là api ở thư mục gốc của dự án, và viết một file vercel.json để Vercel biết cách chạy code Python của bạn.
-Bạn muốn chọn theo hướng nào, hoặc nếu bạn muốn chọn Cách 1 mà chưa biết cách deploy backend lên Render/Railway, mình có thể hướng dẫn chi tiết tiếp cho bạn nhé!
+🛠 1. DANH SÁCH & HƯỚNG DẪN CÁC LỆNH ADMIN (/adm <subcmd>)
+--------------------------------------------------------------------------------
+Chỉ dành cho Telegram ID được cấu hình làm Admin trong Web Dashboard.
+
+[Cú Pháp]                              [Chức Năng & Ví Dụ Chi Tiết]
+--------------------------------------------------------------------------------
+• /adm topup <id> <tiền>               Cộng tiền nạp cho user (tính vào tổng nạp & nâng VIP tự động)
+                                       VD: /adm topup 123456789 50000
+
+• /adm setbal <id> <tiền>              Set số dư tài khoản trực tiếp (không tính tổng nạp)
+                                       VD: /adm setbal 123456789 100000
+
+• /adm setvip <id> <cấp> [ngày]        Nâng cấp VIP (1, 2, 3) và gia hạn thêm số ngày dùng
+                                       VD: /adm setvip 123456789 2 30 (VIP 2, 30 ngày)
+
+• /adm ban <id> [lý_do]                Khoá tài khoản user, chặn dùng bot
+                                       VD: /adm ban 123456789 Vi phạm quy định
+
+• /adm unban <id>                      Mở khoá tài khoản cho user
+                                       VD: /adm unban 123456789
+
+• /adm info <id>                       Xem toàn bộ thông tin chi tiết của user theo Telegram ID
+                                       VD: /adm info 123456789
+
+• /adm find <@username>                Tìm kiếm thông tin user theo username Telegram
+                                       VD: /adm find @khaitradecoin
+
+• /adm revenue                         Xem báo cáo doanh thu (Hôm nay, Tháng, Tổng nạp)
+• /adm stats                           Xem thống kê tổng quan hệ thống (User, VIP, Active)
+• /adm pending                         Xem danh sách đơn rút tiền hoa hồng chờ duyệt
+
+• /adm broadcast <tin>                 Gửi thông báo tới toàn bộ người dùng trong bot
+                                       VD: /adm broadcast Bảo trì hệ thống 15 phút
+
+• /adm broadcast vip <tin>             Gửi thông báo riêng cho các thành viên VIP (VIP > 0)
+• /adm broadcast inactive <tin>        Gửi thông báo cho user không hoạt động 7 ngày qua
+
+• /adm promo <prefix> <tiền> [lượt] [hạn]
+                                       Tạo mã giftcode khuyến mãi cho người dùng nhập qua /code
+                                       VD: /adm promo SALE 50000 100 24h
 
 
-Khai0856981085$
-postgresql://postgres.pdfassogpzdlkxykunvw:Khai0856981085%24@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres
+================================================================================
+👤 2. DANH SÁCH CÁC LỆNH DÀNH CHO NGƯỜI DÙNG (USER COMMANDS)
+--------------------------------------------------------------------------------
+
+[Tài Khoản & Nạp Tiền]
+• /balance                             Xem số dư hiện tại
+• /bank                                Xem thông tin nạp tiền & lấy QR chuyển khoản
+• /bank <số_tiền>                      Nạp nhanh số tiền cố định (VD: /bank 50000)
+• /ref                                 Lấy link giới thiệu nhận hoa hồng
+• /doitien <số_tiền>                   Đổi hoa hồng sang số dư chính (+10% Bonus)
+• /ruttien <tiền> <NH> <STK>           Tạo đơn rút tiền hoa hồng về ngân hàng
+• /chuyentien <user_id> <tiền>         Chuyển số dư tài khoản cho người dùng khác
+
+[Gói Sử Dụng & VIP]
+• /muagoi                              Xem bảng giá & mua gói dùng theo ngày (1, 3, 5, 7 ngày)
+• /muagoi <số_ngày>                    Mua thẳng gói ngày (VD: /muagoi 7)
+• /sub                                 Xem và mua các gói theo tháng
+• /vip                                 Xem cấp độ VIP và đặc quyền
+• /code <mã>                           Nhập mã quà tặng / Giftcode
+• /mycodes                             Xem kho mã quà tặng đã nhận
+
+[Tính Năng Nâng Cao]
+• /daily                               Điểm danh nhận thưởng hàng ngày
+• /stats                               Dashboard thống kê cá nhân
+• /history [platform]                  Lịch sử check 7 ngày gần nhất
+• /top [topup|ref]                     Bảng xếp hạng nạp tiền & hoa hồng tháng
+• /dailyreport <giờ|off>               Cài đặt hẹn giờ nhận báo cáo dàn nick tự động hằng ngày
+
+[File & Danh Sách]
+• /checkfile                           Check hàng loạt UID Facebook từ file .txt (Async Batching)
+• /checkcookie                         Check dàn Cookie format UID|PASS|COOKIE|2FA từ file .txt
+• /newlist <tên>                       Tạo danh sách lưu tài khoản mới
+• /addtolist <tên> <uid>               Thêm UID vào danh sách
+• /scanlist <tên>                      Quét siêu tốc Live/Die toàn bộ danh sách
+• /lists                               Xem tất cả các danh sách đã tạo
+• /deletelist <tên>                    Xóa danh sách
+
+[Nền Tảng Tracking]
+• /fb <uid>                            Check nhanh 1 UID Facebook
+• /trackfb <uid>                       Theo dõi Live/Die tự động UID Facebook
+• /tiktok <username>                   Check thông tin kênh TikTok
+• /track <username>                    Theo dõi biến động follower TikTok
+• /ig <username>                       Check thông tin Instagram
+• /yt <link/user>                      Check kênh YouTube
+• /zalo <sđt>                          Check SĐT Zalo Live/Die
+
+================================================================================

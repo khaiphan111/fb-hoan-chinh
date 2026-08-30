@@ -503,7 +503,8 @@ def migrate_db():
             "ALTER TABLE zalo_tracks ADD COLUMN campaign_id BIGINT",
             "ALTER TABLE zalo_tracks ADD COLUMN tags TEXT",
             "CREATE TABLE IF NOT EXISTS daily_checkins (tg_id BIGINT PRIMARY KEY, last_checkin BIGINT, streak BIGINT DEFAULT 1, total_checkins BIGINT DEFAULT 1)",
-            "CREATE TABLE IF NOT EXISTS batch_notifications (id BIGSERIAL PRIMARY KEY, tg_id BIGINT, message TEXT, created_at BIGINT NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS batch_notifications (id BIGSERIAL PRIMARY KEY, tg_id BIGINT, message TEXT, created_at BIGINT NOT NULL)",
+            "ALTER TABLE tg_users ADD COLUMN daily_report_hour INTEGER DEFAULT -1"
         ]:
             try:
                 c.execute(sql)
@@ -1685,3 +1686,386 @@ def delete_campaign(campaign_id: int):
         c.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
         c.execute("DELETE FROM campaign_participants WHERE campaign_id=?", (campaign_id,))
         c.commit()
+
+
+# ─── USER LISTS (newlist, addtolist, scanlist...) ────────────────────────────
+
+def migrate_new_features():
+    """Migrate DB for new features — call at startup."""
+    c = get_conn()
+    for sql in [
+        """CREATE TABLE IF NOT EXISTS user_lists (
+            id         BIGINT PRIMARY KEY AUTOINCREMENT,
+            tg_id      BIGINT NOT NULL,
+            name       TEXT NOT NULL,
+            platform   TEXT DEFAULT 'fb',
+            created_at BIGINT NOT NULL,
+            UNIQUE(tg_id, name)
+        )""",
+        """CREATE TABLE IF NOT EXISTS user_list_items (
+            id         BIGINT PRIMARY KEY AUTOINCREMENT,
+            list_id    BIGINT NOT NULL,
+            tg_id      BIGINT NOT NULL,
+            value      TEXT NOT NULL,
+            note       TEXT DEFAULT '',
+            added_at   BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS check_history (
+            id         BIGINT PRIMARY KEY AUTOINCREMENT,
+            tg_id      BIGINT NOT NULL,
+            platform   TEXT NOT NULL,
+            target     TEXT NOT NULL,
+            result     TEXT DEFAULT '',
+            checked_at BIGINT NOT NULL
+        )""",
+        "ALTER TABLE alert_rules ADD COLUMN is_paused BIGINT DEFAULT 0",
+        "ALTER TABLE alert_rules ADD COLUMN snooze_until BIGINT DEFAULT 0",
+    ]:
+        try:
+            c.execute(sql)
+        except Exception:
+            pass
+    try:
+        c.commit()
+    except Exception:
+        pass
+
+
+def create_user_list(tg_id: int, name: str, platform: str = 'fb') -> tuple[bool, str]:
+    """Returns (success, message)"""
+    with _lock:
+        c = get_conn()
+        try:
+            c.execute(
+                "INSERT INTO user_lists(tg_id, name, platform, created_at) VALUES(?,?,?,?)",
+                (tg_id, name, platform, int(time.time()))
+            )
+            c.commit()
+            return True, "ok"
+        except Exception:
+            return False, "Danh sách này đã tồn tại!"
+
+
+def delete_user_list(tg_id: int, name: str) -> bool:
+    with _lock:
+        c = get_conn()
+        lst = c.execute("SELECT id FROM user_lists WHERE tg_id=? AND name=?", (tg_id, name)).fetchone()
+        if not lst:
+            return False
+        c.execute("DELETE FROM user_list_items WHERE list_id=?", (lst["id"],))
+        c.execute("DELETE FROM user_lists WHERE id=?", (lst["id"],))
+        c.commit()
+        return True
+
+
+def get_user_lists(tg_id: int) -> list:
+    c = get_conn()
+    return c.execute(
+        "SELECT ul.*, COUNT(uli.id) as item_count FROM user_lists ul "
+        "LEFT JOIN user_list_items uli ON ul.id = uli.list_id "
+        "WHERE ul.tg_id=? GROUP BY ul.id ORDER BY ul.created_at DESC",
+        (tg_id,)
+    ).fetchall()
+
+
+def add_to_user_list(tg_id: int, list_name: str, value: str, note: str = '') -> tuple[bool, str]:
+    """Returns (success, message)"""
+    with _lock:
+        c = get_conn()
+        lst = c.execute("SELECT id FROM user_lists WHERE tg_id=? AND name=?", (tg_id, list_name)).fetchone()
+        if not lst:
+            return False, f"Danh sách '{list_name}' không tồn tại! Dùng /newlist {list_name} để tạo."
+        exists = c.execute("SELECT id FROM user_list_items WHERE list_id=? AND value=?", (lst["id"], value)).fetchone()
+        if exists:
+            return False, f"'{value}' đã có trong danh sách này rồi!"
+        c.execute(
+            "INSERT INTO user_list_items(list_id, tg_id, value, note, added_at) VALUES(?,?,?,?,?)",
+            (lst["id"], tg_id, value, note, int(time.time()))
+        )
+        c.commit()
+        return True, "ok"
+
+
+def get_list_items(tg_id: int, list_name: str) -> list:
+    c = get_conn()
+    lst = c.execute("SELECT id FROM user_lists WHERE tg_id=? AND name=?", (tg_id, list_name)).fetchone()
+    if not lst:
+        return []
+    return c.execute("SELECT * FROM user_list_items WHERE list_id=? ORDER BY added_at ASC", (lst["id"],)).fetchall()
+
+
+def remove_from_user_list(tg_id: int, list_name: str, value: str) -> bool:
+    with _lock:
+        c = get_conn()
+        lst = c.execute("SELECT id FROM user_lists WHERE tg_id=? AND name=?", (tg_id, list_name)).fetchone()
+        if not lst:
+            return False
+        cur = c.execute("DELETE FROM user_list_items WHERE list_id=? AND value=?", (lst["id"], value))
+        c.commit()
+        return cur.rowcount > 0
+
+
+# ─── CHECK HISTORY ────────────────────────────────────────────────────────────
+
+def add_check_history(tg_id: int, platform: str, target: str, result: str = '') -> None:
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO check_history(tg_id, platform, target, result, checked_at) VALUES(?,?,?,?,?)",
+            (tg_id, platform, target, result, int(time.time()))
+        )
+        # Keep only last 100 records per user
+        c.execute(
+            "DELETE FROM check_history WHERE tg_id=? AND id NOT IN "
+            "(SELECT id FROM check_history WHERE tg_id=? ORDER BY checked_at DESC LIMIT 100)",
+            (tg_id, tg_id)
+        )
+        c.commit()
+
+
+def get_check_history(tg_id: int, platform: str = None, days: int = 7) -> list:
+    c = get_conn()
+    since = int(time.time()) - days * 86400
+    if platform:
+        return c.execute(
+            "SELECT * FROM check_history WHERE tg_id=? AND platform=? AND checked_at>=? ORDER BY checked_at DESC LIMIT 50",
+            (tg_id, platform, since)
+        ).fetchall()
+    return c.execute(
+        "SELECT * FROM check_history WHERE tg_id=? AND checked_at>=? ORDER BY checked_at DESC LIMIT 50",
+        (tg_id, since)
+    ).fetchall()
+
+
+# ─── PERSONAL STATS ─────────────────────────────────────────────────────────
+
+def get_user_stats(tg_id: int) -> dict:
+    c = get_conn()
+    total_checks = c.execute("SELECT COUNT(*) as c FROM check_history WHERE tg_id=?", (tg_id,)).fetchone()["c"]
+    fb_tracks = c.execute("SELECT COUNT(*) as c FROM fb_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
+    tk_tracks = c.execute("SELECT COUNT(*) as c FROM tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
+    ig_tracks = c.execute("SELECT COUNT(*) as c FROM ig_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
+    yt_tracks = c.execute("SELECT COUNT(*) as c FROM yt_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
+    try:
+        zalo_tracks = c.execute("SELECT COUNT(*) as c FROM zalo_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
+    except Exception:
+        zalo_tracks = 0
+    user_lists = c.execute("SELECT COUNT(*) as c FROM user_lists WHERE tg_id=?", (tg_id,)).fetchone()["c"]
+    user = c.execute("SELECT created_at, vip_level, total_topup, balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+    checkin = c.execute("SELECT streak, total_checkins FROM daily_checkins WHERE tg_id=?", (tg_id,)).fetchone()
+    return {
+        "total_checks": total_checks,
+        "fb_tracks": fb_tracks,
+        "tk_tracks": tk_tracks,
+        "ig_tracks": ig_tracks,
+        "yt_tracks": yt_tracks,
+        "zalo_tracks": zalo_tracks,
+        "user_lists": user_lists,
+        "created_at": user["created_at"] if user else 0,
+        "vip_level": user["vip_level"] if user else 0,
+        "total_topup": user["total_topup"] if user else 0,
+        "balance": user["balance"] if user else 0,
+        "streak": checkin["streak"] if checkin else 0,
+        "total_checkins": checkin["total_checkins"] if checkin else 0,
+    }
+
+
+# ─── LEADERBOARD ─────────────────────────────────────────────────────────────
+
+def get_leaderboard(kind: str = 'topup', limit: int = 10) -> list:
+    """kind: 'topup' | 'ref'"""
+    c = get_conn()
+    if kind == 'ref':
+        return c.execute(
+            "SELECT tg_id, username, name, ref_earnings FROM tg_users "
+            "WHERE ref_earnings > 0 ORDER BY ref_earnings DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    # default: topup this month
+    this_month_start = int(time.mktime(time.strptime(time.strftime("%Y-%m-01"), "%Y-%m-%d")))
+    return c.execute(
+        "SELECT t.tg_id, t.username, t.name, SUM(tx.amount) as monthly_topup "
+        "FROM tg_users t JOIN txns tx ON t.tg_id = tx.tg_id "
+        "WHERE tx.ts >= ? AND tx.amount > 0 "
+        "GROUP BY t.tg_id ORDER BY monthly_topup DESC LIMIT ?",
+        (this_month_start, limit)
+    ).fetchall()
+
+
+# ─── TRANSFER BALANCE ────────────────────────────────────────────────────────
+
+def transfer_balance(from_id: int, to_id: int, amount: int) -> tuple[bool, str]:
+    """Transfer balance from one user to another. Returns (success, message)."""
+    with _lock:
+        c = get_conn()
+        sender = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (from_id,)).fetchone()
+        if not sender:
+            return False, "Không tìm thấy tài khoản người gửi."
+        if (sender["balance"] or 0) < amount:
+            return False, f"Số dư không đủ! (Hiện có: {sender['balance']:,.0f}đ)"
+        receiver = c.execute("SELECT tg_id, name FROM tg_users WHERE tg_id=?", (to_id,)).fetchone()
+        if not receiver:
+            return False, "Không tìm thấy người nhận."
+        ts = int(time.time())
+        c.execute("UPDATE tg_users SET balance = balance - ? WHERE tg_id=?", (amount, from_id))
+        c.execute("UPDATE tg_users SET balance = balance + ? WHERE tg_id=?", (amount, to_id))
+        c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                  (ts, from_id, -amount, f"Chuyển tiền cho {to_id}"))
+        c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                  (ts, to_id, amount, f"Nhận tiền từ {from_id}"))
+        c.commit()
+        return True, receiver["name"] or str(to_id)
+
+
+# ─── ALERT PAUSE / SNOOZE ───────────────────────────────────────────────────
+
+def pause_alert(tg_id: int, alert_id: int) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE alert_rules SET is_paused=1 WHERE id=? AND tg_id=?",
+            (alert_id, str(tg_id))
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
+def resume_alert(tg_id: int, alert_id: int) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE alert_rules SET is_paused=0, snooze_until=0 WHERE id=? AND tg_id=?",
+            (alert_id, str(tg_id))
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
+def snooze_alert(tg_id: int, alert_id: int, hours: float) -> bool:
+    until = int(time.time()) + int(hours * 3600)
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE alert_rules SET snooze_until=?, is_paused=0 WHERE id=? AND tg_id=?",
+            (until, alert_id, str(tg_id))
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
+# ─── ADMIN: SET BALANCE ─────────────────────────────────────────────────────
+
+def admin_set_balance(tg_id: int, amount: int, reason: str = "Admin set balance") -> bool:
+    with _lock:
+        c = get_conn()
+        old = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+        if not old:
+            return False
+        diff = amount - (old["balance"] or 0)
+        c.execute("UPDATE tg_users SET balance=? WHERE tg_id=?", (amount, tg_id))
+        c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                  (int(time.time()), tg_id, diff, reason))
+        c.commit()
+        return True
+
+
+# ─── ADMIN: BAN / UNBAN ──────────────────────────────────────────────────────
+
+def ban_user(tg_id: int) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("UPDATE tg_users SET is_blocked=1 WHERE tg_id=?", (tg_id,))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def unban_user(tg_id: int) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("UPDATE tg_users SET is_blocked=0 WHERE tg_id=?", (tg_id,))
+        c.commit()
+        return cur.rowcount > 0
+
+
+# ─── ADMIN: SET VIP ─────────────────────────────────────────────────────────
+
+def admin_set_vip(tg_id: int, vip_level: int, days: int = 0) -> bool:
+    with _lock:
+        c = get_conn()
+        updates = "vip_level=?"
+        params = [vip_level]
+        if days > 0:
+            user = c.execute("SELECT sub_until FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+            base = max(int(time.time()), (user["sub_until"] or 0) if user else 0)
+            new_until = base + days * 86400
+            updates += ", sub_until=?"
+            params.append(new_until)
+        params.append(tg_id)
+        cur = c.execute(f"UPDATE tg_users SET {updates} WHERE tg_id=?", tuple(params))
+        c.commit()
+        return cur.rowcount > 0
+
+
+# ─── ADMIN: FIND USER ───────────────────────────────────────────────────────
+
+def find_user_by_username(username: str):
+    c = get_conn()
+    username_clean = username.lstrip('@')
+    return c.execute(
+        "SELECT * FROM tg_users WHERE username=? OR username=?",
+        (username_clean, '@' + username_clean)
+    ).fetchone()
+
+
+# ─── ADMIN: REVENUE STATS ───────────────────────────────────────────────────
+
+def get_revenue_stats() -> dict:
+    c = get_conn()
+    today_start = int(time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d")))
+    month_start = int(time.mktime(time.strptime(time.strftime("%Y-%m-01"), "%Y-%m-%d")))
+    revenue_today = c.execute("SELECT SUM(amount) as s FROM txns WHERE ts>=? AND amount>0", (today_start,)).fetchone()["s"] or 0
+    revenue_month = c.execute("SELECT SUM(amount) as s FROM txns WHERE ts>=? AND amount>0", (month_start,)).fetchone()["s"] or 0
+    revenue_total = c.execute("SELECT SUM(amount) as s FROM txns WHERE amount>0").fetchone()["s"] or 0
+    total_users = c.execute("SELECT COUNT(*) as c FROM tg_users").fetchone()["c"]
+    active_today = c.execute("SELECT COUNT(DISTINCT tg_id) as c FROM check_history WHERE checked_at>=?", (today_start,)).fetchone()["c"]
+    new_today = c.execute("SELECT COUNT(*) as c FROM tg_users WHERE created_at>=?", (today_start,)).fetchone()["c"]
+    pending_topup = c.execute("SELECT COUNT(*) as c FROM txns WHERE ts>=? AND amount=0", (month_start,)).fetchone()["c"]
+    return {
+        "revenue_today": revenue_today,
+        "revenue_month": revenue_month,
+        "revenue_total": revenue_total,
+        "total_users": total_users,
+        "active_today": active_today,
+        "new_today": new_today,
+        "pending_topup": pending_topup,
+    }
+
+
+def get_all_users_for_broadcast(vip_only: bool = False, inactive_days: int = 0) -> list:
+    c = get_conn()
+    if vip_only:
+        return c.execute("SELECT tg_id FROM tg_users WHERE vip_level > 0 AND is_blocked=0").fetchall()
+    if inactive_days > 0:
+        cutoff = int(time.time()) - inactive_days * 86400
+        return c.execute(
+            "SELECT tg_id FROM tg_users WHERE is_blocked=0 AND tg_id NOT IN "
+            "(SELECT DISTINCT tg_id FROM check_history WHERE checked_at >= ?)",
+            (cutoff,)
+        ).fetchall()
+    return c.execute("SELECT tg_id FROM tg_users WHERE is_blocked=0").fetchall()
+
+
+def set_daily_report_hour(tg_id: int, hour: int) -> bool:
+    """Cấu hình giờ nhận báo cáo tự động định kỳ cho user (-1 = Tắt, 0..23 = Giờ)."""
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE tg_users SET daily_report_hour=? WHERE tg_id=?", (hour, tg_id))
+        c.commit()
+        return True
+
+
+def get_users_for_daily_report(hour: int) -> list:
+    """Lấy danh sách user đã đăng ký báo cáo vào giờ `hour`."""
+    c = get_conn()
+    return c.execute("SELECT * FROM tg_users WHERE daily_report_hour=? AND is_blocked=0", (hour,)).fetchall()
+

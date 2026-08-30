@@ -277,6 +277,24 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
             />
           </div>
           <div className="flex flex-col gap-1.5">
+            <Label>Giá 3 ngày (VNĐ)</Label>
+            <Input
+              type="number"
+              value={s.price_3d || ""}
+              onChange={(e) => up("price_3d", e.target.value)}
+              placeholder="Để trống nếu không bán gói này"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Giá 5 ngày (VNĐ)</Label>
+            <Input
+              type="number"
+              value={s.price_5d || ""}
+              onChange={(e) => up("price_5d", e.target.value)}
+              placeholder="Để trống nếu không bán gói này"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
             <Label>Giá 7 ngày (VNĐ)</Label>
             <Input
               type="number"

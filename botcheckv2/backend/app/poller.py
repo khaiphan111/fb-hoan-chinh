@@ -63,16 +63,71 @@ class FollowerPoller:
 
     async def _daily_summary_loop(self):
         while True:
-            # Run at 20:00 every day
-            now_t = time.localtime()
-            if now_t.tm_hour == 20 and getattr(self, '_last_summary_day', -1) != now_t.tm_mday:
-                self._last_summary_day = now_t.tm_mday
-                try:
+            try:
+                now_t = time.localtime()
+
+                # 1. Gửi báo cáo định kỳ theo giờ tự chọn cho từng user (khi đúng phút 00)
+                if now_t.tm_min == 0:
+                    current_hour = now_t.tm_hour
+                    users_due = db.get_users_for_daily_report(current_hour)
+                    for user in users_due:
+                        tg_id = user["tg_id"]
+                        try:
+                            # Lấy danh sách alert_rules / tracks của user
+                            rules = db.get_alert_rules(tg_id=str(tg_id))
+                            if not rules:
+                                # Fallback: lấy từ user lists nếu không có alert rules
+                                lists = db.get_user_lists(int(tg_id))
+                                items = []
+                                for l in lists:
+                                    items.extend(db.get_list_items(int(tg_id), l["list_name"]))
+                                targets = list(set(i["value"] for i in items))
+                            else:
+                                targets = list(set(r["target"] for r in rules if r["platform"] == "fb"))
+
+                            if targets:
+                                from .fb import check_uid
+                                live_cnt = 0
+                                die_cnt = 0
+                                die_uids = []
+                                for t in targets:
+                                    try:
+                                        res = await check_uid(t)
+                                        if res.get("alive") or res.get("status") == "live":
+                                            live_cnt += 1
+                                        else:
+                                            die_cnt += 1
+                                            die_uids.append(t)
+                                    except Exception:
+                                        die_cnt += 1
+
+                                hour_str = f"{current_hour:02d}:00"
+                                report_text = (
+                                    f"☀️ <b>BÁO CÁO TỰ ĐỘNG ({hour_str})</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                                    f"📊 Dàn <b>{len(targets)}</b> nick FB của bạn đang có:\n"
+                                    f"• 🟢 Live: <b>{live_cnt}</b> tài khoản\n"
+                                    f"• 🔴 Die: <b>{die_cnt}</b> tài khoản\n\n"
+                                )
+                                if die_uids:
+                                    report_text += "🔴 <b>Chi tiết nick DIE hôm nay:</b>\n" + "\n".join(f"• <code>{u}</code>" for u in die_uids[:10])
+                                    if len(die_uids) > 10:
+                                        report_text += f"\n<i>...và {len(die_uids)-10} UID khác</i>"
+                                    report_text += "\n\n"
+                                report_text += "🤖 <i>Tự động theo dõi bởi FB Checker V2</i>"
+
+                                if self._bot:
+                                    await self._bot.send_message(int(tg_id), report_text, parse_mode="HTML")
+                        except Exception as ex:
+                            log.error("Lỗi gửi daily report cho user %s: %s", tg_id, ex)
+
+                # 2. Gửi batch notifications vào 20:00 hàng ngày (nếu có)
+                if now_t.tm_hour == 20 and getattr(self, '_last_summary_day', -1) != now_t.tm_mday:
+                    self._last_summary_day = now_t.tm_mday
                     batches = db.get_and_clear_batch_notifications()
                     for tg_id, msgs in batches.items():
                         if not msgs: continue
                         summary = f"📋 <b>BÁO CÁO CUỐI NGÀY (20:00)</b>\n━━━━━━━━━━━━━━━━━\n"
-                        # Group logic: Just list them compactly or count them if too many
                         if len(msgs) > 10:
                             summary += f"Bạn có <b>{len(msgs)}</b> biến động trong ngày. Dưới đây là 10 thông báo mới nhất:\n"
                             msgs = msgs[-10:]
@@ -81,9 +136,9 @@ class FollowerPoller:
                         summary += "━━━━━━━━━━━━━━━━━\n<i>TikTok/FB Checker V2</i>"
                         if self._bot:
                             await self._bot.send_message(tg_id, summary, parse_mode="HTML")
-                except Exception as e:
-                    log.error("Lỗi gửi daily summary: %s", e)
-            
+            except Exception as e:
+                log.error("Lỗi trong _daily_summary_loop: %s", e)
+
             await asyncio.sleep(60) # Check every minute
 
     async def _campaign_scheduler_loop(self):
