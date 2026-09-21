@@ -614,75 +614,106 @@ def list_users() -> list:
         "FROM tg_users t ORDER BY created_at DESC"
     ).fetchall()
 
+def notify_commission_bonus(ref_id: int, bonus: int, level: int) -> None:
+    """Báo tin nhắn hoa hồng F1/F2 (gọi sau khi commit, ngoài lock)."""
+    try:
+        import asyncio
+        from .bot import manager, vnd
+        if manager.running:
+            asyncio.create_task(manager.bot.send_message(
+                ref_id,
+                f"🎁 <b>Hoa hồng giới thiệu F{level}!</b>\nBạn vừa nhận được <b>{vnd(bonus)}</b> từ lượt nạp của F{level}!",
+                parse_mode="HTML"))
+    except Exception:
+        pass
+
+
+def _credit_topup_nolock(c, tg_id: int, amount: int, reason: str) -> dict:
+    """Cộng tiền nạp + total_topup + hoa hồng F1/F2. KHÔNG commit, KHÔNG lock.
+
+    Caller phải giữ _lock và tự commit/rollback. Trả {'f1': (id, bonus),
+    'f2': (id, bonus)} cho các mức có bonus > 0 (để caller báo tin nhắn sau).
+    """
+    now = int(time.time())
+    c.execute(
+        "UPDATE tg_users SET balance = balance + ?, total_topup = total_topup + ? WHERE tg_id=?",
+        (amount, amount, tg_id),
+    )
+    c.execute(
+        "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+        (now, tg_id, amount, reason),
+    )
+    bonuses: dict = {}
+    user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+    if user and user["referrer_id"]:
+        f1_id = user["referrer_id"]
+        f1_topup_row = c.execute(
+            "SELECT SUM(total_topup) as s FROM tg_users WHERE referrer_id=?", (f1_id,)
+        ).fetchone()
+        total_f1_topup = f1_topup_row["s"] if f1_topup_row and f1_topup_row["s"] else 0
+        rates = get_ref_rates()
+        percentage = rates["f1_pct"] / 100
+        if total_f1_topup >= rates["f1_gold_min"]:
+            percentage = rates["f1_gold_pct"] / 100
+        elif total_f1_topup >= rates["f1_silver_min"]:
+            percentage = rates["f1_silver_pct"] / 100
+        f1_bonus = int(amount * percentage)
+        if f1_bonus > 0:
+            c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?",
+                      (f1_bonus, f1_id))
+            c.execute(
+                "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                (now, f1_id, f1_bonus, "Hoa hồng giới thiệu F1"),
+            )
+            c.execute(
+                "INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at)"
+                " VALUES(?,?,?,?,?,?)",
+                (f1_id, tg_id, 1, amount, f1_bonus, now),
+            )
+            bonuses["f1"] = (f1_id, f1_bonus)
+        f1_user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (f1_id,)).fetchone()
+        if f1_user and f1_user["referrer_id"]:
+            f2_id = f1_user["referrer_id"]
+            f2_bonus = int(amount * rates["f2_pct"] / 100)
+            if f2_bonus > 0:
+                c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?",
+                          (f2_bonus, f2_id))
+                c.execute(
+                    "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                    (now, f2_id, f2_bonus, "Hoa hồng giới thiệu F2"),
+                )
+                c.execute(
+                    "INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at)"
+                    " VALUES(?,?,?,?,?,?)",
+                    (f2_id, tg_id, 2, amount, f2_bonus, now),
+                )
+                bonuses["f2"] = (f2_id, f2_bonus)
+    return bonuses
+
+
 def adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
-    """Cộng/trừ số dư. Trừ tiền thì kiểm tra nguyên tử: không đủ -> False, không trừ."""
+    """Cong/tru so du. Tru tien thi kiem tra nguyen tu: khong du -> False, khong tru."""
     with _lock:
         c = get_conn()
+        bonuses: dict = {}
         if amount < 0:
             r = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
             if not r or int(r["balance"] or 0) + amount < 0:
                 return False
-        if amount > 0:
-            c.execute("UPDATE tg_users SET balance = balance + ?, total_topup = total_topup + ? WHERE tg_id=?", (amount, amount, tg_id))
-        else:
             c.execute("UPDATE tg_users SET balance = balance + ? WHERE tg_id=?", (amount, tg_id))
-            
-        c.execute(
-            "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
-            (int(time.time()), tg_id, amount, reason),
-        )
-        if amount > 0:
-            user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
-            if user and user["referrer_id"]:
-                f1_id = user["referrer_id"]
-                f1_topup_row = c.execute("SELECT SUM(total_topup) as s FROM tg_users WHERE referrer_id=?", (f1_id,)).fetchone()
-                total_f1_topup = f1_topup_row["s"] if f1_topup_row and f1_topup_row["s"] else 0
-                rates = get_ref_rates()
-                percentage = rates["f1_pct"] / 100
-                if total_f1_topup >= rates["f1_gold_min"]:
-                    percentage = rates["f1_gold_pct"] / 100
-                elif total_f1_topup >= rates["f1_silver_min"]:
-                    percentage = rates["f1_silver_pct"] / 100
-                f1_bonus = int(amount * percentage)
-                if f1_bonus > 0:
-                    c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?", (f1_bonus, f1_id))
-                    c.execute(
-                        "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
-                        (int(time.time()), f1_id, f1_bonus, f"Hoa hồng giới thiệu F1"),
-                    )
-                    c.execute(
-                        "INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at) VALUES(?,?,?,?,?,?)",
-                        (f1_id, tg_id, 1, amount, f1_bonus, int(time.time()))
-                    )
-                    try:
-                        import asyncio
-                        from .bot import manager, vnd
-                        if manager.running:
-                            asyncio.create_task(manager.bot.send_message(f1_id, f"🎁 <b>Hoa hồng giới thiệu F1!</b>\nBạn vừa nhận được <b>{vnd(f1_bonus)}</b> từ lượt nạp của F1!", parse_mode="HTML"))
-                    except: pass
-                
-                f1_user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (f1_id,)).fetchone()
-                if f1_user and f1_user["referrer_id"]:
-                    f2_id = f1_user["referrer_id"]
-                    f2_bonus = int(amount * rates["f2_pct"] / 100)
-                    if f2_bonus > 0:
-                        c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?", (f2_bonus, f2_id))
-                        c.execute(
-                            "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
-                            (int(time.time()), f2_id, f2_bonus, f"Hoa hồng giới thiệu F2"),
-                        )
-                        c.execute(
-                            "INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at) VALUES(?,?,?,?,?,?)",
-                            (f2_id, tg_id, 2, amount, f2_bonus, int(time.time()))
-                        )
-                        try:
-                            import asyncio
-                            from .bot import manager, vnd
-                            if manager.running:
-                                asyncio.create_task(manager.bot.send_message(f2_id, f"🎁 <b>Hoa hồng giới thiệu F2!</b>\nBạn vừa nhận được <b>{vnd(f2_bonus)}</b> từ lượt nạp của F2!", parse_mode="HTML"))
-                        except: pass
+            c.execute(
+                "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                (int(time.time()), tg_id, amount, reason),
+            )
+        else:
+            bonuses = _credit_topup_nolock(c, tg_id, amount, reason)
         c.commit()
-        return True
+    for key, level in (("f1", 1), ("f2", 2)):
+        info = bonuses.get(key)
+        if info:
+            notify_commission_bonus(info[0], info[1], level)
+    return True
+
         
 _magic_links = {}
 
@@ -2729,6 +2760,52 @@ def mark_payos_paid(order_code: int) -> bool:
         cur = c.execute(
             "UPDATE payos_orders SET status='PAID', updated_at=? "
             "WHERE order_code=? AND status IN ('PENDING','EXPIRED')",
+            (int(time.time()), order_code),
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
+def settle_payos_order(order_code: int, tg_id: int, amount: int) -> dict:
+    """Quyet toan don PayOS trong 1 transaction duy nhat.
+
+    PENDING/EXPIRED -> PAID + cong balance/total_topup + hoa hong F1/F2, tat ca
+    trong cung 1 commit. Tra {'ok': True, 'f1'/'f2': (id, bonus)} khi quyet toan
+    xong, {'ok': False} khi don da duoc xu ly truoc do (webhook/poller trung).
+    Khong con chuyen cong thua roi rollback thieu nhu truoc.
+    """
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE payos_orders SET status='PAID', updated_at=? "
+            "WHERE order_code=? AND status IN ('PENDING','EXPIRED')",
+            (int(time.time()), order_code),
+        )
+        if cur.rowcount == 0:
+            return {"ok": False}
+        bonuses = _credit_topup_nolock(c, tg_id, amount, "payos")
+        c.commit()
+    out: dict = {"ok": True}
+    out.update(bonuses)
+    return out
+
+
+def get_overdue_pending_payos_orders(max_age_sec: int) -> list:
+    """Đơn PENDING đã quá TTL (poll thường không quét tới)."""
+    c = get_conn()
+    return c.execute(
+        "SELECT * FROM payos_orders WHERE status='PENDING' AND created_at <= ?",
+        (int(time.time()) - max_age_sec,)).fetchall()
+
+
+def mark_payos_expired_if_pending(order_code: int) -> bool:
+    """PENDING -> EXPIRED, nguyên tử. False nếu đơn đã đổi trạng thái
+    (vd webhook vừa quyết toán PAID xong)."""
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE payos_orders SET status='EXPIRED', updated_at=? "
+            "WHERE order_code=? AND status='PENDING'",
             (int(time.time()), order_code),
         )
         c.commit()

@@ -4,7 +4,7 @@ Luồng hoạt động (không cần webhook public, không cần public URL):
   1. User gõ /nap <số tiền> -> tạo payment link qua PayOS API, lưu đơn vào DB.
   2. User quét QR / mở link thanh toán, chuyển khoản.
   3. Vòng poll nền (mỗi 20s) hỏi trạng thái đơn qua PayOS API.
-     Đơn PAID -> tự động cộng tiền (db.adjust_balance, reason="payos"),
+     Đơn PAID -> quyết toán nguyên tử (db.settle_payos_order),
      báo cho user + admin, kiểm tra lên VIP.
   4. Đơn quá 45 phút chưa thanh toán -> tự hủy qua API, đánh dấu EXPIRED.
 
@@ -108,9 +108,11 @@ def get_return_urls() -> tuple:
 
 
 def new_order_code(tg_id: int = 0) -> int:
-    # ms * 1e6 + 6 số: trộn tg_id để 2 user cùng mili-giây không trùng
-    base = int(time.time() * 1000) * 1_000_000
-    return base + (abs(int(tg_id)) % 1_000_000) * 1_000 + random.randint(0, 999)
+    # Tối đa 15 chữ số (an toàn dưới 2^53 của PayOS):
+    # 10 số giây hiện tại + 4 số cuối tg_id + 1 số ngẫu nhiên.
+    # 2 user cùng giây hiếm khi trùng cả 4 số cuối tg_id + số ngẫu nhiên.
+    return (int(time.time()) % 10_000_000_000) * 100_000 \
+        + (abs(int(tg_id)) % 10_000) * 10 + random.randint(0, 9)
 
 
 # ---------------------------------------------------------------- API calls
@@ -243,29 +245,29 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int):
 
 
 async def settle_order(order: dict) -> bool:
-    """Cộng tiền cho 1 đơn đã PAID. Trả True nếu cộng thành công (chống cộng trùng).
+    """Quyết toán 1 đơn đã PAID. Trả True nếu quyết toán thành công.
 
-    Thứ tự: cộng tiền trước, đánh dấu PAID sau. Nếu cộng tiền lỗi -> đơn vẫn
-    PENDING nên lần quét sau thử lại được (không mất tiền). Nếu đơn đã PAID
-    trước đó (trùng webhook/poller) -> rollback lần cộng thừa.
+    db.settle_payos_order() làm tất cả trong 1 transaction duy nhất:
+    PENDING/EXPIRED -> PAID + cộng balance/total_topup + hoa hồng F1/F2.
+    Webhook và poller gọi trùng nhau -> bên thua nhận {'ok': False}, bỏ qua,
+    không có cộng thừa nên không cần rollback.
     """
     from . import db
     order_code = int(order["order_code"])
     tg_id = int(order["tg_id"])
     amount = int(order["amount"])
     try:
-        db.adjust_balance(tg_id, amount, "payos")
+        res = db.settle_payos_order(order_code, tg_id, amount)
     except Exception as e:
-        log.error("adjust_balance thất bại cho đơn %s: %s", order_code, e)
+        log.error("settle_payos_order thất bại cho đơn %s: %s", order_code, e)
         return False
-    if not db.mark_payos_paid(order_code):
-        # Đơn đã được xử lý trước đó -> hoàn lại lần cộng thừa này
-        log.warning("PayOS: đơn %s đã PAID trước đó, rollback cộng thừa", order_code)
-        try:
-            db.add_balance_only(tg_id, -amount, "payos_rollback_trung_don")
-        except Exception as e:
-            log.error("Rollback thất bại đơn %s: %s", order_code, e)
+    if not res.get("ok"):
+        log.warning("PayOS: đơn %s đã được xử lý trước đó, bỏ qua", order_code)
         return False
+    for key, level in (("f1", 1), ("f2", 2)):
+        info = res.get(key)
+        if info:
+            db.notify_commission_bonus(info[0], info[1], level)
     log.info("PayOS: đã cộng %s cho user %s (đơn %s)", amount, tg_id, order_code)
     await _notify_paid(tg_id, amount, order_code)
     return True
@@ -307,6 +309,22 @@ async def check_pending_once() -> dict:
                     db.touch_payos_order(order_code)
         except Exception as e:
             log.error("Xử lý đơn %s lỗi: %s", order_code, e)
+            stats["errors"] += 1
+    # Đơn PENDING quá TTL: get_pending_payos_orders() không trả về nữa nên quét
+    # riêng ở đây, đánh dấu EXPIRED để vòng "kiểm tra lần cuối" bên dưới vẫn
+    # bắt được trường hợp khách trả trễ.
+    for row in db.get_overdue_pending_payos_orders(ORDER_TTL):
+        order = dict(row)
+        order_code = int(order["order_code"])
+        try:
+            try:
+                await cancel_payment_link(order_code, "Hết hạn thanh toán")
+            except Exception:
+                pass
+            if db.mark_payos_expired_if_pending(order_code):
+                stats["expired"] += 1
+        except Exception as e:
+            log.error("Xử lý đơn quá hạn %s lỗi: %s", order_code, e)
             stats["errors"] += 1
     # Kiểm tra lần cuối đơn EXPIRED trong 24h: khách trả trễ nhưng PayOS vẫn ghi PAID
     for row in db.get_recently_expired_payos_orders(24 * 3600):
