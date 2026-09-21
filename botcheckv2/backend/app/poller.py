@@ -191,7 +191,7 @@ class FollowerPoller:
                 f"#{w['id']} — đơn <b>#{w['order_id']}</b> — {_html.escape(w['cat_name'] or '')}\n"
                 f"👤 UID <code>{_html.escape(w['uid'] or '')}</code> | "
                 f"khách <code>{w['tg_id']}</code>\n"
-                f"📅 Gửi lúc: {vn_time_str(w['created_at'])}\n"
+                f"📅 Gửi lúc: {vn_time_str(ts=w['created_at'])}\n"
                 f"Xử lý xong: <code>/bhdone {w['id']}</code>")
         db.acc_claim_mark_reminded([int(w["id"]) for w in claims])
         await self._send_admin_report("\n\n".join(lines))

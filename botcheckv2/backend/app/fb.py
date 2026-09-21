@@ -35,16 +35,40 @@ def extract_uid(link: str) -> str:
 
 # Cache kết quả traodoisub để giảm tải API bên thứ 3 và tránh DIE oan khi API sập.
 # key: link -> (timestamp, uid, name, ok). Kết quả thành công cache 1h, thất bại cache 5 phút.
+# LƯU Ý: lỗi thoáng qua (API bận/giới hạn tốc độ/lỗi mạng) KHÔNG được cache — phải raise
+# TraodoisubBusy để caller retry, nếu không lần thử lại sẽ đọc cache fail mà bỏ cuộc oan.
 _traodoisub_cache: dict = {}
 _TRAODOISUB_TTL_OK = 3600
 _TRAODOISUB_TTL_FAIL = 300
+
+
+class TraodoisubBusy(Exception):
+    """API traodoisub đang bận / bị giới hạn tốc độ / lỗi mạng thoáng qua.
+
+    Caller bắt exception này để thử lại sau vài giây, TUYỆT ĐỐI không coi như
+    "link chết" (tránh bỏ sót link còn sống).
+    """
+
+
+def _traodoisub_is_busy(data) -> bool:
+    """Nhận diện thông báo bận/giới hạn tốc độ từ API (VD: "Vui lòng thao tác chậm lại")."""
+    try:
+        import json as _json
+        txt = _json.dumps(data, ensure_ascii=False).lower() if isinstance(data, dict) else ""
+    except Exception:
+        txt = ""
+    return any(k in txt for k in (
+        "chậm lại", "thao tác", "slow", "rate", "too many", "quá tải", "busy",
+        "overload", "try again later",
+    ))
 
 
 async def _resolve_via_traodoisub(link: str, client: httpx.AsyncClient) -> tuple:
     """
     Dùng API công khai của id.traodoisub.com để lấy UID từ link Facebook.
     Hỗ trợ mọi dạng link: profile, group, fanpage, post, video, ảnh, share link.
-    Trả về (uid, name) hoặc ("", "") nếu thất bại.
+    Trả về (uid, name). Trả ("", "") nếu link chết/không công khai (dứt khoát).
+    Raise TraodoisubBusy nếu API bận/giới hạn tốc độ/lỗi mạng -> caller phải retry.
     """
     import time as _time
 
@@ -70,12 +94,56 @@ async def _resolve_via_traodoisub(link: str, client: httpx.AsyncClient) -> tuple
         data = r.json() if r.text else {}
         if data.get("success") and data.get("id"):
             uid, name, ok = str(data["id"]), data.get("name", "") or "", True
+        elif _traodoisub_is_busy(data):
+            # API đang bận -> không cache, raise để retry (không được đánh "link chết")
+            raise TraodoisubBusy(str(data.get("error") or "busy"))
+    except TraodoisubBusy:
+        raise
     except Exception:
-        pass
+        # Lỗi mạng/timeout: không cache để lần thử lại được gọi API thật
+        raise TraodoisubBusy("network")
     _traodoisub_cache[key] = (now, uid, name, ok)
     if len(_traodoisub_cache) > 2000:  # chống phình bộ nhớ
         _traodoisub_cache.clear()
     return uid, name
+
+
+async def _traodoisub_alive(uid: str, client: "httpx.AsyncClient") -> tuple:
+    """Hỏi trọng tài traodoisub xem UID có tồn tại không.
+
+    Trả về (True, name) nếu resolve được -> acc sống.
+    Trả về (False, "") nếu API trả lời đàng hoàng nhưng không resolve được -> acc die.
+    Trả về (None, "") nếu lỗi hạ tầng (timeout/mạng/API sập) -> KHÔNG kết luận được,
+    caller phải để status "error" chứ không được đánh "dead" (tránh loại nhầm acc sống).
+    Có retry 1 lần cho lỗi thoáng qua.
+    """
+    import asyncio as _aio
+    link = f"https://www.facebook.com/profile.php?id={uid}"
+    last_exc = None
+    for attempt in range(2):
+        try:
+            r = await client.post(
+                "https://id.traodoisub.com/api.php",
+                data={"link": link},
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "Mozilla/5.0",
+                },
+                timeout=20,
+            )
+            data = r.json() if r.text else {}
+            if data.get("success") and data.get("id"):
+                return True, data.get("name", "") or ""
+            # API trả lời nhưng không resolve được -> coi như die
+            return False, ""
+        except Exception as e:
+            last_exc = e
+            if attempt == 0:
+                try:
+                    await _aio.sleep(2)
+                except Exception:
+                    pass
+    return None, ""
 
 
 async def resolve_fb_uid(link: str) -> tuple:
@@ -116,13 +184,21 @@ async def resolve_fb_uid(link: str) -> tuple:
         return m.group(1), "", "link"
 
     # B2.5: thử API id.traodoisub.com (hỗ trợ mọi dạng link, trả cả tên)
-    try:
-        async with httpx.AsyncClient(timeout=25) as client:
-            uid2, name2 = await _resolve_via_traodoisub(link, client)
-            if uid2:
-                return uid2, name2, "traodoisub.com"
-    except Exception:
-        pass
+    # API hay giới hạn tốc độ khi gọi dồn dập -> retry với backoff; chỉ dừng khi
+    # API trả lời dứt khoát "không resolve được" (link chết/không công khai).
+    for _att in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=25) as client:
+                uid2, name2 = await _resolve_via_traodoisub(link, client)
+                if uid2:
+                    return uid2, name2, "traodoisub.com"
+                break
+        except TraodoisubBusy:
+            if _att < 2:
+                await asyncio.sleep(3 * (_att + 1))
+                continue
+        except Exception:
+            break
 
     # B3: link dạng username (facebook.com/ten_user) -> cần resolve
     m = re.search(r"(?:facebook\.com|fb\.com)/+([A-Za-z0-9._-]+)", link)
@@ -150,7 +226,6 @@ async def resolve_fb_uid(link: str) -> tuple:
     # B3b: fallback - cào HTML trang cá nhân tìm userID
     try:
         import urllib.request
-        import asyncio
 
         def fetch_html():
             req = urllib.request.Request(
@@ -478,23 +553,25 @@ async def check_uid(uid: str) -> dict:
                     result["status"] = "live"
                 else:
                     # FB chặn đọc tên (login wall) -> nhờ traodoisub.com làm "trọng tài":
-                    # nếu nó resolve được UID + tên => acc tồn tại
+                    # nếu nó resolve được UID + tên => acc tồn tại.
+                    # LƯU Ý: lỗi hạ tầng (timeout/mạng) trả về status "error",
+                    # TUYỆT ĐỐI không đánh "dead" để tránh loại nhầm acc còn sống.
                     try:
-                        t_uid, t_name = await _resolve_via_traodoisub(
-                            f"https://www.facebook.com/profile.php?id={uid}", client
-                        )
-                        if t_uid:
-                            result["alive"] = True
-                            result["status"] = "live"
-                            result["via"] = "traodoisub"
-                            if t_name:
-                                result["name"] = t_name
-                        else:
-                            result["alive"] = False
-                            result["status"] = "dead"
+                        t_alive, t_name = await _traodoisub_alive(uid, client)
                     except Exception:
+                        t_alive, t_name = None, ""
+                    if t_alive is True:
+                        result["alive"] = True
+                        result["status"] = "live"
+                        result["via"] = "traodoisub"
+                        if t_name:
+                            result["name"] = t_name
+                    elif t_alive is False:
                         result["alive"] = False
                         result["status"] = "dead"
+                    else:
+                        result["alive"] = False
+                        result["status"] = "error"
                 
     except Exception:
         pass

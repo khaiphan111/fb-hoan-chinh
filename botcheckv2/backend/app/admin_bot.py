@@ -190,9 +190,13 @@ async def on_admin_confirm(cb: CallbackQuery):
     parts = cb.data.split("_")
     user_id = int(parts[3])
     amount = int(parts[4])
-    
+    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop") else "main"
+
     try:
-        db.adjust_balance(user_id, amount, reason="bank_transfer")
+        if target == "shop":
+            db.credit_topup(user_id, amount, reason="bank_transfer", wallet="shop")
+        else:
+            db.adjust_balance(user_id, amount, reason="bank_transfer")
         success = True
     except Exception as e:
         log.error(f"Lỗi cộng tiền: {e}")
@@ -209,9 +213,10 @@ async def on_admin_confirm(cb: CallbackQuery):
             try:
                 # Kiem tra VIP upgrade
                 upgraded, new_vip, is_lifetime = db.check_vip_upgrade(user_id)
+                wallet_txt = "🛒 Ví shop" if target == "shop" else "tài khoản"
                 msg_text = (
                     f"✅ <b>NẠP TIỀN THÀNH CÔNG</b>\n\n"
-                    f"Bạn vừa được cộng <b>{amount:,.0f} VNĐ</b> vào tài khoản.\n"
+                    f"Bạn vừa được cộng <b>{amount:,.0f} VNĐ</b> vào {wallet_txt}.\n"
                     f"Cảm ơn bạn đã sử dụng dịch vụ!"
                 )
                 await main_bot_manager.bot.send_message(user_id, msg_text, parse_mode="HTML")

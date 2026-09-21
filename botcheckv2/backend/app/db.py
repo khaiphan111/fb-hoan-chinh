@@ -114,6 +114,11 @@ class SqliteConnection:
         return SqliteCursor(self.conn).executescript(sql)
     def commit(self):
         self.conn.commit()
+    def rollback(self):
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
 
 def get_conn():
     global _pg_conn
@@ -503,7 +508,9 @@ def migrate_db():
             "ALTER TABLE zalo_tracks ADD COLUMN tags TEXT",
             "CREATE TABLE IF NOT EXISTS daily_checkins (tg_id BIGINT PRIMARY KEY, last_checkin BIGINT, streak BIGINT DEFAULT 1, total_checkins BIGINT DEFAULT 1)",
             "CREATE TABLE IF NOT EXISTS batch_notifications (id BIGSERIAL PRIMARY KEY, tg_id BIGINT, message TEXT, created_at BIGINT NOT NULL)",
-            "ALTER TABLE tg_users ADD COLUMN daily_report_hour INTEGER DEFAULT -1"
+            "ALTER TABLE tg_users ADD COLUMN daily_report_hour INTEGER DEFAULT -1",
+            "ALTER TABLE tg_users ADD COLUMN shop_balance BIGINT DEFAULT 0",
+            "ALTER TABLE payos_orders ADD COLUMN target TEXT DEFAULT 'main'"
         ]:
             try:
                 c.execute(sql)
@@ -628,15 +635,16 @@ def notify_commission_bonus(ref_id: int, bonus: int, level: int) -> None:
         pass
 
 
-def _credit_topup_nolock(c, tg_id: int, amount: int, reason: str) -> dict:
-    """Cộng tiền nạp + total_topup + hoa hồng F1/F2. KHÔNG commit, KHÔNG lock.
+def _credit_topup_nolock(c, tg_id: int, amount: int, reason: str, wallet: str = "main") -> dict:
+    """Cộng tiền nạp vào ví chỉ định + total_topup + hoa hồng F1/F2. KHÔNG commit, KHÔNG lock.
 
     Caller phải giữ _lock và tự commit/rollback. Trả {'f1': (id, bonus),
     'f2': (id, bonus)} cho các mức có bonus > 0 (để caller báo tin nhắn sau).
     """
     now = int(time.time())
+    col = "shop_balance" if wallet == "shop" else "balance"
     c.execute(
-        "UPDATE tg_users SET balance = balance + ?, total_topup = total_topup + ? WHERE tg_id=?",
+        f"UPDATE tg_users SET {col} = {col} + ?, total_topup = total_topup + ? WHERE tg_id=?",
         (amount, amount, tg_id),
     )
     c.execute(
@@ -707,6 +715,46 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
             )
         else:
             bonuses = _credit_topup_nolock(c, tg_id, amount, reason)
+        c.commit()
+    for key, level in (("f1", 1), ("f2", 2)):
+        info = bonuses.get(key)
+        if info:
+            notify_commission_bonus(info[0], info[1], level)
+    return True
+
+
+def adjust_shop_balance(tg_id: int, amount: int, reason: str) -> bool:
+    """Cộng/trừ ví shop (mua acc). Trừ tiền kiểm tra nguyên tử: không đủ -> False."""
+    with _lock:
+        c = get_conn()
+        if amount < 0:
+            r = c.execute("SELECT shop_balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+            if not r or int(r["shop_balance"] or 0) + amount < 0:
+                return False
+        c.execute("UPDATE tg_users SET shop_balance = shop_balance + ? WHERE tg_id=?", (amount, tg_id))
+        c.execute(
+            "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+            (int(time.time()), tg_id, amount, reason),
+        )
+        c.commit()
+    return True
+
+
+def add_shop_balance_only(tg_id: int, amount: int, reason: str) -> None:
+    """Cộng/trừ ví shop KHÔNG động vào total_topup (dùng cho hoàn tiền)."""
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE tg_users SET shop_balance = shop_balance + ? WHERE tg_id=?", (amount, tg_id))
+        c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                  (int(time.time()), tg_id, amount, reason))
+        c.commit()
+
+
+def credit_topup(tg_id: int, amount: int, reason: str, wallet: str = "main") -> bool:
+    """Cộng tiền nạp vào ví chỉ định + total_topup + hoa hồng F1/F2 (như adjust_balance chiều cộng)."""
+    with _lock:
+        c = get_conn()
+        bonuses = _credit_topup_nolock(c, tg_id, amount, reason, wallet)
         c.commit()
     for key, level in (("f1", 1), ("f2", 2)):
         info = bonuses.get(key)
@@ -939,16 +987,38 @@ def get_code_detailed(code: str) -> dict:
     }
 
 # --- FB WATCHES (Live/Die) ---
-def add_watch(tg_id: int, uid: str, note: str, price: int, expire_at: int) -> int:
+def add_watch(tg_id: int, uid: str, note: str, price: int, expire_at: int) -> tuple:
+    """Thêm theo dõi UID. Trả (watch_id, is_new).
+    Nếu đã có watch active của (tg_id, uid) thì KHÔNG tạo mới (tránh báo
+    trùng mỗi lần đổi trạng thái), chỉ nới hạn/điền ghi chú khi cần."""
     with _lock:
         c = get_conn()
+        row = c.execute(
+            "SELECT id, expire_at, note FROM watches "
+            "WHERE tg_id=? AND uid=? AND active=1 ORDER BY id LIMIT 1",
+            (tg_id, uid),
+        ).fetchone()
+        if row:
+            wid = row["id"]
+            sets, params = [], []
+            if expire_at and (not row["expire_at"] or expire_at > row["expire_at"]):
+                sets.append("expire_at=?")
+                params.append(expire_at)
+            if note and not (row["note"] or ""):
+                sets.append("note=?")
+                params.append(note)
+            if sets:
+                c.execute("UPDATE watches SET %s WHERE id=?" % ", ".join(sets),
+                          (*params, wid))
+                c.commit()
+            return wid, False
         cur = c.execute(
             "INSERT INTO watches(tg_id, uid, note, price, expire_at, created_at, active) "
             "VALUES(?,?,?,?,?,?,1) RETURNING id",
             (tg_id, uid, note, price, expire_at, int(time.time())),
         )
         c.commit()
-        return cur.lastrowid
+        return cur.lastrowid, True
 
 def update_watch_status(watch_id: int, status: str, avatar_url: str) -> None:
     with _lock:
@@ -1659,20 +1729,20 @@ def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
             c.execute("INSERT INTO daily_checkins(tg_id, last_checkin, streak, total_checkins) VALUES(?,?,1,1)", (tg_id, now_ts))
             
         try:
-            reward = int(get_setting("daily_reward_base", "1000"))
-        except: reward = 1000
+            reward = int(get_setting("daily_credit_base", "2"))
+        except: reward = 2
         
         if streak % 30 == 0:
             try:
-                reward = int(get_setting("daily_reward_30d", "50000"))
-            except: reward = 50000
+                reward = int(get_setting("daily_credit_30d", "30"))
+            except: reward = 30
         elif streak % 7 == 0:
             try:
-                reward = int(get_setting("daily_reward_7d", "5000"))
-            except: reward = 5000
+                reward = int(get_setting("daily_credit_7d", "10"))
+            except: reward = 10
             
-        # Cộng thưởng NGAY TRONG lock (RLock) để 2 request song song không thể nhận 2 lần
-        adjust_balance(tg_id, reward, f"Điểm danh hằng ngày (Chuỗi {streak} ngày)")
+        # Cộng credits NGAY TRONG lock (RLock) để 2 request song song không thể nhận 2 lần
+        add_credits(tg_id, reward, f"Diem danh hang ngay (Chuoi {streak} ngay)")
         c.commit()
     return True, streak, reward
 
@@ -2035,6 +2105,14 @@ def migrate_new_features():
             c.execute("UPDATE acc_categories SET warranty_hours = warranty_hours * 60")
             c.commit()
             set_setting("warranty_min_migrated", "1")
+        # Them cot evidence cho bang bao hanh (anh bang chung log sai mk) - chay 1 lan
+        if get_setting("warranty_evidence_migrated") != "1":
+            try:
+                c.execute("ALTER TABLE acc_warranty_claims ADD COLUMN evidence TEXT DEFAULT ''")
+            except Exception:
+                pass
+            c.commit()
+            set_setting("warranty_evidence_migrated", "1")
     except Exception:
         pass
 def create_user_list(tg_id: int, name: str, platform: str = 'fb') -> tuple[bool, str]:
@@ -2703,16 +2781,18 @@ def get_user_watches(tg_id: int):
 # ---------------------------------------------------------------- PayOS orders
 def create_payos_order(order_code: int, tg_id: int, amount: int,
                        payment_link_id: str = "", checkout_url: str = "",
-                       qr_code: str = "") -> None:
+                       qr_code: str = "", target: str = "main") -> None:
     now = int(time.time())
+    if target not in ("main", "shop"):
+        target = "main"
     with _lock:
         c = get_conn()
         c.execute(
             "INSERT INTO payos_orders(order_code, tg_id, amount, status, "
-            "payment_link_id, checkout_url, qr_code, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
+            "payment_link_id, checkout_url, qr_code, created_at, updated_at, target) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
             (order_code, tg_id, amount, "PENDING",
-             payment_link_id or "", checkout_url or "", qr_code or "", now, now),
+             payment_link_id or "", checkout_url or "", qr_code or "", now, now, target),
         )
         c.commit()
 
@@ -2724,14 +2804,17 @@ def get_payos_order(order_code: int):
     ).fetchone()
 
 
-def get_user_pending_payos_order(tg_id: int, max_age_sec: int):
-    """Đơn chờ mới nhất của user (chống tạo đơn trùng)."""
+def get_user_pending_payos_order(tg_id: int, max_age_sec: int, target: str = None):
+    """Đơn chờ mới nhất của user (chống tạo đơn trùng). Lọc theo ví nếu có target."""
     c = get_conn()
-    return c.execute(
-        "SELECT * FROM payos_orders WHERE tg_id=? AND status='PENDING' "
-        "AND created_at > ? ORDER BY created_at DESC LIMIT 1",
-        (tg_id, int(time.time()) - max_age_sec),
-    ).fetchone()
+    sql = ("SELECT * FROM payos_orders WHERE tg_id=? AND status='PENDING' "
+           "AND created_at > ?")
+    params: list = [tg_id, int(time.time()) - max_age_sec]
+    if target in ("main", "shop"):
+        sql += " AND COALESCE(target,'main')=?"
+        params.append(target)
+    sql += " ORDER BY created_at DESC LIMIT 1"
+    return c.execute(sql, params).fetchone()
 
 
 def get_pending_payos_orders(max_age_sec: int):
@@ -2766,16 +2849,26 @@ def mark_payos_paid(order_code: int) -> bool:
         return cur.rowcount > 0
 
 
-def settle_payos_order(order_code: int, tg_id: int, amount: int) -> dict:
+def settle_payos_order(order_code: int) -> dict:
     """Quyet toan don PayOS trong 1 transaction duy nhat.
 
-    PENDING/EXPIRED -> PAID + cong balance/total_topup + hoa hong F1/F2, tat ca
-    trong cung 1 commit. Tra {'ok': True, 'f1'/'f2': (id, bonus)} khi quyet toan
-    xong, {'ok': False} khi don da duoc xu ly truoc do (webhook/poller trung).
-    Khong con chuyen cong thua roi rollback thieu nhu truoc.
+    PENDING/EXPIRED -> PAID + cong vao vi dich (target) + total_topup + hoa hong
+    F1/F2, tat ca trong cung 1 commit. Tra {'ok': True, 'target': ...} khi quyet
+    toan xong, {'ok': False} khi don da duoc xu ly truoc do (webhook/poller trung).
     """
     with _lock:
         c = get_conn()
+        order = c.execute(
+            "SELECT tg_id, amount, COALESCE(target,'main') AS target "
+            "FROM payos_orders WHERE order_code=?",
+            (order_code,),
+        ).fetchone()
+        if not order:
+            return {"ok": False}
+        tg_id, amount = int(order["tg_id"]), int(order["amount"])
+        target = order["target"] or "main"
+        if target not in ("main", "shop"):
+            target = "main"
         cur = c.execute(
             "UPDATE payos_orders SET status='PAID', updated_at=? "
             "WHERE order_code=? AND status IN ('PENDING','EXPIRED')",
@@ -2783,9 +2876,9 @@ def settle_payos_order(order_code: int, tg_id: int, amount: int) -> dict:
         )
         if cur.rowcount == 0:
             return {"ok": False}
-        bonuses = _credit_topup_nolock(c, tg_id, amount, "payos")
+        bonuses = _credit_topup_nolock(c, tg_id, amount, "payos", target)
         c.commit()
-    out: dict = {"ok": True}
+    out: dict = {"ok": True, "target": target}
     out.update(bonuses)
     return out
 
@@ -3103,6 +3196,105 @@ def acc_sell_many(cat_id: int, tg_id: int, price_total: int, qty: int):
         return out
 
 
+def acc_stock_pick_candidates(cat_id: int, limit: int, exclude_ids=()):
+    """Lấy ứng viên AVAILABLE để check live trước khi bán (không khóa hàng).
+    Trả list dict {"id","uid","cat_id"}."""
+    c = get_conn()
+    q = "SELECT id, uid, cat_id FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'"
+    params = [cat_id]
+    if exclude_ids:
+        q += " AND id NOT IN (%s)" % ",".join("?" for _ in exclude_ids)
+        params += list(exclude_ids)
+    q += " ORDER BY id LIMIT ?"
+    params.append(max(1, int(limit)))
+    return [dict(r) for r in c.execute(q, params).fetchall()]
+
+
+def acc_mystery_pick_candidates(limit: int, exclude_ids=()):
+    """Ứng viên hộp mù: ngẫu nhiên từ các loại mystery_eligible còn hàng.
+    Trả list dict {"id","uid","cat_id"}."""
+    import random
+    c = get_conn()
+    cats = c.execute(
+        "SELECT id FROM acc_categories WHERE active=1 AND hidden=0 "
+        "AND mystery_eligible=1").fetchall()
+    pool = []
+    for ct in cats:
+        q = "SELECT id, uid, cat_id FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'"
+        params = [ct["id"]]
+        if exclude_ids:
+            q += " AND id NOT IN (%s)" % ",".join("?" for _ in exclude_ids)
+            params += list(exclude_ids)
+        pool += [dict(r) for r in c.execute(q, params).fetchall()]
+    random.shuffle(pool)
+    return pool[:max(1, int(limit))]
+
+
+def acc_stock_quarantine(stock_ids) -> int:
+    """Cách ly acc DIE: chuyển status='DIE' (rời kho bán, giữ lại cho admin xem/xóa).
+    Trả số dòng đã cách ly."""
+    ids = [int(i) for i in (stock_ids or [])]
+    if not ids:
+        return 0
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE acc_stock SET status='DIE' WHERE status='AVAILABLE' AND id IN (%s)"
+            % ",".join("?" for _ in ids), ids)
+        c.commit()
+        return cur.rowcount or 0
+
+
+def acc_stock_die_count(cat_id: int) -> int:
+    r = get_conn().execute(
+        "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='DIE'",
+        (cat_id,)).fetchone()
+    return r["n"] if r else 0
+
+
+def acc_stock_delete_die(cat_id=None) -> int:
+    """Xóa hẳn các acc đã cách ly DIE (dọn kho). Trả số dòng đã xóa."""
+    with _lock:
+        c = get_conn()
+        if cat_id is None:
+            cur = c.execute("DELETE FROM acc_stock WHERE status='DIE'")
+        else:
+            cur = c.execute(
+                "DELETE FROM acc_stock WHERE status='DIE' AND cat_id=?", (cat_id,))
+        c.commit()
+        return cur.rowcount or 0
+
+
+def acc_sell_stock_ids(cat_id: int, tg_id: int, price_total: int, stock_ids):
+    """Bán các acc theo stock id cụ thể (đã check LIVE trước).
+    Nguyên tử: id nào không còn AVAILABLE → rollback toàn bộ, trả None.
+    Trả list [(order_id, stock_row)]."""
+    ids = [int(i) for i in (stock_ids or [])]
+    if not ids:
+        return None
+    now = int(time.time())
+    qty = len(ids)
+    with _lock:
+        c = get_conn()
+        rows = []
+        for sid in ids:
+            r = c.execute(
+                "SELECT * FROM acc_stock WHERE id=? AND status='AVAILABLE'",
+                (sid,)).fetchone()
+            if not r:
+                c.rollback()
+                return None
+            rows.append(r)
+        out = []
+        each = price_total // qty if qty else price_total
+        for i, row in enumerate(rows):
+            p = each if i < qty - 1 else price_total - each * (qty - 1)
+            out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
+        c.commit()
+        _acc_autohide(c, cat_id)
+        return out
+
+
 def _acc_autohide(c, cat_id: int):
     """5.7 Tự ẩn danh mục khi hết hàng. Gọi trong transaction bán hàng."""
     try:
@@ -3217,13 +3409,13 @@ def spin_roll() -> dict:
 
 
 def spin_award(tg_id: int, prize: dict) -> None:
-    """Trao giải: cộng credits / số dư. Ghi lịch sử."""
+    """Trao giải: cộng credits / số dư ví shop. Ghi lịch sử."""
     kind = prize.get("kind", "none")
     value = int(prize.get("value", 0) or 0)
     if kind == "credits" and value > 0:
         add_credits(tg_id, value, "trung_vong_quay")
     elif kind == "balance" and value > 0:
-        add_balance_only(tg_id, value, "trung_vong_quay")
+        add_shop_balance_only(tg_id, value, "trung_vong_quay")
     with _lock:
         c = get_conn()
         c.execute(
@@ -3414,6 +3606,22 @@ def acc_warranty_claim(order_id: int, tg_id: int, stock_id: int,
         cid = cur.lastrowid
         c.commit()
         return cid
+
+
+def acc_warranty_has_pending(order_id: int) -> bool:
+    """True nếu đơn đã có claim PENDING/NEEDS_REVIEW."""
+    r = get_conn().execute(
+        "SELECT id FROM acc_warranty_claims WHERE order_id=? AND status IN ('PENDING','NEEDS_REVIEW')",
+        (order_id,)).fetchone()
+    return r is not None
+
+
+def acc_warranty_set_evidence(claim_id: int, file_id: str) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE acc_warranty_claims SET evidence=? WHERE id=?",
+                  (file_id or "", claim_id))
+        c.commit()
 
 
 def acc_warranty_pending(limit: int = 30) -> list:

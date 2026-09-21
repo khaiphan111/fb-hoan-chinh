@@ -49,7 +49,23 @@ log "backend KHONG phan hoi, bat dau khoi dong lai..."
 # don dep tien trinh uvicorn chet do (neu con)
 for pid in $(pgrep -f "[u]vicorn app.main:app" 2>/dev/null); do kill -9 "$pid" 2>/dev/null; done
 sleep 2
-cd "$ROOT" && nohup bash start_backend.sh > /tmp/backend_watchdog.log 2>&1 & disown
+# Dong fd lock thua ke tu `flock` cua cron de backend moi khong giu lock vinh vien
+# (tien trinh flock cha van giu lock nen critical section van duoc bao ve)
+for _wfd in /proc/self/fd/*; do
+  _wn=${_wfd##*/}
+  case "$_wn" in ''|*[!0-9]*) continue ;; esac
+  [ "$_wn" -gt 2 ] 2>/dev/null || continue
+  if [ "$(readlink "$_wfd" 2>/dev/null)" = "/tmp/fb-watchdog.lock" ]; then
+    eval "exec $_wn>&-"
+  fi
+done
+unset _wfd _wn
+# giu log cu (append + header) de lan chet sau con chung cu: SIGTERM hay traceback
+tail -n 3000 /tmp/backend_watchdog.log 2>/dev/null > /tmp/backend_watchdog.log.tmp && mv /tmp/backend_watchdog.log.tmp /tmp/backend_watchdog.log
+echo "===== watchdog restart $(date -u '+%F %T UTC') =====" >> /tmp/backend_watchdog.log
+cd "$ROOT" && setsid nohup bash start_backend.sh >> /tmp/backend_watchdog.log 2>&1 < /dev/null & disown
+# setsid: tach backend ra session/process-group rieng, de khi worker cron bi
+# ket thuc bat thuong (teardown ca cay tien trinh) thi backend khong bi SIGTERM theo.
 sleep 20
 
 if alive; then

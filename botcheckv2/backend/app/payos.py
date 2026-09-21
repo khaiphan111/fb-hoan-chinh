@@ -109,10 +109,9 @@ def get_return_urls() -> tuple:
 
 def new_order_code(tg_id: int = 0) -> int:
     # Tối đa 15 chữ số (an toàn dưới 2^53 của PayOS):
-    # 10 số giây hiện tại + 4 số cuối tg_id + 1 số ngẫu nhiên.
-    # 2 user cùng giây hiếm khi trùng cả 4 số cuối tg_id + số ngẫu nhiên.
-    return (int(time.time()) % 10_000_000_000) * 100_000 \
-        + (abs(int(tg_id)) % 10_000) * 10 + random.randint(0, 9)
+    # 10 số giây hiện tại + 5 số ngẫu nhiên (100k biến thể/giây).
+    # Nếu vẫn trùng PRIMARY KEY (cực hiếm), create_payos_order_retry sẽ sinh lại.
+    return (int(time.time()) % 10_000_000_000) * 100_000 + random.randint(0, 99_999)
 
 
 # ---------------------------------------------------------------- API calls
@@ -182,13 +181,15 @@ async def cancel_payment_link(order_code: int, reason: str = "User hủy") -> di
 
 
 # ---------------------------------------------------------------- cộng tiền
-async def _notify_paid(tg_id: int, amount: int, order_code: int):
+async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "main"):
     """Báo user + admin khi đơn được thanh toán."""
     from .bot import manager, vnd
     from . import db
+    wallet_txt = "🛒 <b>Ví shop</b> (mua acc FB)" if target == "shop" else "💰 <b>Ví chính</b> (check UID, mua gói...)"
     msg_text = (
         "✅ <b>NẠP TIỀN THÀNH CÔNG</b>\n\n"
         f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
+        f"👛 Cộng vào: {wallet_txt}\n"
         f"🧾 Mã đơn: <code>{order_code}</code>\n"
         "⚡ Tiền đã được cộng tự động qua PayOS.\n"
         "Cảm ơn bạn đã sử dụng dịch vụ!"
@@ -257,19 +258,20 @@ async def settle_order(order: dict) -> bool:
     tg_id = int(order["tg_id"])
     amount = int(order["amount"])
     try:
-        res = db.settle_payos_order(order_code, tg_id, amount)
+        res = db.settle_payos_order(order_code)
     except Exception as e:
         log.error("settle_payos_order thất bại cho đơn %s: %s", order_code, e)
         return False
     if not res.get("ok"):
         log.warning("PayOS: đơn %s đã được xử lý trước đó, bỏ qua", order_code)
         return False
+    target = res.get("target", "main")
     for key, level in (("f1", 1), ("f2", 2)):
         info = res.get(key)
         if info:
             db.notify_commission_bonus(info[0], info[1], level)
-    log.info("PayOS: đã cộng %s cho user %s (đơn %s)", amount, tg_id, order_code)
-    await _notify_paid(tg_id, amount, order_code)
+    log.info("PayOS: đã cộng %s vào ví %s cho user %s (đơn %s)", amount, target, tg_id, order_code)
+    await _notify_paid(tg_id, amount, order_code, target)
     return True
 
 

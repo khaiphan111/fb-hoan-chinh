@@ -20,11 +20,16 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+class WarrantyClaimState(StatesGroup):
+    waiting_for_evidence = State()
+
+
 class BankState(StatesGroup):
     waiting_for_amount = State()
 
 class PayOSState(StatesGroup):
     waiting_for_amount = State()
+    waiting_for_shop_amount = State()
 
 class FBNoteState(StatesGroup):
     waiting_for_note = State()
@@ -127,7 +132,7 @@ class AntiSpamMiddleware(BaseMiddleware):
                 "/muagoi", "/checkfile", "/checkcookie", "/dailyreport", "/code",
                 "/stats", "/history", "/top", "/adm", "/daily", "/chuyentien",
                 "/shop", "/damua", "/quay", "/hang", "/doiqua", "/giasi",
-                "/coc", "/huycoc", "/coclist"
+                "/coc", "/huycoc", "/coclist", "/napshop"
             )
             if cmd not in free_cmds:
                 user = db.get_user(event.chat.id)
@@ -169,7 +174,8 @@ COMMANDS = [
     BotCommand(command="muagoi",      description="Mua gói theo ngày (1, 3, 5, 7 ngày)"),
     BotCommand(command="sub",         description="Xem gói tháng & mua gói"),
     BotCommand(command="bank",        description="Nạp tiền / Lấy thông tin chuyển khoản"),
-    BotCommand(command="nap",         description="Nạp tiền tự động qua PayOS"),
+    BotCommand(command="nap",         description="Nạp tiền tự động qua PayOS (chọn ví)"),
+    BotCommand(command="napshop",     description="Nạp tiền vào ví shop mua acc"),
     BotCommand(command="balance",     description="Xem số dư hiện tại"),
     BotCommand(command="vip",         description="Xem cấp độ VIP và đặc quyền"),
     BotCommand(command="checkfile",   description="Check UID Facebook qua file .txt/.xlsx"),
@@ -185,7 +191,7 @@ COMMANDS = [
     BotCommand(command="stats",       description="Thống kê cá nhân của bạn"),
     BotCommand(command="history",     description="Lịch sử check: /history [fb|tiktok|ig|yt|zalo]"),
     BotCommand(command="top",         description="Bảng xếp hạng: /top hoặc /top ref"),
-    BotCommand(command="daily",       description="Điểm danh nhận thưởng mỗi ngày"),
+    BotCommand(command="daily",       description="Điểm danh nhận credits mỗi ngày"),
     BotCommand(command="code",        description="Nhập mã giftcode: /code <mã>"),
     BotCommand(command="chuyentien",  description="Chuyển số dư: /chuyentien <user_id> <tiền>"),
     BotCommand(command="tiktok",      description="Check info TikTok: /tiktok <username>"),
@@ -487,7 +493,7 @@ async def on_ref(msg: Message):
 async def on_daily(msg: Message):
     success, streak, reward = db.checkin_daily(msg.from_user.id)
     if success:
-        await msg.answer(f"🎉 <b>Điểm danh thành công!</b>\n\nBạn nhận được <b>{vnd(reward)}</b>.\n🔥 Chuỗi điểm danh: <b>{streak} ngày</b>.", parse_mode="HTML")
+        await msg.answer(f"🎉 <b>Điểm danh thành công!</b>\n\nBạn nhận được <b>{reward} credits</b> check UID.\n🔥 Chuỗi điểm danh: <b>{streak} ngày</b>.", parse_mode="HTML")
     else:
         await msg.answer(f"⚠️ Bạn đã điểm danh hôm nay rồi!\n🔥 Chuỗi hiện tại: <b>{streak} ngày</b>.\nQuay lại vào ngày mai nhé.", parse_mode="HTML")
 
@@ -967,6 +973,16 @@ async def on_mycodes(msg: Message):
     text += "\n<i>Bấm nút bên dưới để sử dụng:</i>"
     await msg.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
+async def _ask_bank_wallet(msg, amount: int):
+    """Hỏi user cộng tiền bank vào ví nào (sau khi admin duyệt)."""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Ví chính", callback_data=f"bank_wallet:main:{amount}")],
+        [InlineKeyboardButton(text="🛒 Ví shop", callback_data=f"bank_wallet:shop:{amount}")],
+    ])
+    await msg.answer(f"💳 Cộng <b>{vnd(amount)}</b> vào ví nào (sau khi admin duyệt)?",
+                     parse_mode="HTML", reply_markup=kb)
+
+
 @router.callback_query(F.data.startswith("bank_confirm"))
 async def on_bank_confirm(cb: CallbackQuery, state: FSMContext):
     await cb.message.edit_reply_markup(reply_markup=None)
@@ -982,10 +998,23 @@ async def on_bank_confirm(cb: CallbackQuery, state: FSMContext):
             amount = 0
             
         if amount > 0:
-            await process_bank_amount(cb.message, cb.from_user, amount)
+            await _ask_bank_wallet(cb.message, amount)
         await cb.answer()
 
-async def process_bank_amount(msg: Message, user, amount: int):
+
+@router.callback_query(F.data.startswith("bank_wallet:"))
+async def on_bank_wallet(cb: CallbackQuery):
+    await cb.answer()
+    try:
+        _, target, amount_s = cb.data.split(":")
+        amount = int(amount_s)
+        assert target in ("main", "shop") and amount > 0
+    except Exception:
+        await cb.message.answer("❌ Yêu cầu không hợp lệ.")
+        return
+    await process_bank_amount(cb.message, cb.from_user, amount, target)
+
+async def process_bank_amount(msg: Message, user, amount: int, target: str = "main"):
     admin_tg_token = db.get_setting("admin_bot_token", "")
     admin_zalo = db.get_setting("admin_zalo_id", "")
     
@@ -994,7 +1023,8 @@ async def process_bank_amount(msg: Message, user, amount: int):
         "🔔 <b>CÓ KHÁCH BÁO CHUYỂN KHOẢN!</b>\n\n"
         f"👤 Khách: {html.escape(username_str)}\n"
         f"🆔 ID Telegram: {user.id}\n"
-        f"💰 Số tiền: {vnd(amount)}\n\n"
+        f"💰 Số tiền: {vnd(amount)}\n"
+        f"👛 Ví: {'🛒 Ví shop' if target == 'shop' else '💰 Ví chính'}\n\n"
         f"👉 ĐỂ TẠO & PHÁT CODE, gửi lệnh:\n/phatcode {user.id} {amount}\n\n"
         f"👉 Cú pháp cộng thẳng: /topup {user.id} {amount}\n"
         "👉 Hoặc cộng thủ công trên trang Quản lý."
@@ -1017,7 +1047,7 @@ async def process_bank_amount(msg: Message, user, amount: int):
             if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
         except: pass
         
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Xác nhận + Cộng tiền", callback_data=f"tg_admin_confirm_{user.id}_{amount}")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Xác nhận + Cộng tiền", callback_data=f"tg_admin_confirm_{user.id}_{amount}_{target}")]])
         for admin_id in admins:
             try:
                 await admin_sender_bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=kb)
@@ -1035,7 +1065,8 @@ async def process_bank_amount(msg: Message, user, amount: int):
         notified = True
         
     if notified:
-        await msg.answer(f"✅ Đã gửi thông báo cho Admin xác nhận khoản nạp <b>{vnd(amount)}</b>.\nTiền sẽ được cộng vào tài khoản của bạn sau khi Admin kiểm tra xong (thường trong vòng 1-5 phút)!")
+        _w = "🛒 <b>Ví shop</b>" if target == "shop" else "💰 <b>Ví chính</b>"
+        await msg.answer(f"✅ Đã gửi thông báo cho Admin xác nhận khoản nạp <b>{vnd(amount)}</b> vào {_w}.\nTiền sẽ được cộng vào tài khoản của bạn sau khi Admin kiểm tra xong (thường trong vòng 1-5 phút)!")
     else:
         await msg.answer(f"✅ Đã ghi nhận báo cáo <b>{vnd(amount)}</b>.\nTiền sẽ được cộng vào tài khoản của bạn sau khi Admin kiểm tra xong!")
 
@@ -1056,9 +1087,13 @@ async def on_main_admin_confirm(cb: CallbackQuery):
     parts = cb.data.split("_")
     user_id = int(parts[3])
     amount = int(parts[4])
-    
+    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop") else "main"
+
     try:
-        db.adjust_balance(user_id, amount, reason="bank_transfer")
+        if target == "shop":
+            db.credit_topup(user_id, amount, reason="bank_transfer", wallet="shop")
+        else:
+            db.adjust_balance(user_id, amount, reason="bank_transfer")
         success = True
     except Exception as e:
         log.error(f"Lỗi cộng tiền: {e}")
@@ -1071,11 +1106,18 @@ async def on_main_admin_confirm(cb: CallbackQuery):
         
         # Notify user via main bot
         try:
+            _w = "🛒 <b>Ví shop</b>" if target == "shop" else "💰 <b>Ví chính</b>"
             msg_text = (
                 f"✅ <b>NẠP TIỀN THÀNH CÔNG</b>\n\n"
-                f"Bạn vừa được cộng <b>{amount:,.0f} VNĐ</b> vào tài khoản.\n"
+                f"Bạn vừa được cộng <b>{amount:,.0f} VNĐ</b> vào {_w}.\n"
                 f"Cảm ơn bạn đã sử dụng dịch vụ!"
             )
+            try:
+                _u = db.get_user(user_id)
+                _bal = (_u["shop_balance"] if target == "shop" else _u["balance"]) if _u is not None else 0
+                msg_text += f"\n\n{_w} số dư hiện tại: <b>{_bal:,.0f} VNĐ</b>"
+            except Exception:
+                pass
             
             # Kiem tra VIP upgrade
             upgraded, new_vip, is_lifetime = db.check_vip_upgrade(user_id)
@@ -1102,6 +1144,11 @@ async def on_main_admin_confirm(cb: CallbackQuery):
 
 @router.message(BankState.waiting_for_amount)
 async def on_bank_amount(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
     amount_str = msg.text.strip()
     try:
         amount = int(amount_str.replace(",", "").replace(".", ""))
@@ -1111,7 +1158,7 @@ async def on_bank_amount(msg: Message, state: FSMContext):
         return
         
     await state.clear()
-    await process_bank_amount(msg, msg.from_user, amount)
+    await _ask_bank_wallet(msg, amount)
 
 # ============================ PayOS — nạp tiền tự động ============================
 def _parse_payos_amount(raw: str) -> int:
@@ -1123,15 +1170,17 @@ def _parse_payos_amount(raw: str) -> int:
     return amount
 
 
-async def _make_payos_order(tg_id: int, amount: int):
+async def _make_payos_order(tg_id: int, amount: int, target: str = "main"):
     """Tạo (hoặc dùng lại) đơn PayOS. Trả (order_code, checkout_url, qr_code, reused)."""
+    if target not in ("main", "shop"):
+        target = "main"
     from . import payos as payos_mod
     if not payos_mod.is_configured():
         raise payos_mod.PayOSError("Admin chưa cấu hình PayOS, vui lòng nạp bằng /bank.")
     if amount < payos_mod.PAYOS_MIN_AMOUNT:
         raise payos_mod.PayOSError(
             f"Số tiền tối thiểu là {vnd(payos_mod.PAYOS_MIN_AMOUNT)}.")
-    existing = db.get_user_pending_payos_order(tg_id, payos_mod.ORDER_TTL)
+    existing = db.get_user_pending_payos_order(tg_id, payos_mod.ORDER_TTL, target)
     if existing and existing["checkout_url"] and int(existing["amount"]) == int(amount):
         # Đơn dùng lại: lấy QR đã lưu lúc tạo đơn (API đọc trạng thái không trả qrCode)
         qr_code = ""
@@ -1147,14 +1196,21 @@ async def _make_payos_order(tg_id: int, amount: int):
         except Exception:
             pass
         db.mark_payos_status(int(existing["order_code"]), "CANCELLED")
-    order_code = payos_mod.new_order_code(tg_id)
+    import sqlite3
     description = f"NAP{tg_id}"[-25:]
     return_url, cancel_url = payos_mod.get_return_urls()
-    data = await payos_mod.create_payment_link(
-        order_code, amount, description, return_url, cancel_url)
-    db.create_payos_order(order_code, tg_id, amount,
-                          data.get("paymentLinkId", ""), data.get("checkoutUrl", ""),
-                          data.get("qrCode", "") or "")
+    data = None
+    for _ in range(5):
+        order_code = payos_mod.new_order_code(tg_id)
+        data = await payos_mod.create_payment_link(
+            order_code, amount, description, return_url, cancel_url)
+        try:
+            db.create_payos_order(order_code, tg_id, amount,
+                                  data.get("paymentLinkId", ""), data.get("checkoutUrl", ""),
+                                  data.get("qrCode", "") or "", target)
+            break
+        except sqlite3.IntegrityError:
+            continue  # mã đơn trùng (cực hiếm) -> sinh mã mới, tạo link mới
     return order_code, data.get("checkoutUrl", ""), data.get("qrCode", "") or "", False
 
 
@@ -1174,13 +1230,15 @@ def _qr_code_png(qr_text: str):
 
 async def _send_payos_invoice(msg: Message, tg_id: int, amount: int,
                               order_code: int, checkout_url: str,
-                              qr_code: str, reused: bool):
+                              qr_code: str, reused: bool, target: str = "main"):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Hủy đơn", callback_data=f"payos_cancel:{order_code}")],
     ])
+    wallet_txt = "🛒 <b>Ví shop</b> (mua acc FB)" if target == "shop" else "💰 <b>Ví chính</b> (check UID, mua gói...)"
     caption = (
         "⚡ <b>NẠP TIỀN TỰ ĐỘNG</b>" + (" <i>(dùng lại đơn đang chờ)</i>" if reused else "") + "\n\n"
         f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
+        f"👛 Nạp vào: {wallet_txt}\n"
         f"🧾 Mã đơn: <code>{order_code}</code>\n\n"
         "📷 <b>Mở app ngân hàng quét mã QR bên dưới</b> để thanh toán.\n"
         "Tiền sẽ <b>tự động cộng</b> vào tài khoản sau khi bạn thanh toán xong "
@@ -1199,6 +1257,19 @@ async def _send_payos_invoice(msg: Message, tg_id: int, amount: int,
     await msg.answer(caption, parse_mode="HTML", reply_markup=kb)
 
 
+async def _ask_payos_wallet(msg, amount: int):
+    """Hỏi user nạp vào ví nào trước khi tạo đơn PayOS."""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Ví chính — check UID, mua gói, credits...",
+                              callback_data=f"payos_wallet:main:{amount}")],
+        [InlineKeyboardButton(text="🛒 Ví shop — mua acc Facebook",
+                              callback_data=f"payos_wallet:shop:{amount}")],
+    ])
+    await msg.answer(
+        f"💳 Nạp <b>{vnd(amount)}</b> vào ví nào?",
+        parse_mode="HTML", reply_markup=kb)
+
+
 @router.message(Command("nap"))
 async def on_nap(msg: Message, state: FSMContext):
     parts = (msg.text or "").split(maxsplit=1)
@@ -1208,21 +1279,78 @@ async def on_nap(msg: Message, state: FSMContext):
         except Exception:
             await msg.answer("❌ Số tiền không hợp lệ. Ví dụ: <code>/nap 50000</code>")
             return
-        try:
-            order_code, checkout_url, qr_code, reused = await _make_payos_order(
-                msg.from_user.id, amount)
-        except Exception as e:
-            await msg.answer(f"❌ {e}")
-            return
-        await _send_payos_invoice(msg, msg.from_user.id, amount,
-                                  order_code, checkout_url, qr_code, reused)
+        await _ask_payos_wallet(msg, amount)
     else:
         await msg.answer("✍️ Nhập <b>số tiền</b> muốn nạp (ví dụ: 50000):")
         await state.set_state(PayOSState.waiting_for_amount)
 
 
+@router.callback_query(F.data.startswith("payos_wallet:"))
+async def on_payos_wallet(cb: CallbackQuery):
+    await cb.answer()
+    try:
+        _, target, amount_s = cb.data.split(":")
+        amount = int(amount_s)
+        assert target in ("main", "shop") and amount > 0
+    except Exception:
+        await cb.message.answer("❌ Yêu cầu không hợp lệ, gõ /nap lại nhé.")
+        return
+    try:
+        order_code, checkout_url, qr_code, reused = await _make_payos_order(
+            cb.from_user.id, amount, target)
+    except Exception as e:
+        await cb.message.answer(f"❌ {e}")
+        return
+    await _send_payos_invoice(cb.message, cb.from_user.id, amount,
+                              order_code, checkout_url, qr_code, reused, target)
+
+
+@router.message(Command("napshop"))
+async def on_napshop(msg: Message, state: FSMContext):
+    """Nạp thẳng vào ví shop (mua acc)."""
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        try:
+            amount = _parse_payos_amount(parts[1])
+        except Exception:
+            await msg.answer("❌ Số tiền không hợp lệ. Ví dụ: <code>/napshop 50000</code>")
+            return
+        try:
+            order_code, checkout_url, qr_code, reused = await _make_payos_order(
+                msg.from_user.id, amount, "shop")
+        except Exception as e:
+            await msg.answer(f"❌ {e}")
+            return
+        await _send_payos_invoice(msg, msg.from_user.id, amount,
+                                  order_code, checkout_url, qr_code, reused, "shop")
+    else:
+        await msg.answer("✍️ Nhập <b>số tiền</b> muốn nạp vào <b>🛒 Ví shop</b> (ví dụ: 50000):")
+        await state.set_state(PayOSState.waiting_for_shop_amount)
+
+
 @router.message(PayOSState.waiting_for_amount)
 async def on_nap_amount(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
+    try:
+        amount = _parse_payos_amount(msg.text)
+    except Exception:
+        await msg.answer("❌ Số tiền không hợp lệ. Vui lòng nhập lại (ví dụ: 50000):")
+        return
+    await state.clear()
+    await _ask_payos_wallet(msg, amount)
+
+
+@router.message(PayOSState.waiting_for_shop_amount)
+async def on_napshop_amount(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
     try:
         amount = _parse_payos_amount(msg.text)
     except Exception:
@@ -1231,12 +1359,12 @@ async def on_nap_amount(msg: Message, state: FSMContext):
     await state.clear()
     try:
         order_code, checkout_url, qr_code, reused = await _make_payos_order(
-            msg.from_user.id, amount)
+            msg.from_user.id, amount, "shop")
     except Exception as e:
         await msg.answer(f"❌ {e}")
         return
     await _send_payos_invoice(msg, msg.from_user.id, amount,
-                              order_code, checkout_url, qr_code, reused)
+                              order_code, checkout_url, qr_code, reused, "shop")
 
 
 @router.callback_query(F.data == "payos_auto")
@@ -1853,11 +1981,13 @@ async def on_balance(msg: Message):
         await msg.answer("Bạn chưa /start. Gõ /start trước nhé.")
         return
     credits = db.get_credits(msg.from_user.id)
+    shop_bal = int(user["shop_balance"] or 0) if "shop_balance" in user.keys() else 0
     await msg.answer(
-        f"Số dư: <b>{vnd(user['balance'])}</b>\n"
+        f"💰 Ví chính: <b>{vnd(user['balance'])}</b>\n"
+        f"🛒 Ví shop (mua acc): <b>{vnd(shop_bal)}</b>\n"
         f"⚡ Credits: <b>{credits}</b> lượt\n"
         f"Gói: <b>{_sub_text(user)}</b>\n\n"
-        f"<i>Mua thêm credits: /muacredit</i>",
+        f"<i>Nạp ví chính: /nap • Nạp ví shop: /napshop</i>",
         parse_mode="HTML",
     )
 
@@ -1952,11 +2082,12 @@ async def on_check(msg: Message):
     status = "live" if res["alive"] else "die"
     avatar = res["avatar_url"] or avatar_url(uid)
     expire_at = now() + days * DAY if days else 0
-    wid = db.add_watch(msg.chat.id, res["uid"], note or "", price or 0, expire_at)
+    wid, is_new = db.add_watch(msg.chat.id, res["uid"], note or "", price or 0, expire_at)
     db.update_watch_status(wid, status, avatar)
-    db.add_log("add", f"Thêm UID {res['uid']} ({status})", msg.chat.id, res["uid"])
+    if is_new:
+        db.add_log("add", f"Thêm UID {res['uid']} ({status})", msg.chat.id, res["uid"])
 
-    header = "Đã thêm theo dõi:"
+    header = "Đã thêm theo dõi:" if is_new else "UID này đã trong danh sách theo dõi:"
     if days:
         header += f" trong {days} ngày"
     await _send_card(msg.bot, msg.chat.id, res["uid"], status, note, price, avatar, header)
@@ -1975,11 +2106,12 @@ async def on_fb_track_btn(cb: CallbackQuery):
     status = "live" if res["alive"] else "die"
     avatar = res.get("avatar_url") or avatar_url(uid)
     
-    wid = db.add_watch(cb.from_user.id, res["uid"], "", 0, 0)
+    wid, is_new = db.add_watch(cb.from_user.id, res["uid"], "", 0, 0)
     db.update_watch_status(wid, status, avatar)
-    db.add_log("add", f"Thêm UID {res['uid']} ({status})", cb.from_user.id, res["uid"])
-    
-    await cb.answer("✅ Đã thêm vào danh sách theo dõi!", show_alert=True)
+    if is_new:
+        db.add_log("add", f"Thêm UID {res['uid']} ({status})", cb.from_user.id, res["uid"])
+
+    await cb.answer("✅ Đã thêm vào danh sách theo dõi!" if is_new else "ℹ️ UID này đã được theo dõi rồi.", show_alert=True)
     await _send_card(cb.bot, cb.message.chat.id, res["uid"], status, "", 0, avatar, "Đã thêm theo dõi:")
 
 @router.callback_query(F.data.startswith("fb_note_"))
@@ -1997,6 +2129,11 @@ async def on_fb_note_btn(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FBNoteState.waiting_for_note)
 async def on_fb_note_input(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
     data = await state.get_data()
     uid = data.get("uid")
     note = msg.text.strip()
@@ -2007,11 +2144,13 @@ async def on_fb_note_input(msg: Message, state: FSMContext):
     status = "live" if res["alive"] else "die"
     avatar = res.get("avatar_url") or avatar_url(uid)
     
-    wid = db.add_watch(msg.chat.id, res["uid"], note, 0, 0)
+    wid, is_new = db.add_watch(msg.chat.id, res["uid"], note, 0, 0)
     db.update_watch_status(wid, status, avatar)
-    db.add_log("add", f"Thêm UID {res['uid']} kèm ghi chú", msg.chat.id, res["uid"])
-    
-    await msg.answer("✅ Đã lưu ghi chú và thêm vào danh sách theo dõi!")
+    if is_new:
+        db.add_log("add", f"Thêm UID {res['uid']} kèm ghi chú", msg.chat.id, res["uid"])
+
+    await msg.answer("✅ Đã lưu ghi chú và thêm vào danh sách theo dõi!" if is_new
+                     else "✅ Đã lưu ghi chú (UID này đã được theo dõi từ trước).")
     await _send_card(msg.bot, msg.chat.id, res["uid"], status, note, 0, avatar, "Đã thêm theo dõi (Có ghi chú):")
 
 @router.message(F.text & ~F.text.startswith("/"))
@@ -3641,7 +3780,8 @@ async def on_help(msg: Message):
         "• /balance — Xem số dư hiện tại\n"
         "• /bank — Xem thông tin nạp tiền &amp; QR\n"
         "• /bank &lt;số_tiền&gt; — Nạp nhanh (VD: /bank 50000)\n"
-        "• /nap &lt;số_tiền&gt; — Nạp tự động qua PayOS, tiền tự cộng (VD: /nap 50000)\n"
+        "• /nap &lt;số_tiền&gt; — Nạp tự động qua PayOS, chọn ví chính/shop (VD: /nap 50000)\n"
+        "• /napshop &lt;số_tiền&gt; — Nạp thẳng vào ví shop mua acc\n"
         "• /ref — Lấy link giới thiệu kiếm hoa hồng\n"
         "• /doitien &lt;số_tiền&gt; — Đổi hoa hồng → số dư (+10% Bonus)\n"
         "• /ruttien &lt;tiền&gt; &lt;ngân_hàng&gt; &lt;stk&gt; — Rút hoa hồng về bank\n"
@@ -3656,7 +3796,8 @@ async def on_help(msg: Message):
         "• /giasi — Bảng giá sỉ khi mua nhiều\n"
         "• /coc &lt;id_loại&gt; — Đặt cọc giữ hàng hot khi hết hàng\n"
         "• /coclist — Xem các khoản đặt cọc của bạn\n"
-        "• /huycoc &lt;id_cọc&gt; — Hủy đặt cọc (hoàn tiền)\n\n"
+        "• /huycoc &lt;id_cọc&gt; — Hủy đặt cọc (hoàn tiền)\n"
+        "• <i>Mua acc/đặt cọc/hộp mù trừ <b>ví shop</b> riêng, không dùng ví chính</i>\n\n"
 
         "<b>🎫 GÓI &amp; VIP</b>\n"
         "• /muagoi — Bảng giá &amp; mua gói ngày (1, 3, 5, 7 ngày)\n"
@@ -4553,6 +4694,11 @@ async def on_cookieadd_received(msg: Message, state: FSMContext):
         await state.clear()
         await msg.answer("Đã hủy.")
         return
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
     cookie = (msg.text or "").strip()
     # Nếu user gõ lại lệnh /cookieadd kèm cookie trong lúc đang chờ -> bỏ prefix lệnh
     if cookie.startswith("/cookieadd"):
@@ -4656,6 +4802,7 @@ class AccShopState(StatesGroup):
     waiting_for_stock_file = State()
     waiting_for_cover = State()
     waiting_for_review_comment = State()
+    waiting_for_custom_qty = State()
 
 
 def _purchase_alert_text(buyer, orders: list) -> str:
@@ -4720,6 +4867,113 @@ async def _notify_purchase_admin(bot, buyer, orders: list):
         log.warning("Báo admin đơn mua acc lỗi: %s", e)
 
 
+_STOCK_DIE_STATUSES = {"dead", "disabled", "checkpoint", "checkpoint_282", "checkpoint_956"}
+
+
+async def _check_stock_live(stock_rows):
+    """Check song song 1 loạt acc trong kho.
+    Trả (live_ids, die_ids, unknown_ids) theo stock id.
+    - live: status == "live"
+    - die: dead/disabled/checkpoint... → cách ly
+    - unknown: cookie_invalid/error/... → lỗi hạ tầng check, không kết luận được"""
+    sem = asyncio.Semaphore(10)
+    live_ids, die_ids, unknown_ids = [], [], []
+
+    async def _one(r):
+        async with sem:
+            try:
+                res = await check_uid(str(r["uid"]))
+                st = str(res.get("status") or "").lower()
+            except Exception:
+                st = "error"
+            return r["id"], st
+
+    for sid, st in await asyncio.gather(*[_one(r) for r in stock_rows]):
+        if st == "live":
+            live_ids.append(sid)
+        elif st in _STOCK_DIE_STATUSES:
+            die_ids.append(sid)
+        else:
+            unknown_ids.append(sid)
+    return live_ids, die_ids, unknown_ids
+
+
+async def _notify_die_quarantine(bot, die_rows):
+    """Báo admin các acc vừa bị cách ly vì check DIE trước khi giao."""
+    if not die_rows:
+        return
+    try:
+        by_cat = {}
+        for r in die_rows:
+            by_cat.setdefault(r.get("cat_id"), []).append(str(r.get("uid") or ""))
+        lines = ["🗑 <b>CÁCH LY ACC DIE</b>",
+                 "Shop vừa check trước khi giao — đã loại khỏi kho bán:"]
+        for cid, uids in by_cat.items():
+            try:
+                c = db.acc_category_get(cid)
+                name = c["name"] if c else f"#{cid}"
+            except Exception:
+                name = f"#{cid}"
+            show = ", ".join(f"<code>{html.escape(u)}</code>" for u in uids[:10])
+            more = f" <i>(+{len(uids) - 10})</i>" if len(uids) > 10 else ""
+            lines.append(f"📦 <b>{html.escape(name)}</b>: {show}{more}")
+        lines.append("\n<i>Dọn hẳn: /xoadie [id_loại]</i>")
+        text = "\n".join(lines)
+        sent = await _notify_bot.manager.send_to_privileged(text)
+        if not sent:
+            await _notify_shop_admin(bot, text)
+    except Exception as e:
+        log.warning("Báo admin cách ly acc die lỗi: %s", e)
+
+
+async def _sell_live_stock(bot, tg_id: int, price_total: int, qty: int, pick_fn):
+    """Bán qty acc nhưng CHỈ giao acc đã check LIVE.
+    pick_fn(exclude_ids) -> list[{"id","uid","cat_id"}] (ứng viên AVAILABLE).
+    - Acc check DIE → cách ly khỏi kho + báo admin.
+    - Check lỗi hạ tầng (không kết luận được) → không giao, không cách ly.
+    Trả (orders, fail): orders = list[dict order] hoặc None;
+    fail ∈ {"short" (thiếu hàng live), "infra" (lỗi check), "race" (bị mua mất)}."""
+    need = max(1, int(qty))
+    seen, live_rows = set(), []
+    infra = False
+    for _ in range(4):
+        cands = [r for r in pick_fn(seen) if r["id"] not in seen]
+        if not cands:
+            break
+        seen.update(r["id"] for r in cands)
+        l_ids, d_ids, u_ids = await _check_stock_live(cands)
+        if d_ids:
+            db.acc_stock_quarantine(d_ids)
+            dset = set(d_ids)
+            await _notify_die_quarantine(bot, [r for r in cands if r["id"] in dset])
+        if u_ids:
+            infra = True
+        idmap = {r["id"]: r for r in cands}
+        for sid in l_ids:
+            if len(live_rows) < need:
+                live_rows.append(idmap[sid])
+        if len(live_rows) >= need:
+            break
+    if len(live_rows) < need:
+        return None, ("infra" if infra else "short")
+    # Bán đúng các acc đã check live (nguyên tử theo từng loại)
+    orders = []
+    groups = {}
+    for r in live_rows[:need]:
+        groups.setdefault(r["cat_id"], []).append(r["id"])
+    per = price_total // need if need else price_total
+    left = price_total
+    items = list(groups.items())
+    for gi, (cid, sids) in enumerate(items):
+        share = left if gi == len(items) - 1 else per * len(sids)
+        left -= share
+        sold = db.acc_sell_stock_ids(cid, tg_id, share, sids)
+        if not sold:
+            return None, "race"
+        orders += [dict(db.acc_get_order(oid)) for oid, _ in sold]
+    return orders, None
+
+
 async def _notify_shop_admin(bot, text: str):
     """Báo cho admin qua bot chính."""
     try:
@@ -4728,6 +4982,28 @@ async def _notify_shop_admin(bot, text: str):
             await bot.send_message(int(aid), text, parse_mode="HTML")
     except Exception:
         pass
+
+
+async def _notify_admin_photo(bot, file_id: str, caption: str):
+    """Gui anh bang chung cho admin qua bot chinh."""
+    targets = []
+    try:
+        aid = db.get_setting("admin_tg_id", "")
+        if aid:
+            targets.append(int(aid))
+    except Exception:
+        pass
+    try:
+        gid = db.get_setting("admin_tg_group_id", "")
+        if gid:
+            targets.append(int(gid))
+    except Exception:
+        pass
+    for t in targets:
+        try:
+            await bot.send_photo(t, file_id, caption=caption, parse_mode="HTML")
+        except Exception:
+            pass
 
 
 async def _notify_admin_smart(bot, text: str):
@@ -4815,9 +5091,12 @@ async def on_shop(msg: Message):
         return
     kb_rows = []
     now = int(time.time())
+    _u = db.get_user(msg.from_user.id)
+    _shop_bal = int(_u["shop_balance"] or 0) if _u and "shop_balance" in _u.keys() else 0
     lines = [
         "🛒 <b>SHOP TÀI KHOẢN FACEBOOK</b>",
         "<i>⚡ Giao tự động • 🛡 Bảo hành 1 đổi 1 • 💬 Hỗ trợ 24/7</i>",
+        f"👛 Ví shop của bạn: <b>{vnd(_shop_bal)}</b> <i>(nạp: /napshop)</i>",
         "━━━━━━━━━━━━", "",
     ]
     # 4.10 Giờ vàng giảm giá
@@ -4970,7 +5249,7 @@ async def on_acc_buy(cb: CallbackQuery):
         f"💰 Giá: <b>{vnd(unit)}</b>/acc\n"
         f"📊 Tồn kho: <b>{n}</b> acc"
         + (f" • 🔁 Đã bán <b>{sold}</b>" if sold else "") + "\n"
-        f"🛡 Bảo hành: <b>{_fmt_warranty(c['warranty_hours'])}</b> — 1 đổi 1 nếu acc die\n"
+        f"🛡 Bảo hành: <b>Chỉ bảo hành log sai mk</b>\n"
     )
     if sample and sample["uid"]:
         uid_e = html.escape(sample["uid"])
@@ -5015,6 +5294,9 @@ async def on_acc_buy(cb: CallbackQuery):
             kb_rows.append([InlineKeyboardButton(
                 text=f"💼 Mua 20 — giá sỉ giảm {p20}%",
                 callback_data=f"accconfirm:{cat_id}:20")])
+        kb_rows.append([InlineKeyboardButton(
+            text="✏️ Nhập số lượng khác",
+            callback_data=f"accqty:{cat_id}")])
         kb_rows.append([InlineKeyboardButton(
             text="🔍 Soi acc mẫu (miễn phí)",
             callback_data=f"accpreview:{cat_id}")])
@@ -5128,6 +5410,90 @@ async def on_acc_shop_back(cb: CallbackQuery):
     await on_shop(cb.message)
 
 
+@router.callback_query(F.data.startswith("accqty:"))
+async def on_acc_qty_prompt(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"]:
+        await cb.message.answer("❌ Loại acc này không còn bán.")
+        return
+    n = db.acc_stock_count(cat_id)
+    if n <= 0:
+        await cb.message.answer("⛔ Loại này vừa hết hàng.")
+        return
+    await state.set_state(AccShopState.waiting_for_custom_qty)
+    await state.update_data(acc_qty_cat_id=cat_id)
+    await cb.message.answer(
+        f"✏️ Nhập <b>số lượng</b> muốn mua (1–{n} acc):\n"
+        f"<i>Gõ /huy để hủy.</i>",
+        parse_mode="HTML")
+
+
+@router.message(AccShopState.waiting_for_custom_qty)
+async def on_acc_qty_input(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("🚫 Đã hủy thao tác đang nhập. Bạn gõ lại lệnh vừa rồi nhé.")
+        return
+    if _t.lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("Đã hủy nhập số lượng.")
+        return
+    data = await state.get_data()
+    cat_id = data.get("acc_qty_cat_id")
+    if not cat_id:
+        await state.clear()
+        return
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"]:
+        await state.clear()
+        await msg.answer("❌ Loại acc này không còn bán.")
+        return
+    try:
+        qty = int(_t.replace(".", "").replace(",", "").strip())
+    except Exception:
+        await msg.answer("❌ Số lượng không hợp lệ. Nhập số nguyên, ví dụ: 3")
+        return
+    n = db.acc_stock_count(cat_id)
+    if qty < 1 or qty > n:
+        await msg.answer(f"❌ Số lượng phải từ 1 đến {n}. Nhập lại nhé (hoặc /huy để hủy):")
+        return
+    await state.clear()
+    c = dict(c)
+    up = db.shop_unit_price(c)
+    price = up["price"]
+    p5, p10, p20 = _shop_bulk_pcts()
+    bulk_pct = p20 if qty >= 20 else (p10 if qty >= 10 else (p5 if qty >= 5 else 0))
+    tier = db.member_tier_info(msg.from_user.id)
+    tier_pct = int(tier["pct"])
+    total = price * qty
+    final = total * (100 - bulk_pct) // 100
+    final = final * (100 - tier_pct) // 100
+    disc = []
+    if bulk_pct:
+        disc.append(f"giảm {bulk_pct}% mua nhiều")
+    if tier_pct:
+        disc.append(f"giảm {tier_pct}% hạng {tier['tier']}")
+    disc_txt = (" (" + ", ".join(disc) + ")") if disc else ""
+    txt = (
+        f"🛒 <b>Xác nhận mua</b>\n"
+        f"📦 {html.escape(c['name'])} × <b>{qty}</b> acc\n"
+        f"💰 Tổng: <b>{vnd(final)}</b>{disc_txt}\n"
+        f"👉 Bấm xác nhận để mua ngay:")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"✅ Xác nhận mua {qty} — {vnd(final)}",
+            callback_data=f"accconfirm:{cat_id}:{qty}")],
+        [InlineKeyboardButton(text="🔙 Chọn lại", callback_data=f"accbuy:{cat_id}")],
+    ])
+    await msg.answer(txt, parse_mode="HTML", reply_markup=kb)
+
+
 @router.callback_query(F.data.startswith("accconfirm:"))
 async def on_acc_confirm(cb: CallbackQuery):
     await cb.answer()
@@ -5138,8 +5504,10 @@ async def on_acc_confirm(cb: CallbackQuery):
         want_upsell = len(parts) > 3 and parts[3] == "upsell"
     except Exception:
         return
-    if qty not in (1, 5, 10):
+    if qty < 1:
         qty = 1
+    if qty > 1000:
+        qty = 1000
     tg_id = cb.from_user.id
     c = db.acc_category_get(cat_id)
     if not c or not c["active"]:
@@ -5176,7 +5544,7 @@ async def on_acc_confirm(cb: CallbackQuery):
             parse_mode="HTML")
         return
     u = db.get_user(tg_id)
-    balance = int(u["balance"]) if u and u["balance"] else 0
+    balance = int(u["shop_balance"] or 0) if u else 0
     if balance < final:
         disc_txt = []
         if bulk_pct:
@@ -5186,38 +5554,44 @@ async def on_acc_confirm(cb: CallbackQuery):
         if upsell_pct:
             disc_txt.append(f"giảm {upsell_pct}% mua thêm trong {wmin} phút")
         await cb.message.answer(
-            f"❌ <b>Số dư không đủ!</b>\n\n"
+            f"❌ <b>Ví shop không đủ!</b>\n\n"
             f"Mua {qty} acc: <b>{vnd(final)}</b>"
             + (f" ({', '.join(disc_txt)})" if disc_txt else "") + "\n"
-            f"Số dư bạn: <b>{vnd(balance)}</b>\n"
+            f"Ví shop của bạn: <b>{vnd(balance)}</b>\n"
             f"Còn thiếu: <b>{vnd(final - balance)}</b>\n\n"
-            f"Nạp thêm bằng /nap (tự động, quét QR) rồi mua lại nhé.",
+            f"Nạp thêm bằng /napshop (tự động, quét QR) rồi mua lại nhé.",
             parse_mode="HTML",
         )
         return
-    # Trừ tiền trước, giao acc sau (nguyên tử ở acc_sell_many)
-    if not db.adjust_balance(tg_id, -final, f"mua_acc:{cat_id}x{qty}"):
+    # Trừ tiền ví shop trước, giao acc sau (nguyên tử ở acc_sell_many)
+    if not db.adjust_shop_balance(tg_id, -final, f"mua_acc:{cat_id}x{qty}"):
         await cb.message.answer(
-            "❌ <b>Số dư không đủ!</b>\nNạp thêm bằng /nap rồi mua lại nhé.",
+            "❌ <b>Ví shop không đủ!</b>\nNạp thêm bằng /napshop rồi mua lại nhé.",
             parse_mode="HTML")
         return
-    sold = db.acc_sell_many(cat_id, tg_id, final, qty)
-    if not sold:
-        db.add_balance_only(tg_id, final, "hoan_tien_het_hang")
-        await cb.message.answer("⛔ Acc vừa hết hàng, tiền đã được hoàn lại.")
+    # Check LIVE trước khi giao: chỉ bán acc đã check live, acc die bị cách ly
+    await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
+    sold_orders, _sell_fail = await _sell_live_stock(
+        cb.bot, tg_id, final, qty,
+        lambda seen: db.acc_stock_pick_candidates(cat_id, qty + 4, seen))
+    if not sold_orders:
+        db.add_shop_balance_only(tg_id, final, "hoan_tien_khong_du_hang_live")
+        await cb.message.answer(
+            "😔 <b>Shop vừa kiểm tra lại chất lượng hàng:</b>\n"
+            "hiện không đủ acc <b>LIVE</b> để giao cho bạn.\n"
+            f"Tiền <b>{vnd(final)}</b> đã được hoàn vào ví shop.\n"
+            "Bạn quay lại sau hoặc chọn loại acc khác nhé!",
+            parse_mode="HTML")
         return
     # Giao từng acc — khách chọn cách nhận: hiện thông tin hoặc tải file
-    delivered = []
-    for order_id, _row in sold:
-        order = db.acc_get_order(order_id)
-        if not order:
-            continue
-        order = dict(order)
-        delivered.append(order)
+    delivered = sold_orders
+    for order in delivered:
+        order_id = order["id"]
         await cb.message.answer(
             f"✅ <b>MUA THÀNH CÔNG — {html.escape(order['cat_name'])}</b>\n"
             f"🧾 Đơn hàng: <b>#{order_id}</b> | 💰 {vnd(order['price'])} \n"
-            f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n\n"
+            f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
+            f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
             f"👇 <b>Chọn cách nhận acc:</b>",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     # Báo admin: thông tin khách + acc đã mua
@@ -5403,19 +5777,24 @@ async def on_doiqua(msg: Message):
     if not db.loyalty_consume(tg_id, need):
         await msg.answer("😅 Điểm của bạn vừa thay đổi, thử lại nhé!")
         return
-    sold = db.acc_sell_one(cat_id, tg_id, 0)
-    if not sold:
-        db.loyalty_add(tg_id, need, "hoan_diem_doi_qua_het_hang")
-        await msg.answer("⛔ Quà vừa hết hàng, điểm đã được hoàn lại.")
+    sold_orders, _sell_fail = await _sell_live_stock(
+        msg.bot, tg_id, 0, 1,
+        lambda seen: db.acc_stock_pick_candidates(cat_id, 5, seen))
+    if not sold_orders:
+        db.loyalty_add(tg_id, need, "hoan_diem_khong_du_hang_live")
+        await msg.answer(
+            "😔 Quà đổi điểm hiện hết acc <b>LIVE</b> (shop vừa kiểm tra lại), "
+            "điểm đã được hoàn lại. Bạn quay lại sau nhé!",
+            parse_mode="HTML")
         return
-    order_id, _row = sold
-    order = db.acc_get_order(order_id)
+    order = sold_orders[0]
+    order_id = order["id"]
     tickets = db.spin_add_tickets(tg_id, 1)
-    order = dict(order)
     await msg.answer(
         f"🎉 <b>ĐỔI QUÀ THÀNH CÔNG!</b> (−{need} điểm)\n"
         f"🎡 +1 vé quay may mắn (đang có {tickets} vé — gõ /quay)\n"
-        f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n\n"
+        f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
+        f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
         f"👇 <b>Chọn cách nhận acc:</b>",
         parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     await _notify_purchase_admin(msg.bot, msg.from_user, [order])
@@ -5448,7 +5827,7 @@ async def on_damua(msg: Message):
         o = dict(o)
         lines.append(
             f"#{o['id']} — <b>{html.escape(o['cat_name'])}</b> — {vnd(o['price'])} "
-            f"({vn_time_str(o['created_at'])})"
+            f"({vn_time_str(ts=o['created_at'])})"
         )
         kb_rows.append([InlineKeyboardButton(
             text=f"🛡 Bảo hành đơn #{o['id']}",
@@ -5565,7 +5944,7 @@ async def on_acc_file(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("accwarranty:"))
-async def on_acc_warranty(cb: CallbackQuery):
+async def on_acc_warranty(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     try:
         order_id = int(cb.data.split(":", 1)[1])
@@ -5584,7 +5963,10 @@ async def on_acc_warranty(cb: CallbackQuery):
             parse_mode="HTML",
         )
         return
-    # Bot tự check acc trước khi ghi log khiếu nại
+    if db.acc_warranty_has_pending(order_id):
+        await cb.message.answer("⏳ Đơn này đang chờ admin xử lý bảo hành rồi.")
+        return
+    # Bot tự check UID để hỗ trợ admin (không tự đổi acc nữa)
     check_txt = "không check được"
     try:
         from . import fb as fb_mod
@@ -5593,98 +5975,77 @@ async def on_acc_warranty(cb: CallbackQuery):
         check_txt = "DIE" if st in ("die", "dead") else ("LIVE" if st == "live" else st.upper())
     except Exception:
         pass
-    claim_id = db.acc_warranty_claim(order_id, cb.from_user.id,
-                                     0, check_txt)
-    if claim_id == -1:
-        await cb.message.answer("⏳ Đơn này đang chờ admin xử lý bảo hành rồi.")
+    await state.set_state(WarrantyClaimState.waiting_for_evidence)
+    await state.update_data(order_id=order_id, check_txt=check_txt)
+    await cb.message.answer(
+        "🛡 <b>BẢO HÀNH — CẦN BẰNG CHỨNG</b>\n\n"
+        "Chỉ bảo hành trường hợp <b>log sai mật khẩu</b> được giao.\n"
+        "📸 Vui lòng gửi <b>ảnh chụp màn hình</b> lỗi đăng nhập sai mk để admin xem xét.\n\n"
+        "Gõ /huy để hủy yêu cầu.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(WarrantyClaimState.waiting_for_evidence)
+async def on_warranty_evidence(msg: Message, state: FSMContext):
+    if msg.text and msg.text.strip().lower() == "/huy":
+        await state.clear()
+        await msg.answer("Đã hủy yêu cầu bảo hành.")
         return
-    # 5.3 Chống lạm dụng bảo hành: quá số lần/tuần -> admin duyệt tay
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
+    if not msg.photo:
+        await msg.answer(
+            "📸 Vui lòng gửi <b>ảnh chụp màn hình</b> lỗi log sai mk (gõ /huy để hủy).",
+            parse_mode="HTML")
+        return
+    data = await state.get_data()
+    order_id = int(data.get("order_id") or 0)
+    check_txt = data.get("check_txt") or ""
+    await state.clear()
+    order = db.acc_get_order(order_id)
+    if not order or int(order["tg_id"]) != msg.from_user.id:
+        await msg.answer("❌ Không tìm thấy đơn hàng.")
+        return
+    order = dict(order)
+    claim_id = db.acc_warranty_claim(order_id, msg.from_user.id, 0, check_txt)
+    if claim_id == -1:
+        await msg.answer("⏳ Đơn này đang chờ admin xử lý bảo hành rồi.")
+        return
+    db.acc_warranty_set_evidence(claim_id, msg.photo[-1].file_id)
+    # Chống lạm dụng bảo hành: quá số lần/tuần -> NEEDS_REVIEW
     try:
         maxw = int(db.get_setting("warranty_max_week", "3") or 3)
     except Exception:
         maxw = 3
-    week_cnt = db.acc_warranty_week_count(cb.from_user.id)
+    week_cnt = db.acc_warranty_week_count(msg.from_user.id)
+    warn = ""
     if week_cnt > maxw:
         db.acc_warranty_set_status(claim_id, "NEEDS_REVIEW")
-        await cb.message.answer(
-            f"⚠️ Bạn đã gửi <b>{week_cnt}</b> yêu cầu bảo hành trong 7 ngày "
-            f"(giới hạn tự động: {maxw}).\n"
-            f"Yêu cầu <b>#{claim_id}</b> sẽ được admin kiểm tra tay để đảm bảo công bằng.",
-            parse_mode="HTML",
-        )
-        uname = (cb.from_user.username or cb.from_user.full_name or "").strip()
-        await _notify_admin_smart(
-            cb.bot,
-            f"🚨 <b>Nghi lạm dụng bảo hành</b>\n"
-            f"👤 {html.escape(uname)} (<code>{cb.from_user.id}</code>)\n"
-            f"🧾 Đơn #{order_id} — {html.escape(order['cat_name'])}\n"
-            f"📊 {week_cnt} claim / 7 ngày (giới hạn {maxw}) — claim #{claim_id} chờ duyệt tay.\n\n"
-            f"Xem: /bhdon | Xong: /bhdone {claim_id}",
-        )
-        return
-    # 5.1 Bảo hành tự động: bot check DIE thật → tự giao acc mới cùng loại ngay
-    if check_txt == "DIE":
-        repl = db.acc_auto_replace(order_id, int(order["stock_id"]),
-                                   int(order["cat_id"]), cb.from_user.id)
-        if repl:
-            new_order_id, _row = repl
-            db.acc_warranty_set_status(claim_id, "AUTO_REPLACED")
-            new_order = db.acc_get_order(new_order_id)
-            await cb.message.answer(
-                f"✅ <b>BẢO HÀNH TỰ ĐỘNG — ĐÃ ĐỔI ACC MỚI</b>\n\n"
-                f"Acc cũ (UID <code>{html.escape(order['uid'] or '')}</code>) đã die, "
-                f"bot tự giao acc khác cho bạn ngay:\n\n"
-                + _acc_delivery_caption(dict(new_order)),
-                parse_mode="HTML",
-            )
-            uname = (cb.from_user.username or cb.from_user.full_name or "").strip()
-            await _notify_admin_smart(
-                cb.bot,
-                f"🤖 <b>Bảo hành tự động #{claim_id}</b>\n"
-                f"👤 Khách: {html.escape(uname)} (<code>{cb.from_user.id}</code>)\n"
-                f"🧾 Đơn #{order_id} — {html.escape(order['cat_name'])}\n"
-                f"✅ Đã tự đổi acc mới (đơn mới <b>#{new_order_id}</b>), không cần xử lý tay.",
-            )
-            return
-        # Hết hàng đổi → giữ flow tay, nhưng acc cũ đã bị đánh dấu DEAD
-        db.acc_warranty_set_status(claim_id, "PENDING")
-        await cb.message.answer(
-            f"⚠️ <b>Acc của bạn đã die thật</b>, nhưng hiện <b>hết acc cùng loại</b> để đổi ngay.\n\n"
-            f"Đã ghi nhận yêu cầu <b>#{claim_id}</b> — admin sẽ xử lý tay sớm nhất "
-            f"(đổi loại khác hoặc hoàn tiền).",
-            parse_mode="HTML",
-        )
-        uname = (cb.from_user.username or cb.from_user.full_name or "").strip()
-        await _notify_admin_smart(
-            cb.bot,
-            f"🛡 <b>Yêu cầu bảo hành #{claim_id} — HẾT HÀNG ĐỔI</b>\n"
-            f"👤 Khách: {html.escape(uname)} (<code>{cb.from_user.id}</code>)\n"
-            f"🧾 Đơn #{order_id} — {html.escape(order['cat_name'])} — {vnd(order['price'])}\n"
-            f"👤 UID: <code>{html.escape(order['uid'] or '')}</code> (đã die, đã đánh dấu DEAD)\n\n"
-            f"Xem: /bhdon | Xong: /bhdone {claim_id}",
-        )
-        return
-    await cb.message.answer(
-        f"✅ <b>Đã ghi nhận yêu cầu bảo hành #{claim_id}</b>\n\n"
-        f"🧾 Đơn: <b>#{order_id}</b> — {html.escape(order['cat_name'])}\n"
-        f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
-        f"🔍 Bot tự check: <b>{html.escape(check_txt)}</b>\n\n"
-        f"Admin sẽ kiểm tra và xử lý sớm nhất.",
-        parse_mode="HTML",
-    )
-    uname = (cb.from_user.username or cb.from_user.full_name or "").strip()
-    await _notify_admin_smart(
-        cb.bot,
+        warn = (f"\n\n⚠️ Bạn đã gửi <b>{week_cnt}</b> yêu cầu trong 7 ngày "
+                f"(giới hạn {maxw}) — yêu cầu này sẽ được admin kiểm tra kỹ.")
+    uname = (msg.from_user.username or msg.from_user.full_name or "").strip()
+    caption = (
         f"🛡 <b>Yêu cầu bảo hành #{claim_id}</b>\n"
-        f"👤 Khách: {html.escape(uname)} (<code>{cb.from_user.id}</code>)\n"
+        f"👤 {html.escape(uname)} (<code>{msg.from_user.id}</code>)\n"
         f"🧾 Đơn #{order_id} — {html.escape(order['cat_name'])} — {vnd(order['price'])}\n"
         f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
-        f"🔍 Bot tự check: <b>{html.escape(check_txt)}</b>\n\n"
-        f"Xem: /bhdon | Xong: /bhdone {claim_id}",
+        f"🔍 Bot tự check: <b>{html.escape(check_txt)}</b>\n"
+        f"📸 Ảnh bằng chứng log sai mk đính kèm.\n\n"
+        f"Xem: /bhdon | Xong: /bhdone {claim_id}"
+    )
+    await _notify_admin_photo(msg.bot, msg.photo[-1].file_id, caption)
+    await msg.answer(
+        f"✅ <b>Đã ghi nhận yêu cầu bảo hành #{claim_id}</b>\n\n"
+        f"🧾 Đơn: <b>#{order_id}</b> — {html.escape(order['cat_name'])}\n"
+        f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n\n"
+        f"Admin sẽ xem ảnh bằng chứng và xử lý sớm nhất.{warn}",
+        parse_mode="HTML",
     )
 
-
-# ------------------------- ADMIN: quản lý shop acc -------------------------
 def _strip_acc(s: str) -> str:
     """Bỏ dấu tiếng Việt để so khớp đơn vị."""
     import unicodedata as _ud
@@ -5694,7 +6055,7 @@ def _strip_acc(s: str) -> str:
 
 
 def _parse_warranty(text: str):
-    """Parse thời gian bảo hành: 30p | 24h | 2 ngày | 1 tuần | 24 (mặc định = giờ). Trả về số PHÚT, None nếu sai."""
+    """Parse th\u1eddi gian b\u1ea3o h\u00e0nh: 30p | 24h | 2 ng\u00e0y | 1 tu\u1ea7n | 24 (m\u1eb7c \u0111\u1ecbnh = gi\u1edd). Tr\u1ea3 v\u1ec1 s\u1ed1 PH\u00daT, None n\u1ebfu sai."""
     t = _strip_acc((text or "").strip().lower()).replace(",", ".")
     m = re.match(r"^(\d+(?:\.\d+)?)\s*([a-z ]*)$", t)
     if not m:
@@ -5716,7 +6077,7 @@ def _parse_warranty(text: str):
 
 
 def _fmt_warranty(mins) -> str:
-    """Hiển thị thời gian bảo hành (phút) dạng đẹp: 30 phút | 24h | 1h30."""
+    """Hi\u1ec3n th\u1ecb th\u1eddi gian b\u1ea3o h\u00e0nh (ph\u00fat) d\u1ea1ng \u0111\u1eb9p: 30 ph\u00fat | 24h | 1h30."""
     try:
         m = int(mins or 0)
     except Exception:
@@ -5936,10 +6297,11 @@ async def on_stock_file(msg: Message, state: FSMContext):
         await wait.edit_text(f"⏳ Đang nhập kho... 🔗 Giải {len(link_idx)} link FB → UID...")
         from .fb import resolve_fb_uid
         _cache = {}
-        _sem = asyncio.Semaphore(8)
+        _sem = asyncio.Semaphore(4)
         async def _res(i):
             nonlocal resolved, failed
             link = (rows[i].get("uid") or "").strip()
+            rows[i]["_orig_link"] = link  # giữ link gốc để vòng thử lại dùng
             if link in _cache:
                 uid = _cache[link]
             else:
@@ -5950,7 +6312,6 @@ async def on_stock_file(msg: Message, state: FSMContext):
                         uid = ""
                 _cache[link] = uid
             if uid and str(uid).isdigit():
-                rows[i]["_orig_link"] = link
                 rows[i]["uid"] = str(uid)
                 resolved += 1
             else:
@@ -5958,6 +6319,33 @@ async def on_stock_file(msg: Message, state: FSMContext):
                 failed += 1
                 failed_lines.append(f"Dòng {i + 1}: {link[:60]}")
         await asyncio.gather(*[_res(i) for i in link_idx])
+        if failed:
+            # Vòng 2: thử lại TUẦN TỰ các link lỗi, cách nhau vài giây.
+            # (Vòng 1 quét song song dễ bị API giới hạn tốc độ -> báo lỗi oan.)
+            try:
+                await wait.edit_text(
+                    f"🔁 Thử lại {failed} link chưa giải được (chậm để tránh bị giới hạn)...")
+            except Exception:
+                pass
+            still_failed = []
+            for i in link_idx:
+                if rows[i].get("uid"):
+                    continue
+                link = (rows[i].get("_orig_link") or "").strip()
+                if not link:
+                    continue
+                try:
+                    uid, _nm, _md = await resolve_fb_uid(link)
+                except Exception:
+                    uid = ""
+                if uid and str(uid).isdigit():
+                    rows[i]["uid"] = str(uid)
+                    resolved += 1
+                    failed -= 1
+                else:
+                    still_failed.append(f"Dòng {i + 1}: {link[:60]}")
+                await asyncio.sleep(2)
+            failed_lines = still_failed
     # Map uid -> link gốc (hiển thị danh sách acc die sau khi quét)
     uid_to_link = {}
     for i in link_idx:
@@ -6014,7 +6402,9 @@ async def on_stock_file(msg: Message, state: FSMContext):
     )
     if failed_lines:
         try:
-            txt = "⚠️ <b>Các link không giải được UID</b> (đã bỏ qua):\n" + "\n".join(
+            txt = ("⚠️ <b>Các link không giải được UID</b> (đã thử lại nhiều lần, đã bỏ qua):\n"
+                   "<i>Thường do link đã chết hoặc bài viết không để công khai — kiểm tra lại các link này.</i>\n"
+                   ) + "\n".join(
                 html.escape(x) for x in failed_lines[:15])
             if len(failed_lines) > 15:
                 txt += f"\n...và {len(failed_lines) - 15} dòng nữa"
@@ -6092,6 +6482,7 @@ async def on_kho(msg: Message):
     for c in cats:
         c = dict(c)
         n = db.acc_stock_count(c["id"])
+        n_die = db.acc_stock_die_count(c["id"])
         st = "✅ đang bán" if c["active"] else "⏸ đã ẩn"
         if int(c.get("hidden") or 0):
             st += " [ẨN KHỎI SHOP]"
@@ -6099,7 +6490,9 @@ async def on_kho(msg: Message):
         bonus_txt = f" — 🎁+{bonus}cr" if bonus else ""
         lines.append(
             f"#{c['id']} <b>{html.escape(c['name'])}</b> — {vnd(c['price'])} — "
-            f"BH {_fmt_warranty(c['warranty_hours'])} — kho: <b>{n}</b>{bonus_txt} — {st}"
+            f"BH {_fmt_warranty(c['warranty_hours'])} — kho: <b>{n}</b>"
+            + (f" 🗑<b>{n_die}</b> die" if n_die else "")
+            + f"{bonus_txt} — {st}"
         )
     lines += ["", "Đổi giá: <code>/gia &lt;id&gt; &lt;giá&gt;</code>",
               "Đổi giờ BH: <code>/suabh &lt;id&gt; &lt;giờ&gt;</code>",
@@ -6359,6 +6752,37 @@ async def on_hienloai(msg: Message):
         await msg.answer("❌ Không tìm thấy loại này.")
 
 
+@router.message(Command("xoadie"))
+async def on_xoadie(msg: Message):
+    """Admin: xóa hẳn các acc đã bị cách ly DIE. /xoadie [id_loại] yes"""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    cid = None
+    if len(parts) > 1 and parts[1].isdigit():
+        cid = int(parts[1])
+    confirm = (parts[-1].lower() == "yes")
+    if cid is not None:
+        total = db.acc_stock_die_count(cid)
+        scope = f"loại #{cid}"
+    else:
+        total = db.get_conn().execute(
+            "SELECT COUNT(*) n FROM acc_stock WHERE status='DIE'").fetchone()["n"]
+        scope = "toàn bộ các loại"
+    if total <= 0:
+        await msg.answer("✅ Không có acc DIE nào cần dọn.")
+        return
+    if not confirm:
+        await msg.answer(
+            f"🗑 Có <b>{total}</b> acc DIE đang bị cách ly ({scope}).\n"
+            f"Xóa hẳn: <code>/xoadie{f' {cid}' if cid else ''} yes</code>\n"
+            "⚠️ Không khôi phục được.",
+            parse_mode="HTML")
+        return
+    n = db.acc_stock_delete_die(cid)
+    await msg.answer(f"✅ Đã xóa hẳn <b>{n}</b> acc DIE ({scope}).", parse_mode="HTML")
+
+
 @router.message(Command("xoakho"))
 async def on_xoakho(msg: Message):
     """Admin: XÓA TOÀN BỘ acc CHƯA BÁN trong kho của 1 loại (không khôi phục được).
@@ -6446,7 +6870,7 @@ async def on_donhang(msg: Message):
         o = dict(o)
         who = f"@{o['username']}" if o["username"] else f"<code>{o['tg_id']}</code>"
         lines.append(f"#{o['id']} {html.escape(o['cat_name'])} — {vnd(o['price'])} — {who} "
-                     f"({vn_time_str(o['created_at'])})")
+                     f"({vn_time_str(ts=o['created_at'])})")
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
@@ -6465,7 +6889,7 @@ async def on_bhdon(msg: Message):
             f"#{w['id']} — đơn <b>#{w['order_id']}</b> — {html.escape(w['cat_name'])}\n"
             f"👤 UID <code>{html.escape(w['uid'] or '')}</code> | khách <code>{w['tg_id']}</code>\n"
             f"🔍 Bot check: <b>{html.escape(w['check_result'] or '?')}</b> | "
-            f"{vn_time_str(w['created_at'])}\n"
+            f"{vn_time_str(ts=w['created_at'])}{' | 📸 có ảnh' if w.get('evidence') else ''}\n"
             f"Xong: <code>/bhdone {w['id']}</code>"
         )
     await msg.answer("\n\n".join(lines), parse_mode="HTML")
@@ -6519,13 +6943,13 @@ async def on_accinfo(msg: Message):
             f"📦 Loại: <b>{e(o['cat_name'] or '')}</b>\n"
             f"📌 Trạng thái: <b>ĐÃ BÁN (xóa khỏi kho)</b>\n\n"
             f"🧾 Đơn #{o['id']} — khách <code>{o['tg_id']}</code> {e(who)} — "
-            f"{vnd(o['price'])} — {vn_time_str(o['created_at'])}",
+            f"{vnd(o['price'])} — {vn_time_str(ts=o['created_at'])}",
             parse_mode="HTML")
         return
     lines = ["🔎 <b>HÀNH TRÌNH ACC</b>", "━━━━━━━━━━━━",
              f"👤 UID: <code>{e(s['uid'] or '')}</code>",
              f"📦 Loại: <b>{e(s['cat_name'] or '')}</b>",
-             f"📥 Nhập kho: {vn_time_str(s['added_at'])}"
+             f"📥 Nhập kho: {vn_time_str(ts=s['added_at'])}"
              + (f" — {e(s['batch'])}" if s.get("batch") else ""),
              f"📌 Trạng thái: <b>{e(s['status'] or '')}</b>", ""],
     orders = db.acc_stock_orders(s["id"])
@@ -6534,7 +6958,7 @@ async def on_accinfo(msg: Message):
         for o in orders:
             who = f"@{o['username']}" if o.get("username") else ""
             lines.append(f"• Đơn #{o['id']} — khách <code>{o['tg_id']}</code> {e(who)} — "
-                         f"{vnd(o['price'])} — {vn_time_str(o['created_at'])}")
+                         f"{vnd(o['price'])} — {vn_time_str(ts=o['created_at'])}")
     else:
         lines.append("🆕 Chưa bán cho ai.")
     n_claim = db.acc_stock_claim_count(s["id"])
@@ -6630,29 +7054,40 @@ async def _fulfill_deposits(cat_id: int, bot, cat: dict):
             break
         rest = unit - int(d["amount"])
         u = db.get_user(tg_id)
-        bal = int(u["balance"]) if u and u["balance"] else 0
+        bal = int(u["shop_balance"] or 0) if u else 0
         if rest > 0 and bal < rest:
             try:
                 await bot.send_message(
                     tg_id,
                     f"🔔 <b>HÀNG BẠN ĐẶT CỌC ĐÃ VỀ!</b>\n\n"
                     f"📦 <b>{html.escape(cat['name'])}</b> — còn thiếu <b>{vnd(rest)}</b> "
-                    f"(số dư bạn: {vnd(bal)}).\n"
-                    f"👉 Nạp thêm bằng /nap để bot tự giao acc ngay nhé!",
+                    f"(ví shop bạn: {vnd(bal)}).\n"
+                    f"👉 Nạp thêm bằng /napshop để bot tự giao acc ngay nhé!",
                     parse_mode="HTML")
             except Exception:
                 pass
             continue
         if rest > 0:
-            if not db.adjust_balance(tg_id, -rest, f"dat_coc_giao:{cat_id}"):
+            if not db.adjust_shop_balance(tg_id, -rest, f"dat_coc_giao:{cat_id}"):
                 continue
-        sold = db.acc_sell_one(cat_id, tg_id, unit)
-        if not sold:
+        sold_orders, _sell_fail = await _sell_live_stock(
+            bot, tg_id, unit, 1,
+            lambda seen: db.acc_stock_pick_candidates(cat_id, 5, seen))
+        if not sold_orders:
             if rest > 0:
-                db.add_balance_only(tg_id, rest, "hoan_tien_dat_coc")
+                db.add_shop_balance_only(tg_id, rest, "hoan_tien_dat_coc")
+            try:
+                await bot.send_message(
+                    tg_id,
+                    "😔 <b>Hàng bạn đặt cọc:</b> shop vừa kiểm tra lại, hiện chưa có "
+                    "acc <b>LIVE</b> để giao. Tiền cọc vẫn được giữ — có hàng live "
+                    "bot sẽ giao ngay cho bạn!",
+                    parse_mode="HTML")
+            except Exception:
+                pass
             break
-        order_id, _row = sold
-        order = dict(db.acc_get_order(order_id))
+        order = sold_orders[0]
+        order_id = order["id"]
         db.acc_deposit_set_status(d["id"], "DONE", order_id)
         done += 1
         try:
@@ -6661,7 +7096,8 @@ async def _fulfill_deposits(cat_id: int, bot, cat: dict):
                 f"✅ <b>ĐẶT CỌC THÀNH CÔNG — ĐÃ GIAO ACC</b>\n\n"
                 f"📦 Loại: <b>{html.escape(cat['name'])}</b>\n"
                 f"💰 Đã cọc: {vnd(d['amount'])} + trừ thêm {vnd(rest)}\n"
-                f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n\n"
+                f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
+                f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
                 f"👇 <b>Chọn cách nhận acc:</b>",
                 parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
         except Exception:
@@ -6689,15 +7125,15 @@ async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
         dep_pct = 30
     amt = int(c["price"]) * dep_pct // 100
     u = db.get_user(tg_id)
-    bal = int(u["balance"]) if u and u["balance"] else 0
+    bal = int(u["shop_balance"] or 0) if u else 0
     if bal < amt:
         await msg.answer(
-            f"❌ Số dư không đủ đặt cọc.\nCọc {dep_pct}% = <b>{vnd(amt)}</b>, "
-            f"số dư bạn: <b>{vnd(bal)}</b>.\nNạp thêm bằng /nap nhé.",
+            f"❌ Ví shop không đủ đặt cọc.\nCọc {dep_pct}% = <b>{vnd(amt)}</b>, "
+            f"ví shop bạn: <b>{vnd(bal)}</b>.\nNạp thêm bằng /napshop nhé.",
             parse_mode="HTML")
         return
-    if not db.adjust_balance(tg_id, -amt, f"dat_coc:{cat_id}"):
-        await msg.answer("❌ Số dư không đủ đặt cọc.", parse_mode="HTML")
+    if not db.adjust_shop_balance(tg_id, -amt, f"dat_coc:{cat_id}"):
+        await msg.answer("❌ Ví shop không đủ đặt cọc.", parse_mode="HTML")
         return
     dep_id = db.acc_deposit_create(tg_id, cat_id, amt)
     await msg.answer(
@@ -6705,7 +7141,7 @@ async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
         f"📦 Loại: <b>{html.escape(c['name'])}</b>\n"
         f"💰 Đã cọc: <b>{vnd(amt)}</b> ({dep_pct}% giá {vnd(c['price'])})\n\n"
         f"👉 Khi có hàng về, bot <b>tự giao acc ngay</b> và trừ nốt "
-        f"<b>{vnd(int(c['price']) - amt)}</b> từ số dư của bạn.\n"
+        f"<b>{vnd(int(c['price']) - amt)}</b> từ ví shop của bạn.\n"
         f"Xem/hủy cọc: /coclist",
         parse_mode="HTML")
 
@@ -6768,8 +7204,8 @@ async def on_huycoc(msg: Message):
     if amt is None:
         await msg.answer("❌ Không tìm thấy khoản cọc chờ hàng này của bạn.")
         return
-    db.add_balance_only(msg.from_user.id, amt, f"huy_coc:{dep_id}")
-    await msg.answer(f"✅ Đã hủy cọc <b>#{dep_id}</b>, hoàn <b>{vnd(amt)}</b> vào số dư.",
+    db.add_shop_balance_only(msg.from_user.id, amt, f"huy_coc:{dep_id}")
+    await msg.answer(f"✅ Đã hủy cọc <b>#{dep_id}</b>, hoàn <b>{vnd(amt)}</b> vào ví shop.",
                      parse_mode="HTML")
 
 
@@ -6813,23 +7249,30 @@ async def on_mystery_buy(cb: CallbackQuery):
     if m_price <= 0:
         return
     u = db.get_user(tg_id)
-    bal = int(u["balance"]) if u and u["balance"] else 0
+    bal = int(u["shop_balance"] or 0) if u else 0
     if bal < m_price:
         await cb.message.answer(
-            f"❌ Số dư không đủ! Hộp mù {vnd(m_price)}, bạn có {vnd(bal)}.\n"
-            f"Nạp thêm bằng /nap nhé.",
+            f"❌ Ví shop không đủ! Hộp mù {vnd(m_price)}, bạn có {vnd(bal)}.\n"
+            f"Nạp thêm bằng /napshop nhé.",
             parse_mode="HTML")
         return
-    if not db.adjust_balance(tg_id, -m_price, "mua_hop_mu"):
-        await cb.message.answer("❌ Số dư không đủ.", parse_mode="HTML")
+    if not db.adjust_shop_balance(tg_id, -m_price, "mua_hop_mu"):
+        await cb.message.answer("❌ Ví shop không đủ.", parse_mode="HTML")
         return
-    res = db.acc_mystery_sell(tg_id, m_price)
-    if not res:
-        db.add_balance_only(tg_id, m_price, "hoan_tien_hop_mu")
-        await cb.message.answer("⛔ Hộp mù vừa hết hàng, tiền đã hoàn lại.")
+    await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
+    sold_orders, _sell_fail = await _sell_live_stock(
+        cb.bot, tg_id, m_price, 1,
+        lambda seen: db.acc_mystery_pick_candidates(5, seen))
+    if not sold_orders:
+        db.add_shop_balance_only(tg_id, m_price, "hoan_tien_hop_mu")
+        await cb.message.answer(
+            "😔 Hộp mù hiện hết acc <b>LIVE</b> (shop vừa kiểm tra lại), "
+            "tiền đã được hoàn lại. Bạn quay lại sau nhé!",
+            parse_mode="HTML")
         return
-    order_id, _row, cat_name = res
-    order = db.acc_get_order(order_id)
+    order = sold_orders[0]
+    order_id = order["id"]
+    cat_name = order.get("cat_name") or ""
     db.spin_add_tickets(tg_id, 1)
     try:
         per = int(db.get_setting("loyalty_per_vnd", "100000") or 100000)
@@ -6841,7 +7284,8 @@ async def on_mystery_buy(cb: CallbackQuery):
     await cb.message.answer(
         f"🎁 <b>MỞ HỘP THÀNH CÔNG!</b>\n"
         f"🍀 Bạn trúng acc loại: <b>{html.escape(cat_name)}</b>\n"
-        f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n\n"
+        f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
+        f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
         f"👇 <b>Chọn cách nhận acc:</b>",
         parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     await _notify_purchase_admin(cb.bot, cb.from_user, [order])
@@ -6984,6 +7428,11 @@ async def on_acc_review(cb: CallbackQuery, state: FSMContext):
 
 @router.message(AccShopState.waiting_for_review_comment, F.text)
 async def on_review_comment(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
     data = await state.get_data()
     order_id = data.get("review_order_id")
     await state.clear()
