@@ -510,7 +510,9 @@ def migrate_db():
             "CREATE TABLE IF NOT EXISTS batch_notifications (id BIGSERIAL PRIMARY KEY, tg_id BIGINT, message TEXT, created_at BIGINT NOT NULL)",
             "ALTER TABLE tg_users ADD COLUMN daily_report_hour INTEGER DEFAULT -1",
             "ALTER TABLE tg_users ADD COLUMN shop_balance BIGINT DEFAULT 0",
-            "ALTER TABLE payos_orders ADD COLUMN target TEXT DEFAULT 'main'"
+            "ALTER TABLE payos_orders ADD COLUMN target TEXT DEFAULT 'main'",
+            "ALTER TABLE acc_restock_subs ADD COLUMN qty INTEGER DEFAULT 1",
+            "ALTER TABLE acc_restock_subs ADD COLUMN auto_buy INTEGER DEFAULT 0"
         ]:
             try:
                 c.execute(sql)
@@ -2003,6 +2005,8 @@ def migrate_new_features():
             tg_id      BIGINT NOT NULL,
             cat_id     INTEGER NOT NULL,
             created_at BIGINT NOT NULL,
+            qty        INTEGER DEFAULT 1,
+            auto_buy   INTEGER DEFAULT 0,
             PRIMARY KEY (tg_id, cat_id)
         )""",
         """CREATE TABLE IF NOT EXISTS loyalty_points (
@@ -2070,6 +2074,16 @@ def migrate_new_features():
         "ALTER TABLE acc_stock ADD COLUMN stale_warned INTEGER DEFAULT 0",
         "ALTER TABLE acc_orders ADD COLUMN followup_sent INTEGER DEFAULT 0",
         "ALTER TABLE acc_orders ADD COLUMN delivered_at BIGINT DEFAULT 0",
+        # Van hanh tu dong: sinh nhat + chong spam canh bao (xem app/ops.py)
+        "ALTER TABLE tg_users ADD COLUMN dob TEXT DEFAULT ''",
+        "ALTER TABLE tg_users ADD COLUMN dob_set_at BIGINT DEFAULT 0",
+        "ALTER TABLE tg_users ADD COLUMN birthday_gift_year INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS ops_alerts (
+            kind       TEXT NOT NULL,
+            ref        TEXT NOT NULL,
+            sent_at    BIGINT NOT NULL,
+            PRIMARY KEY (kind, ref)
+        )""",
         # Luu tru ben vung cho FSM aiogram + cache ket qua check file/cookie
         # (song sot qua restart backend; xem app/persist.py)
         """CREATE TABLE IF NOT EXISTS fsm_storage (
@@ -2089,6 +2103,14 @@ def migrate_new_features():
             blob1      BLOB,
             updated_at BIGINT NOT NULL,
             PRIMARY KEY (chat_id, user_id, kind)
+        )""",
+        # Gio hang shop acc: chon nhieu loai acc roi thanh toan 1 lan
+        """CREATE TABLE IF NOT EXISTS cart_items (
+            tg_id      BIGINT NOT NULL,
+            cat_id     INTEGER NOT NULL,
+            qty        INTEGER NOT NULL DEFAULT 1,
+            added_at   BIGINT NOT NULL,
+            PRIMARY KEY (tg_id, cat_id)
         )""",
     ]:
         try:
@@ -2472,6 +2494,40 @@ def set_daily_report_hour(tg_id: int, hour: int) -> bool:
     with _lock:
         c = get_conn()
         c.execute("UPDATE tg_users SET daily_report_hour=? WHERE tg_id=?", (hour, tg_id))
+        c.commit()
+        return True
+
+
+def set_dob(tg_id: int, dob_iso: str) -> None:
+    """Lưu ngày sinh (YYYY-MM-DD) của user."""
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE tg_users SET dob=?, dob_set_at=? WHERE tg_id=?",
+                  (dob_iso, int(time.time()), tg_id))
+        c.commit()
+
+
+def mark_birthday_gift(tg_id: int, year: int) -> None:
+    """Đánh dấu đã tặng quà sinh nhật năm `year`."""
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE tg_users SET birthday_gift_year=? WHERE tg_id=?", (year, tg_id))
+        c.commit()
+
+
+def ops_alert_dedup(kind: str, ref: str, cooldown_sec: int) -> bool:
+    """True nếu được phép gửi cảnh báo (chưa gửi trong cooldown); đồng thời
+    đánh dấu đã gửi để lần sau không spam."""
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        r = c.execute("SELECT sent_at FROM ops_alerts WHERE kind=? AND ref=?",
+                      (kind, ref)).fetchone()
+        if r and now - r["sent_at"] < cooldown_sec:
+            return False
+        c.execute("INSERT INTO ops_alerts(kind, ref, sent_at) VALUES(?,?,?) "
+                  "ON CONFLICT(kind, ref) DO UPDATE SET sent_at=excluded.sent_at",
+                  (kind, ref, now))
         c.commit()
         return True
 
@@ -3328,6 +3384,73 @@ def _acc_autohide(c, cat_id: int):
         pass
 
 
+# ============================ GIỎ HÀNG SHOP ACC ============================
+def cart_add(tg_id: int, cat_id: int, qty: int = 1) -> int:
+    """Thêm vào giỏ (cộng dồn nếu đã có). Trả tổng qty của loại đó trong giỏ."""
+    qty = max(1, min(1000, int(qty or 1)))
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO cart_items(tg_id, cat_id, qty, added_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(tg_id, cat_id) DO UPDATE SET qty = MIN(1000, cart_items.qty + ?)",
+            (tg_id, cat_id, qty, now, qty))
+        c.commit()
+        r = c.execute("SELECT qty FROM cart_items WHERE tg_id=? AND cat_id=?",
+                      (tg_id, cat_id)).fetchone()
+        return int(r["qty"]) if r else 0
+
+
+def cart_set_qty(tg_id: int, cat_id: int, qty: int) -> int:
+    """Đặt số lượng (<=0 thì xóa). Trả qty mới (0 = đã xóa)."""
+    qty = max(0, min(1000, int(qty or 0)))
+    with _lock:
+        c = get_conn()
+        if qty <= 0:
+            c.execute("DELETE FROM cart_items WHERE tg_id=? AND cat_id=?",
+                      (tg_id, cat_id))
+        else:
+            c.execute(
+                "INSERT INTO cart_items(tg_id, cat_id, qty, added_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(tg_id, cat_id) DO UPDATE SET qty=?",
+                (tg_id, cat_id, qty, int(time.time()), qty))
+        c.commit()
+        return qty
+
+
+def cart_remove(tg_id: int, cat_id: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM cart_items WHERE tg_id=? AND cat_id=?",
+                  (tg_id, cat_id))
+        c.commit()
+
+
+def cart_clear(tg_id: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM cart_items WHERE tg_id=?", (tg_id,))
+        c.commit()
+
+
+def cart_list(tg_id: int) -> list:
+    """Các món trong giỏ kèm thông tin loại acc. Bỏ qua loại đã ẩn/xóa."""
+    c = get_conn()
+    return [dict(r) for r in c.execute(
+        "SELECT i.cat_id, i.qty, i.added_at, c.name, c.price, c.active, c.hidden, "
+        "c.credit_bonus FROM cart_items i "
+        "JOIN acc_categories c ON c.id = i.cat_id "
+        "WHERE i.tg_id=? ORDER BY i.added_at",
+        (tg_id,)).fetchall()]
+
+
+def cart_count(tg_id: int) -> int:
+    r = get_conn().execute(
+        "SELECT COUNT(*) n, COALESCE(SUM(qty),0) q FROM cart_items WHERE tg_id=?",
+        (tg_id,)).fetchone()
+    return int(r["q"] or 0) if r else 0
+
+
 def ref_shop_commission(buyer_tg_id: int, amount: int) -> tuple[int, int]:
     """Hoa hồng F1 cho đơn mua acc shop. Trả (f1_tg_id, bonus). Không lồng F2."""
     try:
@@ -3429,13 +3552,13 @@ def spin_roll() -> dict:
 
 
 def spin_award(tg_id: int, prize: dict) -> None:
-    """Trao giải: cộng credits / số dư ví shop. Ghi lịch sử."""
+    """Trao giải: cộng credits / số dư ví chính. Ghi lịch sử."""
     kind = prize.get("kind", "none")
     value = int(prize.get("value", 0) or 0)
     if kind == "credits" and value > 0:
         add_credits(tg_id, value, "trung_vong_quay")
     elif kind == "balance" and value > 0:
-        add_shop_balance_only(tg_id, value, "trung_vong_quay")
+        adjust_balance(tg_id, value, "trung_vong_quay")
     with _lock:
         c = get_conn()
         c.execute(
@@ -3446,15 +3569,24 @@ def spin_award(tg_id: int, prize: dict) -> None:
 
 
 # ============================ BÁO HÀNG MỚI + HẠNG TV + LOYALTY ============================
-def acc_sub_restock(tg_id: int, cat_id: int) -> bool:
-    """Đăng ký báo khi có hàng. True nếu đăng ký mới."""
+def acc_sub_restock(tg_id: int, cat_id: int, qty: int = 1, auto_buy: int = 0) -> bool:
+    """Đăng ký báo khi có hàng. True nếu đăng ký mới.
+    qty: số acc muốn tự mua khi hàng về; auto_buy=1: tự trừ ví shop mua ngay."""
+    qty = max(1, min(1000, int(qty or 1)))
+    auto_buy = 1 if auto_buy else 0
     with _lock:
         c = get_conn()
-        cur = c.execute(
-            "INSERT OR IGNORE INTO acc_restock_subs(tg_id, cat_id, created_at) VALUES(?,?,?)",
-            (tg_id, cat_id, int(time.time())))
+        is_new = c.execute(
+            "SELECT 1 FROM acc_restock_subs WHERE tg_id=? AND cat_id=?",
+            (tg_id, cat_id)).fetchone() is None
+        c.execute(
+            "INSERT INTO acc_restock_subs(tg_id, cat_id, created_at, qty, auto_buy)"
+            " VALUES(?,?,?,?,?)"
+            " ON CONFLICT(tg_id, cat_id) DO UPDATE SET qty=excluded.qty,"
+            " auto_buy=excluded.auto_buy",
+            (tg_id, cat_id, int(time.time()), qty, auto_buy))
         c.commit()
-        return cur.rowcount > 0
+        return is_new
 
 
 def acc_unsub_restock(tg_id: int, cat_id: int) -> bool:
@@ -3473,9 +3605,23 @@ def acc_is_sub_restock(tg_id: int, cat_id: int) -> bool:
     return bool(r)
 
 
+def acc_restock_sub(tg_id: int, cat_id: int):
+    """Lấy thông tin đăng ký báo hàng của 1 user (None nếu chưa đăng ký)."""
+    r = get_conn().execute(
+        "SELECT tg_id, cat_id, COALESCE(qty,1) qty, COALESCE(auto_buy,0) auto_buy,"
+        " created_at FROM acc_restock_subs WHERE tg_id=? AND cat_id=?",
+        (tg_id, cat_id)).fetchone()
+    return dict(r) if r else None
+
+
 def acc_restock_subscribers(cat_id: int) -> list:
-    return [r["tg_id"] for r in get_conn().execute(
-        "SELECT tg_id FROM acc_restock_subs WHERE cat_id=?", (cat_id,)).fetchall()]
+    """Danh sách đăng ký báo hàng, FIFO theo created_at.
+    Mỗi phần tử: dict(tg_id, qty, auto_buy, created_at)."""
+    rows = get_conn().execute(
+        "SELECT tg_id, COALESCE(qty,1) qty, COALESCE(auto_buy,0) auto_buy, created_at"
+        " FROM acc_restock_subs WHERE cat_id=? ORDER BY created_at",
+        (cat_id,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def acc_clear_restock_subs(cat_id: int) -> int:

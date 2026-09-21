@@ -1,9 +1,10 @@
-import asyncio, logging, time
+import asyncio, html, logging, time
 from typing import Optional
 from . import config, db, fb
 from . import bot as botmod
 from .util import now, vn_time_str
 from .event_bus import event_bus
+from . import ops
 
 async def _handle_alerts(platform: str, target: str, condition: str, message: str, bot=None):
     rules = db.get_alert_rules(target=target)
@@ -90,6 +91,8 @@ class FollowerPoller:
             self._daily_summary_task = asyncio.create_task(self._daily_summary_loop())
         if not hasattr(self, '_maint_task') or not (self._maint_task and not self._maint_task.done()):
             self._maint_task = asyncio.create_task(self._maintenance_loop())
+        if not hasattr(self, '_ops_task') or not (self._ops_task and not self._ops_task.done()):
+            self._ops_task = asyncio.create_task(self._ops_loop())
         log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign + maintenance).")
 
     async def _daily_summary_loop(self):
@@ -217,6 +220,21 @@ class FollowerPoller:
             except Exception as e:
                 log.warning("Admin report via main bot failed: %s", e)
 
+    async def _ops_loop(self):
+        """Viec van hanh tu dong: bao cao sang 7h, qua sinh nhat 8h, quet gian lan moi gio."""
+        while True:
+            try:
+                now_t = time.localtime()
+                if now_t.tm_min < 5:
+                    if now_t.tm_hour == 7:
+                        await ops.morning_report()
+                    elif now_t.tm_hour == 8:
+                        await ops.birthday_job(getattr(self, '_bot', None))
+                    await ops.fraud_scan()
+            except Exception as e:
+                log.exception("ops_loop error: %s", e)
+            await asyncio.sleep(60)
+
     async def _maintenance_loop(self):
         """Job bảo trì: 3h sáng dọn cookie pool, 8h sáng báo cáo doanh thu."""
         while True:
@@ -275,9 +293,114 @@ class FollowerPoller:
                         log.warning("supplier import: %s", e)
                     finally:
                         db.set_setting("maint_supplier_import", today)
+                # Re-check LIVE toàn bộ kho định kỳ (mặc định 3 ngày/lần, 3h sáng)
+                try:
+                    await self._maybe_stock_recheck(now_t, today)
+                except Exception as e:
+                    log.warning("stock recheck schedule: %s", e)
             except Exception as e:
                 log.warning("maintenance loop: %s", e)
             await asyncio.sleep(300)
+
+    async def _maybe_stock_recheck(self, now_t, today):
+        """Lịch re-check LIVE toàn bộ kho: mỗi stock_recheck_days ngày
+        (mặc định 3), chạy lúc stock_recheck_hour giờ (mặc định 3h sáng)."""
+        try:
+            days = int(db.get_setting("stock_recheck_days", "3") or 3)
+            hour = int(db.get_setting("stock_recheck_hour", "3") or 3)
+        except Exception:
+            days, hour = 3, 3
+        days = max(1, days)
+        if now_t.tm_hour != hour % 24:
+            return
+        last = db.get_setting("stock_recheck_last", "") or ""
+        if last:
+            try:
+                d0 = time.mktime(time.strptime(last, "%Y-%m-%d"))
+                d1 = time.mktime(time.strptime(today, "%Y-%m-%d"))
+                if (d1 - d0) < days * 86400 - 60:
+                    return
+            except Exception:
+                pass
+        db.set_setting("stock_recheck_last", today)
+        await self._run_stock_recheck()
+
+    async def _run_stock_recheck(self, manual=False):
+        """Quét LIVE toàn bộ acc AVAILABLE trong kho.
+        Acc DIE → cách ly khỏi kho bán + báo admin. Lỗi hạ tầng → bỏ qua."""
+        try:
+            rows = [dict(r) for r in db.get_conn().execute(
+                "SELECT id, uid, cat_id FROM acc_stock WHERE status='AVAILABLE' "
+                "ORDER BY id").fetchall()]
+        except Exception as e:
+            log.warning("stock recheck: không đọc được kho: %s", e)
+            return
+        total = len(rows)
+        if not total:
+            log.info("stock recheck: kho trống, bỏ qua")
+            return
+        log.info("stock recheck: bắt đầu quét %d acc (manual=%s)...", total, manual)
+        die_statuses = {"dead", "disabled", "checkpoint", "checkpoint_282",
+                        "checkpoint_956"}
+        sem = asyncio.Semaphore(10)
+        live_n, err_n = 0, 0
+        die_ids, die_rows = [], []
+
+        async def _one(r):
+            async with sem:
+                try:
+                    res = await fb.check_uid(str(r["uid"]))
+                    st = str(res.get("status") or "").lower()
+                except Exception:
+                    st = "error"
+                return r, st
+
+        try:
+            batch_n = 100
+            for i in range(0, total, batch_n):
+                batch = rows[i:i + batch_n]
+                for r, st in await asyncio.gather(*[_one(x) for x in batch]):
+                    if st == "live":
+                        live_n += 1
+                    elif st in die_statuses:
+                        die_ids.append(r["id"])
+                        die_rows.append(r)
+                    else:
+                        err_n += 1
+                await asyncio.sleep(2)
+        except Exception as e:
+            log.warning("stock recheck: lỗi khi quét: %s", e)
+        if die_ids:
+            try:
+                db.acc_stock_quarantine(die_ids)
+            except Exception as e:
+                log.warning("stock recheck: cách ly lỗi: %s", e)
+        try:
+            by_cat = {}
+            for r in die_rows:
+                by_cat.setdefault(r["cat_id"], []).append(r["uid"])
+            lines = ["🔄 <b>RE-CHECK KHO ĐỊNH KỲ</b>",
+                     f"Đã quét: <b>{total}</b> acc | 🟢 Live: <b>{live_n}</b> | "
+                     f"🗑 Die (cách ly): <b>{len(die_ids)}</b> | "
+                     f"❓ Lỗi check: <b>{err_n}</b>"]
+            for cid, uids in by_cat.items():
+                try:
+                    c = db.acc_category_get(cid)
+                    name = c["name"] if c else f"#{cid}"
+                except Exception:
+                    name = f"#{cid}"
+                show = ", ".join(f"<code>{html.escape(str(u))}</code>"
+                                 for u in uids[:10])
+                more = f" <i>(+{len(uids) - 10})</i>" if len(uids) > 10 else ""
+                lines.append(f"📦 <b>{html.escape(name)}</b>: {show}{more}")
+            if die_ids:
+                lines.append("\n<i>Dọn hẳn: /xoadie [id_loại]</i>")
+            await self._alert_admin("\n".join(lines))
+        except Exception as e:
+            log.warning("stock recheck: báo admin lỗi: %s", e)
+        log.info("stock recheck: xong — live=%d die=%d err=%d",
+                 live_n, len(die_ids), err_n)
+
 
     async def _followup_orders(self):
         """5.13 Hỏi thăm sau 24h mua acc: acc ổn không, cần BH không."""

@@ -853,6 +853,8 @@ async def _show_adm_help(msg: Message):
         "• <code>/xoahan &lt;id&gt; yes</code> — <i>XÓA HẲN loại acc (không khôi phục được).</i>\n"
         "• <code>/xoakho &lt;id&gt; yes</code> — <i>Xóa toàn bộ acc CHƯA BÁN trong kho của 1 loại.</i>\n"
         "• <code>/themacc &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho (gửi file ở tin tiếp theo)\n"
+        "• <code>/setsheet &lt;link&gt; [tab]</code> — Cài đặt Google Sheet nhập kho\n"
+        "• <code>/nhapkhosheet &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho từ Sheet (chỉ quét dòng chưa đánh dấu)\n"
         "• <code>/kho</code> — Xem tồn kho (kể cả loại đã tự ẩn)\n"
         "• <code>/xuatkho [id_loại]</code> — <i>Xuất toàn bộ acc ra file .xlsx (sao lưu dự phòng).</i>\n"
         "• <code>/gia &lt;id&gt; &lt;giá_mới&gt;</code> — Đổi giá bán\n"
@@ -867,6 +869,8 @@ async def _show_adm_help(msg: Message):
         "• <code>/suabh &lt;id_loại&gt; &lt;giờ&gt;</code> — Đổi thời gian bảo hành\n"
         "• <code>/lo &lt;id_loại&gt;</code> — Xem lãi từng lô nhập\n"
         "• <code>/anhbia &lt;id_loại&gt;</code> — Đặt ảnh bìa (gửi ảnh ở tin tiếp theo) | <code>xoa</code> để gỡ\n"
+        "• <code>/setmailapp &lt;link&gt;</code> — Đặt link tải app mail ảo hiện cho khách sau khi mua\n"
+        "• <code>/recheck [số_ngày]</code> — Quét LIVE toàn bộ kho ngay (acc DIE → cách ly) | đặt chu kỳ tự động (mặc định 3 ngày)\n"
         "• <code>/faq</code> — Xem FAQ | <code>/themcauhoi &lt;kw&gt; | &lt;trả_lời&gt;</code> — Thêm | <code>/xoacauhoi &lt;số&gt;</code> — Xóa\n\n"
 
         "<b>🏭 NHÀ CUNG CẤP</b>\n"

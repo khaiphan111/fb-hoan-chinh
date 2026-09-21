@@ -134,7 +134,7 @@ class AntiSpamMiddleware(BaseMiddleware):
                 "/muagoi", "/checkfile", "/checkcookie", "/dailyreport", "/code",
                 "/stats", "/history", "/top", "/adm", "/daily", "/chuyentien",
                 "/shop", "/damua", "/quay", "/hang", "/doiqua", "/giasi",
-                "/coc", "/huycoc", "/coclist", "/napshop"
+                "/coc", "/huycoc", "/coclist", "/napshop", "/giohang"
             )
             if cmd not in free_cmds:
                 user = db.get_user(event.chat.id)
@@ -171,6 +171,178 @@ MENU = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
+# Bàn phím riêng cho admin: thêm nút nhập kho từ Google Sheet luôn hiển thị
+ADMIN_MENU = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="/muagoi"), KeyboardButton(text="/checkfile"), KeyboardButton(text="/checkcookie")],
+        [KeyboardButton(text="/tiktok"), KeyboardButton(text="/track"), KeyboardButton(text="/untrack")],
+        [KeyboardButton(text="/ig"), KeyboardButton(text="/trackig"), KeyboardButton(text="/untrackig")],
+        [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
+        [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
+        [KeyboardButton(text="/web"), KeyboardButton(text="/help")],
+        [KeyboardButton(text="\U0001f4ca Nhập kho Sheet")],
+    ],
+    resize_keyboard=True,
+)
+
+ADMIN_COMMANDS_EXTRA = [
+    BotCommand(command="setsheet", description="Cài đặt Google Sheet nhập kho"),
+    BotCommand(command="nhapkhosheet", description="Nhập kho từ Google Sheet: /nhapkhosheet <id_loại>"),
+    BotCommand(command="adm", description="Bảng lệnh admin"),
+    BotCommand(command="kho", description="Xem tồn kho"),
+    BotCommand(command="themacc", description="Nhập kho từ file: /themacc <id_loại>"),
+]
+
+
+class SheetImportState(StatesGroup):
+    waiting_ncc_cost = State()
+
+
+async def _run_sheet_import(msg, cat_id: int, ncc_id: int, cost: int):
+    """Chạy nhập kho từ Google Sheet (dùng chung cho lệnh /nhapkhosheet và nút bấm)."""
+    c = db.acc_category_get(cat_id)
+    if not c:
+        await msg.answer("❌ Không có loại acc này. Xem: /kho")
+        return
+    if ncc_id and not db.supplier_get(ncc_id):
+        await msg.answer("❌ Không có NCC này. Xem: /ncc")
+        return
+    sid = db.get_setting("sheet_import_id") or ""
+    tab = db.get_setting("sheet_import_tab") or "NhapKho"
+    if not sid:
+        await msg.answer("📊 Chưa cài đặt sheet nhập kho. Dùng: <code>/setsheet &lt;link&gt;</code>",
+                         parse_mode="HTML")
+        return
+    wait = await msg.answer("⏳ Đang đọc Google Sheet...")
+    try:
+        from . import sheet_import as _si
+        sheet_rows = await _si.read_unmarked(sid, tab)
+    except Exception as e:
+        await wait.edit_text(f"❌ Không đọc được sheet: {html.escape(str(e)[:200])}")
+        return
+    if not sheet_rows:
+        await wait.edit_text("📭 Sheet không có dòng mới nào.\n"
+                             "<i>Các dòng đã có đánh dấu ở cột Trạng thái sẽ bị bỏ qua.</i>",
+                             parse_mode="HTML")
+        return
+    rows = []
+    for rnum, cells in sheet_rows:
+        rows.append({
+            "uid": cells[0], "password": cells[1], "created_date": cells[2],
+            "backup_mail": cells[3], "note": cells[4], "totp": cells[5],
+            "cookie": cells[6], "token": cells[7], "_sheet_row": rnum,
+        })
+    extra = ""
+    if ncc_id:
+        extra += f" NCC #{ncc_id}"
+    if cost:
+        extra += f" vốn {vnd(cost)}/acc"
+    try:
+        await wait.edit_text(f"⏳ Đọc được <b>{len(rows)}</b> dòng mới từ sheet.{extra}\nĐang nhập kho...",
+                             parse_mode="HTML")
+    except Exception:
+        pass
+    await _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait,
+                            sheet_ctx={"sheet_id": sid, "tab": tab})
+
+
+@router.message(F.text == "\U0001f4ca Nhập kho Sheet")
+async def on_sheet_button(msg: Message, state: FSMContext):
+    """Nút bấm cố định trên bàn phím admin: mở flow nhập kho từ Sheet."""
+    if not _is_admin(msg.from_user.id):
+        return
+    await state.clear()
+    sid = db.get_setting("sheet_import_id") or ""
+    tab = db.get_setting("sheet_import_tab") or "NhapKho"
+    cats = db.acc_category_list(active_only=False, include_hidden=True)
+    if not cats:
+        await msg.answer("❌ Chưa có loại acc nào. Tạo trước bằng /themloai")
+        return
+    kb_rows, row = [], []
+    for cc in cats:
+        dd = dict(cc)
+        name = (dd.get("name") or f"Loại {dd['id']}")[:18]
+        row.append(InlineKeyboardButton(text=f"{dd['id']}. {name}",
+                                       callback_data=f"sheetpick_{dd['id']}"))
+        if len(row) == 2:
+            kb_rows.append(row)
+            row = []
+    if row:
+        kb_rows.append(row)
+    txt = "📊 <b>NHẬP KHO TỪ GOOGLE SHEET</b>\n"
+    if sid:
+        txt += (f'🔗 <a href="https://docs.google.com/spreadsheets/d/{sid}/edit">Mở sheet</a> '
+                f"(tab {html.escape(tab)})\n")
+    txt += ("\n<i>Chỉ quét dòng chưa có đánh dấu ở cột Trạng thái.</i>\n"
+            "\n👇 <b>Chọn loại acc để nhập:</b>")
+    await msg.answer(txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                     parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("sheetpick_"))
+async def on_sheet_pick(cb: CallbackQuery, state: FSMContext):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("🚫")
+        return
+    try:
+        cat_id = int(cb.data.split("_", 1)[1])
+    except Exception:
+        await cb.answer("❌")
+        return
+    c = db.acc_category_get(cat_id)
+    if not c:
+        await cb.answer("❌ Loại không tồn tại", show_alert=True)
+        return
+    await state.update_data(sheet_cat_id=cat_id)
+    await state.set_state(SheetImportState.waiting_ncc_cost)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Nhập luôn (không NCC/vốn)",
+                              callback_data=f"sheetgo_{cat_id}_0_0")],
+    ])
+    await cb.message.answer(
+        f"📦 Loại: <b>{html.escape(c['name'])}</b> (#{cat_id})\n\n"
+        "Nhập <code>ncc_id giá_vốn</code> (vd: <code>3 15000</code>)\n"
+        "hoặc bấm nút để nhập luôn:",
+        reply_markup=kb, parse_mode="HTML")
+    await cb.answer()
+
+
+@router.message(SheetImportState.waiting_ncc_cost)
+async def on_sheet_ncc_cost(msg: Message, state: FSMContext):
+    if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    cat_id = data.get("sheet_cat_id")
+    await state.clear()
+    if not cat_id:
+        return
+    parts = (msg.text or "").split()
+    try:
+        ncc_id = int(parts[0]) if len(parts) > 0 else 0
+        cost = int(parts[1].replace(".", "").replace(",", "")) if len(parts) > 1 else 0
+    except Exception:
+        await msg.answer("❌ Nhập số thôi, vd: <code>3 15000</code> — hoặc bấm lại nút 📊 để làm lại.",
+                         parse_mode="HTML")
+        return
+    await _run_sheet_import(msg, cat_id, ncc_id, cost)
+
+
+@router.callback_query(F.data.startswith("sheetgo_"))
+async def on_sheet_go(cb: CallbackQuery, state: FSMContext):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("🚫")
+        return
+    await state.clear()
+    try:
+        _, _, cat_id, ncc_id, cost = cb.data.split("_")
+    except Exception:
+        await cb.answer("❌")
+        return
+    await cb.answer("⏳ Đang nhập kho...")
+    await _run_sheet_import(cb.message, int(cat_id), int(ncc_id), int(cost))
+
+
 COMMANDS = [
     BotCommand(command="start",       description="Bắt đầu sử dụng bot"),
     BotCommand(command="muagoi",      description="Mua gói theo ngày (1, 3, 5, 7 ngày)"),
@@ -190,6 +362,7 @@ COMMANDS = [
     BotCommand(command="mywatches",   description="Danh sách UID đang theo dõi"),
     BotCommand(command="trackmode",   description="Chế độ báo theo dõi (all/die)"),
     BotCommand(command="dailyreport", description="Cài đặt báo cáo tự động hằng ngày"),
+    BotCommand(command="sinhnhat", description="Nhập ngày sinh nhận quà sinh nhật"),
     BotCommand(command="stats",       description="Thống kê cá nhân của bạn"),
     BotCommand(command="history",     description="Lịch sử check: /history [fb|tiktok|ig|yt|zalo]"),
     BotCommand(command="top",         description="Bảng xếp hạng: /top hoặc /top ref"),
@@ -420,7 +593,7 @@ async def on_start(msg: Message):
         f"{trial_msg}"
         "Gõ /help để xem hướng dẫn đầy đủ.\n"
         "Gõ /ref để lấy link giới thiệu nhận 10% hoa hồng.",
-        reply_markup=MENU,
+        reply_markup=(ADMIN_MENU if _is_admin(u.id) else MENU),
     )
 
 @router.message(Command("ref"))
@@ -2294,6 +2467,15 @@ class BotManager:
         self.dp = Dispatcher(storage=SQLiteStorage(_config.DB_PATH))
         self.dp.include_router(router)
         await self.bot.set_my_commands(COMMANDS)
+        try:
+            _admin_id = int(db.get_setting("admin_tg_id") or 0)
+            if _admin_id:
+                from aiogram.types import BotCommandScopeChat
+                await self.bot.set_my_commands(
+                    COMMANDS + ADMIN_COMMANDS_EXTRA,
+                    scope=BotCommandScopeChat(chat_id=_admin_id))
+        except Exception as e:
+            log.warning("admin commands: %s", e)
         poller.set_bot(self.bot)
         self._task = asyncio.create_task(
             self.dp.start_polling(self.bot, handle_signals=False)
@@ -3061,6 +3243,11 @@ async def _process_file_check(msg: Message, state: FSMContext):
             [InlineKeyboardButton(text="📥 Tải File CSV Kết Quả", callback_data="fc_exportcsv")],
             [InlineKeyboardButton(text="📊 Xuất File Excel (.xlsx)", callback_data="fc_exportxlsx")],
         ]
+        # Upsell: die nhiều (>=5 và >=20%) -> gợi ý mua acc thay thế 1 chạm
+        if len(die_list) >= 5 and len(die_list) * 5 >= len(uids):
+            text += (f"\n💡 <b>Cần acc thay thế?</b> Bạn vừa check {len(uids)} acc, "
+                     f"die tới <b>{len(die_list)}</b> — bấm 1 chạm để vào shop mua ngay!\n")
+            buttons.insert(0, [InlineKeyboardButton(text="🛒 Mua acc thay thế ngay", callback_data="accshop_back")])
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
         await wait.delete()
@@ -3193,6 +3380,11 @@ async def _process_xlsx_check(msg: Message, wait: Message, file_name: str, conte
     ]
     if out_bytes:
         buttons.append([InlineKeyboardButton(text="📥 Tải file Excel", callback_data="fc_export_uidxlsx")])
+    # Upsell: die nhiều (>=5 và >=20%) -> gợi ý mua acc thay thế 1 chạm
+    if len(die_list) >= 5 and len(die_list) * 5 >= len(uids):
+        text += (f"\n💡 <b>Cần acc thay thế?</b> Bạn vừa check {len(uids)} acc, "
+                 f"die tới <b>{len(die_list)}</b> — bấm 1 chạm để vào shop mua ngay!\n")
+        buttons.insert(0, [InlineKeyboardButton(text="🛒 Mua acc thay thế ngay", callback_data="accshop_back")])
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await wait.delete()
@@ -3541,6 +3733,49 @@ async def on_fc_export_die_ck(cb: CallbackQuery):
 
 # ─── 3. BÁO CÁO TỰ ĐỘNG HẰNG NGÀY ──────────────────────────────────────────
 
+@router.message(Command("sinhnhat"))
+async def on_birthday_cmd(msg: Message):
+    """Nhap ngay sinh de nhan qua sinh nhat tu dong moi nam."""
+    import datetime as _dt
+    import re as _re
+    parts = (msg.text or "").split(None, 1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    u = db.get_user(msg.from_user.id) or {}
+    try:
+        cur = dict(u).get("dob") or ""
+    except Exception:
+        cur = ""
+    if not arg:
+        if cur:
+            d = _dt.date(*map(int, cur.split("-")))
+            await msg.answer(f"🎂 Ngày sinh của bạn: <b>{d.strftime('%d/%m/%Y')}</b>\n"
+                             "Bot sẽ tự tặng quà vào đúng ngày sinh nhật hằng năm.\n"
+                             "Muốn đổi, gửi: <code>/sinhnhat ngày/tháng/năm</code>")
+        else:
+            await msg.answer("🎂 Nhập ngày sinh để nhận quà sinh nhật hằng năm:\n"
+                             "<code>/sinhnhat 25/12/2000</code>")
+        return
+    m = _re.match(r"^\s*(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})\s*$", arg)
+    if not m:
+        await msg.answer("❌ Sai định dạng. Ví dụ: <code>/sinhnhat 25/12/2000</code>")
+        return
+    try:
+        d = _dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        await msg.answer("❌ Ngày không hợp lệ. Ví dụ: <code>/sinhnhat 25/12/2000</code>")
+        return
+    today = _dt.date.today()
+    if d > today or d.year < 1920:
+        await msg.answer("❌ Ngày sinh không hợp lệ.")
+        return
+    db.set_dob(msg.from_user.id, d.isoformat())
+    note = ""
+    if (d.month, d.day) == (today.month, today.day):
+        note = "\n<i>Lưu ý: cần nhập trước sinh nhật ít nhất 1 ngày mới được tặng quà năm nay.</i>"
+    await msg.answer(f"✅ Đã lưu ngày sinh: <b>{d.strftime('%d/%m/%Y')}</b>\n"
+                     f"🎁 Bot sẽ tự tặng giftcode vào sinh nhật của bạn mỗi năm.{note}")
+
+
 @router.message(Command("dailyreport"))
 @router.message(Command("report"))
 async def on_daily_report_cmd(msg: Message):
@@ -3786,6 +4021,7 @@ async def on_help(msg: Message):
 
         "<b>🛒 SHOP ACC FACEBOOK</b>\n"
         "• /shop — Xem và mua tài khoản Facebook\n"
+        "• /giohang — Giỏ hàng: gom nhiều loại acc, thanh toán 1 lần\n"
         "• /damua — Acc đã mua + yêu cầu bảo hành\n"
         "• /quay — Vòng quay may mắn (mua acc được vé)\n"
         "• /hang — Hạng thành viên & ưu đãi giảm giá\n"
@@ -3817,7 +4053,8 @@ async def on_help(msg: Message):
         "• /top ref — Bảng xếp hạng giới thiệu\n"
         "• /dailyreport &lt;giờ|off&gt; — Hẹn giờ nhận báo cáo dàn nick hằng ngày\n"
         "• /scan_all — Báo cáo tổng hợp toàn bộ dàn tài khoản\n"
-        "• /accuracy — Thống kê độ chính xác &amp; nhất quán khi check\n\n"
+        "• /accuracy — Thống kê độ chính xác &amp; nhất quán khi check\n"
+"• /sinhnhat &lt;ngày/tháng/năm&gt; — Nhập ngày sinh, nhận quà sinh nhật hằng năm\n\n"
 
         "<b>📁 CHECK FILE &amp; DANH SÁCH</b>\n"
         "• /checkfile — Check hàng loạt UID FB từ file .txt/.xlsx (link FB tự giải thành UID)\n"
@@ -5035,6 +5272,30 @@ def _totp_now(secret: str, digits: int = 6, period: int = 30) -> str:
     return str(code % (10 ** digits)).zfill(digits)
 
 
+DEFAULT_MAIL_APP_LINK = "https://www.swisstransfer.com/d/3ec3521b-a0b7-4dc9-bd78-53298af278ac"
+
+
+def _mail_app_link() -> str:
+    """Link tải app mail ảo (mail của acc là mail ảo). Admin đổi bằng /setmailapp."""
+    return (db.get_setting("mail_app_link", DEFAULT_MAIL_APP_LINK) or "").strip()
+
+
+def _mail_app_line() -> str:
+    link = _mail_app_link()
+    if not link:
+        return ""
+    return (
+        "📧 <b>Mail của acc là mail ảo</b> — tải app xem mail tại đây: "
+        f"<a href=\"{html.escape(link)}\">Tải app mail</a>"
+    )
+
+
+def _pickup_suffix() -> str:
+    """Dòng chọn cách nhận acc + link app mail (nếu có)."""
+    line = _mail_app_line()
+    return (line + "\n" if line else "") + "👇 <b>Chọn cách nhận acc:</b>"
+
+
 def _acc_delivery_caption(o) -> str:
     e = html.escape
     parts = [
@@ -5065,6 +5326,9 @@ def _acc_delivery_caption(o) -> str:
         f"🛡 Bảo hành <b>{_fmt_warranty(o['warranty_hours'])}</b> — acc die thì vào /damua bấm \"Bảo hành\".",
         "📌 <b>Chỉ bảo hành trường hợp đăng nhập báo sai mật khẩu.</b>",
     ]
+    mail_line = _mail_app_line()
+    if mail_line:
+        parts += ["", mail_line]
     return "\n".join(parts)
 
 
@@ -5240,6 +5504,7 @@ async def on_acc_buy(cb: CallbackQuery):
     sample = db.get_conn().execute(
         "SELECT uid, created_date FROM acc_stock WHERE cat_id=? AND status='AVAILABLE' ORDER BY id LIMIT 1",
         (cat_id,)).fetchone()
+    mail_line = _mail_app_line()
     txt = (
         f"{icon} <b>{html.escape(c['name'])}</b>\n"
         f"━━━━━━━━━━━━\n"
@@ -5247,6 +5512,7 @@ async def on_acc_buy(cb: CallbackQuery):
         f"📊 Tồn kho: <b>{n}</b> acc"
         + (f" • 🔁 Đã bán <b>{sold}</b>" if sold else "") + "\n"
         f"🛡 Bảo hành: <b>Chỉ bảo hành log sai mk</b>\n"
+        + (mail_line + "\n" if mail_line else "")
     )
     if sample and sample["uid"]:
         uid_e = html.escape(sample["uid"])
@@ -5295,6 +5561,9 @@ async def on_acc_buy(cb: CallbackQuery):
             text="✏️ Nhập số lượng khác",
             callback_data=f"accqty:{cat_id}")])
         kb_rows.append([InlineKeyboardButton(
+            text="🛒 Thêm vào giỏ",
+            callback_data=f"accaddcart:{cat_id}")])
+        kb_rows.append([InlineKeyboardButton(
             text="🔍 Soi acc mẫu (miễn phí)",
             callback_data=f"accpreview:{cat_id}")])
     else:
@@ -5307,9 +5576,11 @@ async def on_acc_buy(cb: CallbackQuery):
         kb_rows.append([InlineKeyboardButton(
             text=f"💰 Đặt cọc {dep_pct}% ({vnd(dep_amt)}) giữ hàng",
             callback_data=f"acccoc:{cat_id}")])
-        if db.acc_is_sub_restock(cb.from_user.id, cat_id):
+        sub = db.acc_restock_sub(cb.from_user.id, cat_id)
+        if sub:
+            mode = f"tự mua {sub['qty']} acc" if sub["auto_buy"] else "chỉ báo hàng"
             kb_rows.append([InlineKeyboardButton(
-                text="🔕 Hủy đăng ký báo hàng",
+                text=f"🔕 Hủy đăng ký ({mode})",
                 callback_data=f"accunnotify:{cat_id}")])
         else:
             kb_rows.append([InlineKeyboardButton(
@@ -5333,6 +5604,7 @@ async def on_acc_buy(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("accnotify:"))
 async def on_acc_notify(cb: CallbackQuery):
+    """Chọn kiểu báo hàng: chỉ báo, hoặc tự động trừ ví shop mua ngay khi hàng về."""
     await cb.answer()
     try:
         cat_id = int(cb.data.split(":", 1)[1])
@@ -5341,13 +5613,49 @@ async def on_acc_notify(cb: CallbackQuery):
     c = db.acc_category_get(cat_id)
     if not c:
         return
-    if db.acc_sub_restock(cb.from_user.id, cat_id):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔔 Chỉ báo cho tôi khi có hàng",
+                              callback_data=f"accnotify_do:{cat_id}:0:1")],
+        [InlineKeyboardButton(text="⚡ Tự mua 1 acc khi có hàng về",
+                              callback_data=f"accnotify_do:{cat_id}:1:1")],
+        [InlineKeyboardButton(text="⚡ Tự mua 5 acc khi có hàng về",
+                              callback_data=f"accnotify_do:{cat_id}:1:5")],
+        [InlineKeyboardButton(text="⚡ Tự mua 10 acc khi có hàng về",
+                              callback_data=f"accnotify_do:{cat_id}:1:10")],
+    ])
+    await cb.message.answer(
+        f"📦 <b>{html.escape(c['name'])}</b> đang hết hàng.\n\n"
+        "Khi hàng về, bạn muốn:\n"
+        "• <b>Chỉ báo:</b> bot nhắn riêng cho bạn.\n"
+        "• <b>Tự mua:</b> bot tự trừ tiền <b>ví shop</b> và giao acc ngay "
+        "(acc đã check LIVE). Nếu ví không đủ tiền lúc đó, bot chỉ báo hàng về thôi.",
+        parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("accnotify_do:"))
+async def on_acc_notify_do(cb: CallbackQuery):
+    await cb.answer()
+    try:
+        _, cat_id, auto, qty = cb.data.split(":")
+        cat_id, auto, qty = int(cat_id), int(auto), int(qty)
+    except Exception:
+        return
+    c = db.acc_category_get(cat_id)
+    if not c:
+        return
+    is_new = db.acc_sub_restock(cb.from_user.id, cat_id, qty=qty, auto_buy=auto)
+    if auto:
+        await cb.message.answer(
+            f"⚡ Đã đặt trước <b>{qty} acc</b> <b>{html.escape(c['name'])}</b>!\n\n"
+            f"Khi hàng về, bot sẽ tự trừ <b>{vnd(int(c['price']) * qty)}</b> (giá gốc, "
+            "chưa tính giảm mua nhiều) từ ví shop và giao acc ngay cho bạn.\n"
+            "Nhớ nạp đủ tiền vào ví shop bằng /napshop nhé!",
+            parse_mode="HTML")
+    else:
         await cb.message.answer(
             f"🔔 Đã đăng ký! Khi <b>{html.escape(c['name'])}</b> có hàng về, "
             f"bot sẽ nhắn riêng cho bạn ngay.",
             parse_mode="HTML")
-    else:
-        await cb.message.answer("Bạn đã đăng ký báo hàng cho loại này rồi nhé.")
 
 
 @router.callback_query(F.data.startswith("accunnotify:"))
@@ -5363,31 +5671,34 @@ async def on_acc_unnotify(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("accpreview:"))
 async def on_acc_preview(cb: CallbackQuery):
-    """Soi trước acc sẽ giao (acc AVAILABLE cũ nhất), không lộ pass/cookie/token."""
+    """Soi 5 acc AVAILABLE ngẫu nhiên (chỉ hiện link để khách check, không lộ pass/cookie/token)."""
     await cb.answer()
     try:
         cat_id = int(cb.data.split(":", 1)[1])
     except Exception:
         return
     c = db.acc_category_get(cat_id)
-    row = db.get_conn().execute(
-        "SELECT uid, created_date, backup_mail, note FROM acc_stock "
-        "WHERE cat_id=? AND status='AVAILABLE' ORDER BY id LIMIT 1",
-        (cat_id,)).fetchone()
-    if not row:
+    if not c:
+        return
+    rows = db.get_conn().execute(
+        "SELECT uid, created_date FROM acc_stock "
+        "WHERE cat_id=? AND status='AVAILABLE' ORDER BY RANDOM() LIMIT 5",
+        (cat_id,)).fetchall()
+    rows = [r for r in rows if (r["uid"] or "").strip()]
+    if not rows:
         await cb.message.answer("⛔ Loại này vừa hết hàng.")
         return
     e = html.escape
     parts = [f"🔍 <b>SOI ACC MẪU</b> — {e(c['name'])}",
-             f"Đây là acc bạn sẽ nhận nếu bấm mua ngay:", "",
-             f"👤 UID: <code>{e(row['uid'] or '')}</code>",
-             f'🔗 Link: <a href="https://facebook.com/{e(row["uid"] or "")}">mở trang cá nhân</a>']
-    if row["created_date"]:
-        parts.append(f"📅 Ngày tạo: <code>{e(row['created_date'])}</code>")
-    if row["note"]:
-        parts.append(f"📝 Ghi chú: {e(row['note'])}")
+             f"Lấy ngẫu nhiên <b>{len(rows)}</b> acc trong kho để bạn check chất lượng:", ""]
+    for i, r in enumerate(rows, 1):
+        uid = (r["uid"] or "").strip()
+        line = f'{i}. <a href="https://facebook.com/{e(uid)}">facebook.com/{e(uid)}</a>'
+        if r["created_date"]:
+            line += f" (tạo {e(r['created_date'])})"
+        parts.append(line)
     parts += ["", "🔒 Mật khẩu, 2FA, cookie, token chỉ hiện sau khi bạn mua.",
-              "🛡 Acc đã qua quét kiểm tra chất lượng."]
+              "🛡 Các acc trong kho đã qua quét kiểm tra chất lượng."]
     await cb.message.answer("\n".join(parts), parse_mode="HTML", disable_web_page_preview=True)
 
 
@@ -5589,7 +5900,7 @@ async def on_acc_confirm(cb: CallbackQuery):
             f"🧾 Đơn hàng: <b>#{order_id}</b> | 💰 {vnd(order['price'])} \n"
             f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
             f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
-            f"👇 <b>Chọn cách nhận acc:</b>",
+            f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     # Báo admin: thông tin khách + acc đã mua
     await _notify_purchase_admin(cb.bot, cb.from_user, delivered)
@@ -5670,6 +5981,390 @@ async def on_acc_confirm(cb: CallbackQuery):
             f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn <b>{left}</b> acc. "
             f"Nhập thêm bằng /themacc {cat_id}",
         )
+
+
+# ============================ GIỎ HÀNG SHOP ACC ============================
+def _line_price(cat: dict, qty: int, tg_id: int) -> dict:
+    """Giá 1 dòng giỏ/mua: giữ nguyên công thức mua lẻ
+    (giảm bulk theo số lượng của dòng + giảm hạng TV)."""
+    up = db.shop_unit_price(cat)
+    price = up["price"]
+    p5, p10, p20 = _shop_bulk_pcts()
+    bulk_pct = p20 if qty >= 20 else (p10 if qty >= 10 else (p5 if qty >= 5 else 0))
+    tier = db.member_tier_info(tg_id)
+    tier_pct = int(tier["pct"])
+    total = price * qty
+    final = total * (100 - bulk_pct) // 100
+    final = final * (100 - tier_pct) // 100
+    return {"unit": price, "bulk_pct": bulk_pct, "tier_pct": tier_pct,
+            "tier_name": tier.get("tier", ""), "total": total, "final": final}
+
+
+def _cart_render(tg_id: int):
+    """Trả (text, keyboard) cho giỏ hàng, hoặc None nếu giỏ trống."""
+    items = [it for it in db.cart_list(tg_id) if it["active"]]
+    if not items:
+        return None
+    lines = ["🛒 <b>GIỎ HÀNG CỦA BẠN</b>", "━━━━━━━━━━━━"]
+    kb_rows = []
+    grand = 0
+    for i, it in enumerate(items, 1):
+        cat = db.acc_category_get(it["cat_id"])
+        if not cat:
+            continue
+        lp = _line_price(dict(cat), it["qty"], tg_id)
+        grand += lp["final"]
+        disc = []
+        if lp["bulk_pct"]:
+            disc.append(f"-{lp['bulk_pct']}% mua nhiều")
+        if lp["tier_pct"]:
+            disc.append(f"-{lp['tier_pct']}% {lp['tier_name']}")
+        dtxt = f" ({', '.join(disc)})" if disc else ""
+        lines.append(
+            f"{i}. {_cat_icon(it['name'])} <b>{html.escape(it['name'])}</b>\n"
+            f"   {it['qty']} acc × {vnd(lp['unit'])} = <b>{vnd(lp['final'])}</b>{dtxt}")
+        kb_rows.append([
+            InlineKeyboardButton(text="➖", callback_data=f"cartdec:{it['cat_id']}"),
+            InlineKeyboardButton(text=f"×{it['qty']}", callback_data="cartnoop"),
+            InlineKeyboardButton(text="➕", callback_data=f"cartinc:{it['cat_id']}"),
+            InlineKeyboardButton(text="❌", callback_data=f"cartdel:{it['cat_id']}"),
+        ])
+    u = db.get_user(tg_id)
+    balance = int(u["shop_balance"] or 0) if u else 0
+    lines += ["━━━━━━━━━━━━",
+              f"💰 <b>Tổng: {vnd(grand)}</b>",
+              f"💼 Ví shop: <b>{vnd(balance)}</b>"]
+    kb_rows.append([InlineKeyboardButton(
+        text=f"💳 Thanh toán — {vnd(grand)}", callback_data="cartcheckout")])
+    kb_rows.append([
+        InlineKeyboardButton(text="🗑 Xóa giỏ", callback_data="cartclear"),
+        InlineKeyboardButton(text="🛍 Tiếp tục mua", callback_data="accshop_back"),
+    ])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
+async def _cart_refresh(cb: CallbackQuery):
+    r = _cart_render(cb.from_user.id)
+    if not r:
+        try:
+            await cb.message.edit_text(
+                "🛒 Giỏ hàng đang trống.\nVào /shop chọn acc rồi bấm \"🛒 Thêm vào giỏ\" nhé!")
+        except Exception:
+            pass
+        return
+    txt, kb = r
+    try:
+        await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+
+
+def _cart_validated_lines(tg_id: int):
+    """Validate giỏ: bỏ loại ngừng bán/hết hàng, cắt số lượng theo tồn kho.
+    Trả (lines[(cat, qty)], notes[str])."""
+    lines, notes = [], []
+    for it in db.cart_list(tg_id):
+        c = db.acc_category_get(it["cat_id"])
+        if not c or not c["active"]:
+            db.cart_remove(tg_id, it["cat_id"])
+            notes.append(f"❌ {it['name']}: ngừng bán → đã xóa khỏi giỏ")
+            continue
+        stock = db.acc_stock_count(it["cat_id"])
+        if stock <= 0:
+            db.cart_remove(tg_id, it["cat_id"])
+            notes.append(f"⛔ {it['name']}: vừa hết hàng → đã xóa khỏi giỏ")
+            continue
+        qty = it["qty"]
+        if qty > stock:
+            db.cart_set_qty(tg_id, it["cat_id"], stock)
+            notes.append(f"⚠️ {it['name']}: kho chỉ còn {stock} → đã giảm số lượng")
+            qty = stock
+        lines.append((dict(c), qty))
+    return lines, notes
+
+
+@router.callback_query(F.data.startswith("accaddcart:"))
+async def on_acc_add_cart(cb: CallbackQuery):
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer()
+        return
+    tg_id = cb.from_user.id
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"]:
+        await cb.answer("❌ Loại acc này không còn bán.", show_alert=True)
+        return
+    stock = db.acc_stock_count(cat_id)
+    if stock <= 0:
+        await cb.answer("⛔ Loại này đang hết hàng.", show_alert=True)
+        return
+    q = db.cart_add(tg_id, cat_id, 1)
+    if q > stock:
+        db.cart_set_qty(tg_id, cat_id, stock)
+        q = stock
+    n = db.cart_count(tg_id)
+    await cb.answer(f"🛒 Đã thêm vào giỏ ({n} acc). Gõ /giohang để xem và thanh toán.")
+
+
+@router.message(Command("giohang"))
+async def on_giohang(msg: Message):
+    r = _cart_render(msg.from_user.id)
+    if not r:
+        await msg.answer("🛒 Giỏ hàng đang trống.\nVào /shop chọn acc rồi bấm \"🛒 Thêm vào giỏ\" nhé!")
+        return
+    txt, kb = r
+    await msg.answer(txt, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data == "cartnoop")
+async def on_cart_noop(cb: CallbackQuery):
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cartinc:"))
+async def on_cart_inc(cb: CallbackQuery):
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer()
+        return
+    tg_id = cb.from_user.id
+    cur = next((it["qty"] for it in db.cart_list(tg_id) if it["cat_id"] == cat_id), 0)
+    if not cur:
+        await cb.answer()
+        return
+    stock = db.acc_stock_count(cat_id)
+    if cur + 1 > stock:
+        await cb.answer(f"⛔ Kho chỉ còn {stock} acc loại này.", show_alert=True)
+        return
+    await cb.answer()
+    db.cart_set_qty(tg_id, cat_id, cur + 1)
+    await _cart_refresh(cb)
+
+
+@router.callback_query(F.data.startswith("cartdec:"))
+async def on_cart_dec(cb: CallbackQuery):
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer()
+        return
+    tg_id = cb.from_user.id
+    cur = next((it["qty"] for it in db.cart_list(tg_id) if it["cat_id"] == cat_id), 0)
+    await cb.answer()
+    db.cart_set_qty(tg_id, cat_id, cur - 1)
+    await _cart_refresh(cb)
+
+
+@router.callback_query(F.data.startswith("cartdel:"))
+async def on_cart_del(cb: CallbackQuery):
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer()
+        return
+    await cb.answer("Đã xóa khỏi giỏ.")
+    db.cart_remove(cb.from_user.id, cat_id)
+    await _cart_refresh(cb)
+
+
+@router.callback_query(F.data == "cartclear")
+async def on_cart_clear(cb: CallbackQuery):
+    db.cart_clear(cb.from_user.id)
+    await cb.answer("🗑 Đã xóa toàn bộ giỏ hàng.")
+    await _cart_refresh(cb)
+
+
+@router.callback_query(F.data == "cartview")
+async def on_cart_view(cb: CallbackQuery):
+    await cb.answer()
+    r = _cart_render(cb.from_user.id)
+    if not r:
+        await cb.message.answer("🛒 Giỏ hàng đang trống.")
+        return
+    txt, kb = r
+    await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data == "cartcheckout")
+async def on_cart_checkout(cb: CallbackQuery):
+    await cb.answer()
+    tg_id = cb.from_user.id
+    lines, notes = _cart_validated_lines(tg_id)
+    if not lines:
+        txt = "🛒 Giỏ hàng không còn món nào mua được."
+        if notes:
+            txt += "\n" + "\n".join(notes)
+        await cb.message.answer(txt)
+        return
+    priced = []
+    grand = 0
+    for c, qty in lines:
+        lp = _line_price(c, qty, tg_id)
+        priced.append((c, qty, lp))
+        grand += lp["final"]
+    u = db.get_user(tg_id)
+    balance = int(u["shop_balance"] or 0) if u else 0
+    txt = ["🧾 <b>XÁC NHẬN THANH TOÁN</b>", "━━━━━━━━━━━━"]
+    for c, qty, lp in priced:
+        txt.append(f"{_cat_icon(c['name'])} <b>{html.escape(c['name'])}</b> × {qty} = <b>{vnd(lp['final'])}</b>")
+    txt += ["━━━━━━━━━━━━",
+            f"💰 <b>Tổng cộng: {vnd(grand)}</b>",
+            f"💼 Ví shop: <b>{vnd(balance)}</b>"]
+    if notes:
+        txt.append("")
+        txt += [f"<i>{html.escape(n)}</i>" for n in notes]
+    if balance < grand:
+        txt.append(f"\n❌ <b>Ví shop không đủ!</b> Còn thiếu <b>{vnd(grand - balance)}</b>.\n"
+                   "Nạp thêm bằng /napshop rồi quay lại nhé.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Sửa giỏ hàng", callback_data="cartview")]])
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✅ Xác nhận thanh toán {vnd(grand)}",
+                                  callback_data="cartconfirm")],
+            [InlineKeyboardButton(text="🔙 Sửa giỏ hàng", callback_data="cartview")]])
+    await cb.message.answer("\n".join(txt), parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data == "cartconfirm")
+async def on_cart_confirm(cb: CallbackQuery):
+    await cb.answer()
+    tg_id = cb.from_user.id
+    lines, _notes = _cart_validated_lines(tg_id)
+    if not lines:
+        await cb.message.answer("🛒 Giỏ hàng không còn món nào mua được.")
+        return
+    priced = []
+    grand = 0
+    for c, qty in lines:
+        stock = db.acc_stock_count(c["id"])
+        if stock < qty:
+            await cb.message.answer(
+                f"⛔ <b>{html.escape(c['name'])}</b> chỉ còn {stock} acc, "
+                f"không đủ {qty}.\nBạn sửa lại giỏ hàng rồi thanh toán lại nhé.",
+                parse_mode="HTML")
+            return
+        lp = _line_price(c, qty, tg_id)
+        priced.append((c, qty, lp))
+        grand += lp["final"]
+    u = db.get_user(tg_id)
+    balance = int(u["shop_balance"] or 0) if u else 0
+    if balance < grand:
+        await cb.message.answer(
+            f"❌ Ví shop không đủ ({vnd(balance)} < {vnd(grand)}). "
+            "Nạp thêm bằng /napshop nhé.", parse_mode="HTML")
+        return
+    if not db.adjust_shop_balance(tg_id, -grand, f"mua_giohang:{len(priced)}mon"):
+        await cb.message.answer("❌ Ví shop không đủ. Nạp thêm bằng /napshop nhé.",
+                                parse_mode="HTML")
+        return
+    await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
+    delivered, paid_total = [], 0
+    failed = []
+    for c, qty, lp in priced:
+        cat_id = c["id"]
+        sold, _fail = await _sell_live_stock(
+            cb.bot, tg_id, lp["final"], qty,
+            lambda seen, _cid=cat_id, _q=qty: db.acc_stock_pick_candidates(_cid, _q + 4, seen))
+        if sold:
+            delivered += sold
+            paid_total += lp["final"]
+        else:
+            failed.append((c, qty))
+            db.add_shop_balance_only(tg_id, lp["final"], "hoan_tien_giohang_thieu_live")
+    db.cart_clear(tg_id)
+    if not delivered:
+        await cb.message.answer(
+            "😔 <b>Shop vừa kiểm tra lại chất lượng hàng:</b>\n"
+            "hiện không đủ acc <b>LIVE</b> để giao.\n"
+            f"Tiền <b>{vnd(grand)}</b> đã được hoàn vào ví shop.",
+            parse_mode="HTML")
+        return
+    for order in delivered:
+        order_id = order["id"]
+        await cb.message.answer(
+            f"✅ <b>MUA THÀNH CÔNG — {html.escape(order['cat_name'])}</b>\n"
+            f"🧾 Đơn hàng: <b>#{order_id}</b> | 💰 {vnd(order['price'])} \n"
+            f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
+            f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
+            f"{_pickup_suffix()}",
+            parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
+    by_cat = {}
+    for o in delivered:
+        by_cat.setdefault(o["cat_id"], []).append(o)
+    summary = [f"🧾 <b>Xong giỏ hàng:</b> giao <b>{len(delivered)}</b> acc, "
+               f"thanh toán <b>{vnd(paid_total)}</b>."]
+    if failed:
+        fnames = ", ".join(f"{html.escape(c['name'])}×{q}" for c, q in failed)
+        summary.append(f"⚠️ {fnames}: không đủ acc LIVE → đã hoàn tiền dòng này.")
+    extras = []
+    for cid, olist in by_cat.items():
+        c = db.acc_category_get(cid)
+        bonus_per = int((c.get("credit_bonus") or 0)) if c else 0
+        if bonus_per > 0:
+            db.add_credits(tg_id, bonus_per * len(olist), f"combo_mua_giohang:{cid}")
+            extras.append(f"🎁 Tặng <b>{bonus_per * len(olist)} credits</b> "
+                          f"({html.escape(c['name']) if c else ''})")
+    tickets = db.spin_add_tickets(tg_id, len(delivered))
+    extras.append(f"🎡 Nhận <b>{len(delivered)} vé quay</b> may mắn — gõ /quay "
+                  f"(đang có {tickets} vé)")
+    try:
+        per = int(db.get_setting("loyalty_per_vnd", "100000") or 100000)
+    except Exception:
+        per = 100000
+    pts = paid_total // per if per > 0 else 0
+    if pts > 0:
+        new_pts = db.loyalty_add(tg_id, pts, "mua_giohang")
+        extras.append(f"⭐ Tích <b>{pts} điểm</b> loyalty (tổng: <b>{new_pts}</b> điểm) — "
+                      "đủ điểm đổi acc miễn phí bằng /doiqua")
+    summary.append("")
+    summary += extras
+    kb2 = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎡 Quay ngay", callback_data="spin_now")]])
+    await cb.message.answer("\n".join(summary), parse_mode="HTML", reply_markup=kb2)
+    try:
+        guide = db.get_setting("postbuy_guide", "") or (
+            "📋 <b>HƯỚNG DẪN SAU KHI MUA ACC</b>\n"
+            "1️⃣ Đổi mật khẩu ngay sau khi đăng nhập.\n"
+            "2️⃣ Bật xác thực 2 lớp (2FA) cho acc.\n"
+            "3️⃣ 3 ngày đầu: đừng đổi tên/avatar vội, lướt newsfeed nhẹ nhàng.\n"
+            "4️⃣ Không đăng nhập nhiều acc cùng 1 IP/proxy lạ.\n"
+            "💡 Làm đúng các bước trên giúp acc sống lâu, ít bị checkpoint!")
+        await cb.message.answer(guide, parse_mode="HTML")
+    except Exception:
+        pass
+    try:
+        f1_id, comm = db.ref_shop_commission(tg_id, paid_total)
+        if f1_id and comm:
+            try:
+                await cb.bot.send_message(
+                    f1_id,
+                    "🎁 <b>Hoa hồng shop acc!</b>\n"
+                    f"Người bạn giới thiệu vừa mua giỏ hàng {len(delivered)} acc — "
+                    f"bạn nhận <b>{vnd(comm)}</b>.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    await _notify_purchase_admin(cb.bot, cb.from_user, delivered)
+    try:
+        warn_at = int(db.get_setting("acc_low_stock_warn", "20") or 20)
+    except Exception:
+        warn_at = 20
+    for cid in by_cat:
+        left = db.acc_stock_count(cid)
+        if left <= warn_at:
+            c = db.acc_category_get(cid)
+            if c:
+                await _notify_admin_smart(
+                    cb.bot,
+                    f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn "
+                    f"<b>{left}</b> acc. Nhập thêm bằng /themacc {cid}")
+
+
 
 
 @router.message(Command("quay"))
@@ -5792,7 +6487,7 @@ async def on_doiqua(msg: Message):
         f"🎡 +1 vé quay may mắn (đang có {tickets} vé — gõ /quay)\n"
         f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
         f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
-        f"👇 <b>Chọn cách nhận acc:</b>",
+        f"{_pickup_suffix()}",
         parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     await _notify_purchase_admin(msg.bot, msg.from_user, [order])
 
@@ -6215,72 +6910,11 @@ def _smart_stock_fields(fields: list) -> dict:
     return r
 
 
-@router.message(AccShopState.waiting_for_stock_file, F.document)
-async def on_stock_file(msg: Message, state: FSMContext):
-    if not _is_admin(msg.from_user.id):
-        await state.clear()
-        return
-    data = await state.get_data()
-    await state.clear()
-    cat_id = data.get("acc_cat_id")
-    ncc_id = int(data.get("acc_ncc_id") or 0)
-    cost = int(data.get("acc_cost") or 0)
-    c = db.acc_category_get(cat_id)
-    if not c:
-        await msg.answer("❌ Loại acc không tồn tại.")
-        return
-    doc = msg.document
-    file_name = (doc.file_name or "").lower()
-    if not (file_name.endswith(".txt") or file_name.endswith(".xlsx")):
-        await msg.answer("❌ Chỉ nhận file .txt hoặc .xlsx.")
-        return
-    wait = await msg.answer("⏳ Đang nhập kho...")
-    try:
-        file_info = await msg.bot.get_file(doc.file_id)
-        raw = await msg.bot.download_file(file_info.file_path)
-    except Exception as e:
-        await wait.edit_text(f"❌ Không đọc được file: {e}")
-        return
-    rows = []
-    if file_name.endswith(".xlsx"):
-        # .xlsx: 8 cột đầu = uid/link|mk|ngày tạo|mail thay|ghi chú|2fa|cookie|token
-        from openpyxl import load_workbook
-        import io as _io
-        try:
-            wb = load_workbook(_io.BytesIO(raw.getvalue()), read_only=True, data_only=True)
-            ws = wb.active
-        except Exception as e:
-            await wait.edit_text(f"❌ Không đọc được file Excel: {e}")
-            return
-        first_row = True
-        for vals in ws.iter_rows(values_only=True):
-            cells = [(str(c).strip() if c is not None else "") for c in vals[:8]]
-            while len(cells) < 8:
-                cells.append("")
-            if not any(cells):
-                continue
-            c0 = cells[0].lower()
-            if first_row:
-                first_row = False
-                # Bỏ dòng tiêu đề (UID, Link, Url, STT...)
-                if not (c0.isdigit() or "http" in c0 or "facebook.com" in c0 or "fb.com" in c0):
-                    continue
-            rows.append({
-                "uid": cells[0], "password": cells[1], "created_date": cells[2],
-                "backup_mail": cells[3], "note": cells[4], "totp": cells[5],
-                "cookie": cells[6], "token": cells[7],
-            })
-    else:
-        text = raw.getvalue().decode("utf-8", errors="ignore")
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            p = [x.strip() for x in line.split("|")]
-            rows.append(_smart_stock_fields(p))
-    if not rows:
-        await wait.edit_text("❌ File không có dòng acc nào hợp lệ.")
-        return
+
+async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx=None):
+    """Pipeline nhập kho dùng chung cho /themacc (file) và /nhapkhosheet (Google Sheet).
+    rows: list dict {uid,password,created_date,backup_mail,note,totp,cookie,token}.
+    sheet_ctx: None hoặc {"sheet_id","tab"} — ghi trạng thái ngược vào sheet."""
     # Cột mk trống -> dùng mặc định "khai2006" (các cột khác giữ đúng vị trí)
     for r in rows:
         if not (r.get("password") or "").strip():
@@ -6356,20 +6990,34 @@ async def on_stock_file(msg: Message, state: FSMContext):
     except Exception:
         _existing = set()
     _uniq, empty, dup_in_file, dup_in_stock = [], 0, 0, 0
+    all_rows = rows  # giữ để ghi trạng thái sheet cho cả dòng bị loại
     for r in rows:
         uid = (r.get("uid") or "").strip()
         if not uid:
             empty += 1
+            if sheet_ctx is not None:
+                r["_sheet_status"] = "🔗 LỖI LINK" if r.get("_orig_link") else "⏭ BỎ QUA"
             continue
         if uid in _seen:
             dup_in_file += 1
+            if sheet_ctx is not None:
+                r["_sheet_status"] = "🗑 TRÙNG"
             continue
         if uid in _existing:
             dup_in_stock += 1
+            if sheet_ctx is not None:
+                r["_sheet_status"] = "🗑 TRÙNG"
             continue
         _seen.add(uid)
         _uniq.append(r)
     rows = _uniq
+    if sheet_ctx is not None:
+        for r in _uniq:
+            r["_sheet_status"] = "✅ OK"
+        sheet_ctx["uid_to_row"] = {
+            str(r["uid"]): r.get("_sheet_row")
+            for r in _uniq if str(r.get("uid") or "").isdigit() and r.get("_sheet_row")
+        }
     skipped = empty + dup_in_file + dup_in_stock
     stock_since = int(time.time())
     added, _ = db.acc_stock_add_batch(
@@ -6397,6 +7045,21 @@ async def on_stock_file(msg: Message, state: FSMContext):
         "\n\n🔍 Đang tự quét kiểm tra chất lượng...",
         parse_mode="HTML",
     )
+    if sheet_ctx is not None:
+        # Ghi đánh dấu ngược vào sheet: cột I trạng thái + ghi đè link bằng UID (cách 1)
+        try:
+            from . import sheet_import as _si
+            _updates = []
+            for r in all_rows:
+                sr = r.get("_sheet_row")
+                if not sr:
+                    continue
+                _updates.append((sr, 9, r.get("_sheet_status") or "⏭ BỎ QUA"))
+                if r.get("_orig_link") and str(r.get("uid") or "").isdigit():
+                    _updates.append((sr, 1, str(r["uid"])))
+            await _si.write_updates(sheet_ctx["sheet_id"], sheet_ctx["tab"], _updates)
+        except Exception as e:
+            log.warning("sheet write-back: %s", e)
     if failed_lines:
         try:
             txt = ("⚠️ <b>Các link không giải được UID</b> (đã thử lại nhiều lần, đã bỏ qua):\n"
@@ -6418,6 +7081,7 @@ async def on_stock_file(msg: Message, state: FSMContext):
         sem = asyncio.Semaphore(10)
         dead = 0
         dead_list = []
+        dead_uids = []
         async def _one(sid, uid):
             nonlocal dead
             async with sem:
@@ -6426,6 +7090,7 @@ async def on_stock_file(msg: Message, state: FSMContext):
                     if str(r.get("status", "")).lower() in ("die", "dead"):
                         db.acc_mark_status(sid, "DEAD")
                         dead += 1
+                        dead_uids.append(str(uid))
                         lk = (uid_to_link.get(str(uid)) or "").strip()
                         dead_list.append(f"• {html.escape(str(uid))}" + (f" — {html.escape(lk)}" if lk else ""))
                 except Exception:
@@ -6437,34 +7102,154 @@ async def on_stock_file(msg: Message, state: FSMContext):
             dead_txt = "\n⚠️ <b>Danh sách acc die:</b>\n" + "\n".join(dead_list[:20])
             if len(dead_list) > 20:
                 dead_txt += f"\n...và {len(dead_list) - 20} acc nữa"
+        if sheet_ctx is not None and dead_uids:
+            # Đánh dấu DIE ngược vào sheet
+            try:
+                from . import sheet_import as _si
+                _u = [(r, 9, "☠️ DIE") for u, r in sheet_ctx.get("uid_to_row", {}).items()
+                      if u in dead_uids]
+                await _si.write_updates(sheet_ctx["sheet_id"], sheet_ctx["tab"], _u)
+            except Exception as e:
+                log.warning("sheet die mark: %s", e)
         await msg.answer(
             f"🔍 <b>Quét xong {len(ids)} acc mới nhập:</b> "
             f"<b>{dead}</b> acc die đã loại khỏi kho.\n"
             f"📊 Tồn kho bán được: <b>{left}</b> acc.{dead_txt}",
             parse_mode="HTML",
         )
-        # Báo cho những ai đã đăng ký "có hàng nhắn tôi"
+        # Báo / tự giao cho những ai đã đăng ký "có hàng nhắn tôi"
         if left > 0:
-            subs = db.acc_restock_subscribers(cat_id)
-            if subs:
-                db.acc_clear_restock_subs(cat_id)
-                for tg in subs:
-                    try:
-                        await msg.bot.send_message(
-                            tg,
-                            f"🔔 <b>CÓ HÀNG RỒI!</b>\n\n"
-                            f"📦 <b>{html.escape(c['name'])}</b> vừa về <b>{left}</b> acc — "
-                            f"giá {vnd(c['price'])}/acc.\n"
-                            f"👉 Vào /shop mua ngay kẻo hết!",
-                            parse_mode="HTML")
-                    except Exception:
-                        pass
+            try:
+                await _fulfill_restock_subs(cat_id, msg.bot, dict(c))
+            except Exception as e:
+                log.warning("fulfill restock subs: %s", e)
             # 4.9 Giao hàng cho người đã đặt cọc (FIFO)
             try:
                 await _fulfill_deposits(cat_id, msg.bot, dict(c))
             except Exception as e:
                 log.warning("fulfill deposits: %s", e)
     asyncio.create_task(_scan(int(now()) - 600))
+
+@router.message(AccShopState.waiting_for_stock_file, F.document)
+async def on_stock_file(msg: Message, state: FSMContext):
+    if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    await state.clear()
+    cat_id = data.get("acc_cat_id")
+    ncc_id = int(data.get("acc_ncc_id") or 0)
+    cost = int(data.get("acc_cost") or 0)
+    c = db.acc_category_get(cat_id)
+    if not c:
+        await msg.answer("❌ Loại acc không tồn tại.")
+        return
+    doc = msg.document
+    file_name = (doc.file_name or "").lower()
+    if not (file_name.endswith(".txt") or file_name.endswith(".xlsx")):
+        await msg.answer("❌ Chỉ nhận file .txt hoặc .xlsx.")
+        return
+    wait = await msg.answer("⏳ Đang nhập kho...")
+    try:
+        file_info = await msg.bot.get_file(doc.file_id)
+        raw = await msg.bot.download_file(file_info.file_path)
+    except Exception as e:
+        await wait.edit_text(f"❌ Không đọc được file: {e}")
+        return
+    rows = []
+    if file_name.endswith(".xlsx"):
+        # .xlsx: 8 cột đầu = uid/link|mk|ngày tạo|mail thay|ghi chú|2fa|cookie|token
+        from openpyxl import load_workbook
+        import io as _io
+        try:
+            wb = load_workbook(_io.BytesIO(raw.getvalue()), read_only=True, data_only=True)
+            ws = wb.active
+        except Exception as e:
+            await wait.edit_text(f"❌ Không đọc được file Excel: {e}")
+            return
+        first_row = True
+        for vals in ws.iter_rows(values_only=True):
+            cells = [(str(c).strip() if c is not None else "") for c in vals[:8]]
+            while len(cells) < 8:
+                cells.append("")
+            if not any(cells):
+                continue
+            c0 = cells[0].lower()
+            if first_row:
+                first_row = False
+                # Bỏ dòng tiêu đề (UID, Link, Url, STT...)
+                if not (c0.isdigit() or "http" in c0 or "facebook.com" in c0 or "fb.com" in c0):
+                    continue
+            rows.append({
+                "uid": cells[0], "password": cells[1], "created_date": cells[2],
+                "backup_mail": cells[3], "note": cells[4], "totp": cells[5],
+                "cookie": cells[6], "token": cells[7],
+            })
+    else:
+        text = raw.getvalue().decode("utf-8", errors="ignore")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            p = [x.strip() for x in line.split("|")]
+            rows.append(_smart_stock_fields(p))
+    if not rows:
+        await wait.edit_text("❌ File không có dòng acc nào hợp lệ.")
+        return
+    await _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait)
+
+
+
+@router.message(Command("setsheet"))
+async def on_setsheet(msg: Message):
+    """Cài đặt Google Sheet dùng để nhập kho: /setsheet <link|id> [tab]"""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) == 1:
+        cur = db.get_setting("sheet_import_id") or ""
+        tab = db.get_setting("sheet_import_tab") or "NhapKho"
+        if cur:
+            await msg.answer(
+                f"📊 <b>Sheet nhập kho hiện tại:</b>\n"
+                f"🔗 <code>{html.escape(cur)}</code>\n"
+                f"📑 Tab: <b>{html.escape(tab)}</b>\n\n"
+                f"Đổi: <code>/setsheet &lt;link_sheet&gt; [tab]</code>",
+                parse_mode="HTML")
+        else:
+            await msg.answer("📊 Chưa cài đặt sheet nhập kho.\n"
+                             "Dùng: <code>/setsheet &lt;link_google_sheet&gt; [tab]</code>")
+        return
+    raw = parts[1]
+    m = re.search(r"/spreadsheets/d/([A-Za-z0-9-_]+)", raw)
+    sid = m.group(1) if m else raw.strip()
+    tab = parts[2].strip() if len(parts) > 2 else (db.get_setting("sheet_import_tab") or "NhapKho")
+    db.set_setting("sheet_import_id", sid)
+    db.set_setting("sheet_import_tab", tab)
+    await msg.answer(
+        f"✅ <b>Đã cài đặt sheet nhập kho</b>\n📑 Tab: <b>{html.escape(tab)}</b>\n\n"
+        f"Nhập kho: <code>/nhapkhosheet &lt;id_loại&gt; [ncc_id] [giá_vốn]</code>",
+        parse_mode="HTML")
+
+
+@router.message(Command("nhapkhosheet"))
+async def on_nhapkhosheet(msg: Message):
+    """Nhập kho từ Google Sheet: quét dòng chưa đánh dấu -> giải link -> nhập kho."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/nhapkhosheet &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> (xem id: /kho)",
+                         parse_mode="HTML")
+        return
+    try:
+        cat_id = int(parts[1])
+        ncc_id = int(parts[2]) if len(parts) > 2 else 0
+        cost = int(parts[3].replace(".", "").replace(",", "")) if len(parts) > 3 else 0
+    except Exception:
+        await msg.answer("❌ ID loại/NCC/giá vốn phải là số.")
+        return
+    await _run_sheet_import(msg, cat_id, ncc_id, cost)
 
 
 @router.message(Command("kho"))
@@ -6577,6 +7362,34 @@ async def on_gia(msg: Message):
                          parse_mode="HTML")
     else:
         await msg.answer("❌ Không tìm thấy loại này.")
+
+
+@router.message(Command("setmailapp"))
+async def on_setmailapp(msg: Message):
+    """Admin: đặt link tải app mail ảo hiện cho khách sau khi mua acc.
+    /setmailapp <link> — đặt link mới | /setmailapp xoa — tắt | không tham số — xem link hiện tại."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(None, 1)
+    if len(parts) < 2:
+        cur = _mail_app_link()
+        await msg.answer(
+            "📧 <b>Link app mail hiện tại:</b>\n"
+            f"{html.escape(cur) if cur else '<i>chưa đặt (khách sẽ không thấy dòng tải app)</i>'}\n\n"
+            "Đổi link mới: <code>/setmailapp &lt;link&gt;</code>\n"
+            "Tắt hẳn: <code>/setmailapp xoa</code>",
+            parse_mode="HTML")
+        return
+    arg = parts[1].strip()
+    if arg.lower() in ("xoa", "xóa", "off", "none"):
+        db.set_setting("mail_app_link", "")
+        await msg.answer("✅ Đã tắt link app mail — khách sẽ không thấy dòng tải app nữa.")
+        return
+    if not arg.lower().startswith(("http://", "https://")):
+        await msg.answer("❌ Link phải bắt đầu bằng http:// hoặc https://")
+        return
+    db.set_setting("mail_app_link", arg)
+    await msg.answer(f"✅ Đã đặt link app mail mới:\n{html.escape(arg)}", parse_mode="HTML")
 
 
 @router.message(Command("anhbia"))
@@ -6747,6 +7560,25 @@ async def on_hienloai(msg: Message):
                          parse_mode="HTML")
     else:
         await msg.answer("❌ Không tìm thấy loại này.")
+
+
+@router.message(Command("recheck"))
+async def on_recheck(msg: Message):
+    """Admin: chạy re-check LIVE toàn bộ kho ngay (không đợi lịch 3 ngày).
+    Acc DIE → cách ly + báo cáo. Đổi chu kỳ: /setrecheck <số_ngày>."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) > 1 and parts[1].isdigit():
+        days = max(1, min(30, int(parts[1])))
+        db.set_setting("stock_recheck_days", str(days))
+        await msg.answer(f"✅ Đã đặt re-check kho mỗi <b>{days} ngày</b> (3h sáng).", parse_mode="HTML")
+        return
+    n = db.get_conn().execute(
+        "SELECT COUNT(*) n FROM acc_stock WHERE status='AVAILABLE'").fetchone()["n"]
+    await msg.answer(f"🔄 Bắt đầu re-check <b>{n}</b> acc trong kho... Xong mik báo kết quả.",
+                     parse_mode="HTML")
+    asyncio.create_task(poller._run_stock_recheck(manual=True))
 
 
 @router.message(Command("xoadie"))
@@ -7036,6 +7868,128 @@ async def on_shop_faq_auto(msg: Message):
 # 4.3 giá khan hiếm, 4.6 upsell, 4.8 hộp mù, 4.9 đặt cọc, 4.10 giờ vàng,
 # 4.11 đánh giá, 5.2/5.15 NCC + chấm điểm, 5.14 lãi theo lô, 5.4 nhập kho NCC.
 
+async def _fulfill_restock_subs(cat_id: int, bot, cat: dict):
+    """Hàng về -> xử lý đăng ký báo hàng theo FIFO:
+    - auto_buy=1: tự trừ ví shop, check LIVE rồi giao acc ngay.
+    - auto_buy=0: chỉ nhắn báo hàng về.
+    Sub nào ví không đủ tiền / chưa giao được thì GIỮ LẠI để thử đợt sau."""
+    subs = db.acc_restock_subscribers(cat_id)
+    if not subs:
+        return
+    up = db.shop_unit_price(cat)
+    unit = up["price"]
+    p5, p10, p20 = _shop_bulk_pcts()
+    done_auto = 0
+    for s in subs:
+        tg_id = int(s["tg_id"])
+        qty = max(1, int(s.get("qty") or 1))
+        auto = int(s.get("auto_buy") or 0)
+        if not auto:
+            try:
+                await bot.send_message(
+                    tg_id,
+                    f"🔔 <b>CÓ HÀNG RỒI!</b>\n\n"
+                    f"📦 <b>{html.escape(cat['name'])}</b> vừa về "
+                    f"<b>{db.acc_stock_count(cat_id)}</b> acc — "
+                    f"giá {vnd(unit)}/acc.\n"
+                    f"👉 Vào /shop mua ngay kẻo hết!",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            db.acc_unsub_restock(tg_id, cat_id)
+            continue
+        # Tự mua: giá như shop (giảm mua nhiều theo số lượng thực mua)
+        stock = db.acc_stock_count(cat_id)
+        buy_qty = min(qty, stock)
+        if buy_qty <= 0:
+            try:
+                await bot.send_message(
+                    tg_id,
+                    f"😔 <b>Hàng bạn đặt trước:</b> <b>{html.escape(cat['name'])}</b> "
+                    f"vừa về nhưng đã hết trước khi bot kịp giao. "
+                    f"Bot giữ đơn đặt trước cho đợt hàng sau nhé!",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            continue  # giữ sub cho đợt sau
+        bulk_pct = p20 if buy_qty >= 20 else (p10 if buy_qty >= 10 else (p5 if buy_qty >= 5 else 0))
+        final = unit * buy_qty * (100 - bulk_pct) // 100
+        u = db.get_user(tg_id)
+        bal = int(u["shop_balance"] or 0) if u else 0
+        if bal < final:
+            try:
+                await bot.send_message(
+                    tg_id,
+                    f"🔔 <b>HÀNG BẠN ĐẶT TRƯỚC ĐÃ VỀ!</b>\n\n"
+                    f"📦 <b>{html.escape(cat['name'])}</b> — {buy_qty} acc = "
+                    f"<b>{vnd(final)}</b> (ví shop bạn: {vnd(bal)}).\n"
+                    f"👉 Nạp thêm bằng /napshop để bot tự giao acc ngay nhé! "
+                    f"Bot giữ đơn đặt trước cho bạn.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            continue  # giữ sub cho đợt sau
+        if not db.adjust_shop_balance(tg_id, -final, f"dat_truoc:{cat_id}x{buy_qty}"):
+            continue
+        sold_orders, _sell_fail = await _sell_live_stock(
+            bot, tg_id, final, buy_qty,
+            lambda seen: db.acc_stock_pick_candidates(cat_id, buy_qty + 4, seen))
+        if not sold_orders:
+            db.add_shop_balance_only(tg_id, final, "hoan_tien_dat_truoc")
+            try:
+                await bot.send_message(
+                    tg_id,
+                    "😔 <b>Hàng bạn đặt trước:</b> shop vừa kiểm tra lại, hiện chưa có "
+                    "acc <b>LIVE</b> để giao. Tiền đã được hoàn vào ví shop — "
+                    "có hàng live bot sẽ giao ngay cho bạn!",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            continue  # giữ sub cho đợt sau
+        db.acc_unsub_restock(tg_id, cat_id)
+        done_auto += 1
+        for order in sold_orders:
+            order_id = order["id"]
+            try:
+                await bot.send_message(
+                    tg_id,
+                    f"⚡ <b>ĐẶT TRƯỚC THÀNH CÔNG — ĐÃ GIAO ACC</b>\n\n"
+                    f"📦 Loại: <b>{html.escape(cat['name'])}</b>\n"
+                    f"🧾 Đơn hàng: <b>#{order_id}</b> | 💰 {vnd(order['price'])}\n"
+                    f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
+                    f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
+                    f"{_pickup_suffix()}",
+                    parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
+            except Exception:
+                pass
+        try:
+            tickets = db.spin_add_tickets(tg_id, buy_qty)
+            per = int(db.get_setting("loyalty_per_vnd", "100000") or 100000)
+            pts = final // per if per > 0 else 0
+            if pts > 0:
+                db.loyalty_add(tg_id, pts, f"dat_truoc:{cat_id}")
+            await bot.send_message(
+                tg_id,
+                f"🎁 Đặt trước {buy_qty} acc: nhận <b>{buy_qty} vé quay</b> /quay"
+                + (f" + <b>{pts} điểm</b> loyalty" if pts > 0 else "")
+                + f" (đang có {tickets} vé).",
+                parse_mode="HTML")
+        except Exception:
+            pass
+        try:
+            await _notify_purchase_admin(bot, _buyer_shim(tg_id), sold_orders)
+        except Exception:
+            pass
+    if done_auto:
+        try:
+            await _notify_admin_smart(
+                bot,
+                f"⚡ <b>Tự giao hàng đặt trước:</b> {html.escape(cat['name'])} — "
+                f"đã giao <b>{done_auto}</b> đơn đặt trước.")
+        except Exception:
+            pass
+
+
 async def _fulfill_deposits(cat_id: int, bot, cat: dict):
     """4.9 Hàng về -> giao acc cho người đặt cọc theo FIFO, trừ nốt tiền."""
     deps = db.acc_deposit_waiting(cat_id)
@@ -7095,7 +8049,7 @@ async def _fulfill_deposits(cat_id: int, bot, cat: dict):
                 f"💰 Đã cọc: {vnd(d['amount'])} + trừ thêm {vnd(rest)}\n"
                 f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
                 f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
-                f"👇 <b>Chọn cách nhận acc:</b>",
+                f"{_pickup_suffix()}",
                 parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
         except Exception:
             pass
@@ -7283,7 +8237,7 @@ async def on_mystery_buy(cb: CallbackQuery):
         f"🍀 Bạn trúng acc loại: <b>{html.escape(cat_name)}</b>\n"
         f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
         f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
-        f"👇 <b>Chọn cách nhận acc:</b>",
+        f"{_pickup_suffix()}",
         parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     await _notify_purchase_admin(cb.bot, cb.from_user, [order])
 

@@ -60,4 +60,5 @@ DEFAULT_SETTINGS = {
     "admin_tg_group_id": "",
     "zalo_bot_token": os.environ.get("ZALO_BOT_TOKEN", ""),
     "web_domain": os.environ.get("WEB_DOMAIN", ""),
+    "birthday_gift_amount": "50000",
 }
