@@ -37,6 +37,8 @@ class FBNoteState(StatesGroup):
 
 from . import db
 from . import notify_bot as _notify_bot
+from . import config as _config
+from .persist import SQLiteStorage, check_cache_get, check_cache_set, init_cache_db
 from .util import now, parse_check_args, vnd, vn_time_str
 DAY = 86400
 from .tiktok import parse_username, fetch_tiktok_info, fmt_num, build_info_caption
@@ -2288,7 +2290,8 @@ class BotManager:
             await self.bot.delete_webhook(drop_pending_updates=True)
         except Exception:
             pass
-        self.dp = Dispatcher()
+        init_cache_db(_config.DB_PATH)
+        self.dp = Dispatcher(storage=SQLiteStorage(_config.DB_PATH))
         self.dp.include_router(router)
         await self.bot.set_my_commands(COMMANDS)
         poller.set_bot(self.bot)
@@ -2866,13 +2869,7 @@ async def on_camp_bounty(cb: CallbackQuery):
 
 # ─── BẢNG HẰNG SỐ & STATE NÂNG CAO ───────────────────────────────────────────
 
-_file_check_cache = {}
-_cookie_check_cache = {}
-
-
-def _cache_key(chat_id: int, user_id: int):
-    """Key cache theo (chat, user) để tránh lộ dữ liệu chéo user trong group."""
-    return (chat_id, user_id)
+# Cache ket qua check file/cookie: xem app/persist.py (luu RAM + DB, song sot qua restart)
 
 class CookieCheckState(StatesGroup):
     waiting_for_file = State()
@@ -3026,14 +3023,14 @@ async def _process_file_check(msg: Message, state: FSMContext):
 
         live_list, die_list, error_list = await check_uids_batch(uids, concurrency=15, user_id=msg.from_user.id)
 
-        _file_check_cache[_cache_key(msg.chat.id, msg.from_user.id)] = {
+        check_cache_set("file", msg.chat.id, msg.from_user.id, {
             "file_name": file_name,
             "uids": uids,
             "live": live_list,
             "die": die_list,
             "error": error_list,
             "time": time.time()
-        }
+        })
 
         text = (
             f"📊 <b>KẾT QUẢ CHECK FILE UID FACEBOOK</b>\n"
@@ -3148,7 +3145,7 @@ async def _process_xlsx_check(msg: Message, wait: Message, file_name: str, conte
         log.error(f"build_xlsx_result failed: {e}")
         out_bytes = None
 
-    _file_check_cache[_cache_key(msg.chat.id, msg.from_user.id)] = {
+    check_cache_set("file", msg.chat.id, msg.from_user.id, {
         "file_name": file_name,
         "uids": uids,
         "live": live_list,
@@ -3156,7 +3153,7 @@ async def _process_xlsx_check(msg: Message, wait: Message, file_name: str, conte
         "error": error_list,
         "xlsx_out": out_bytes,
         "time": time.time()
-    }
+    })
 
     text = (
         f"📊 <b>KẾT QUẢ CHECK FILE EXCEL</b>\n"
@@ -3206,7 +3203,7 @@ async def _process_xlsx_check(msg: Message, wait: Message, file_name: str, conte
 async def on_fc_export_uidxlsx(cb: CallbackQuery):
     """Gửi file Excel kết quả với cấu trúc cột cố định:
     uid | mk | tình trạng | gmail | mail thay | 2fa | Ghi chú | Cookie | Token."""
-    cache = _file_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("file", cb.message.chat.id, cb.from_user.id)
     if not cache or not cache.get("xlsx_out"):
         await cb.answer("❌ Đã hết phiên lưu trữ, vui lòng gửi lại file!", show_alert=True)
         return
@@ -3220,7 +3217,7 @@ async def on_fc_export_uidxlsx(cb: CallbackQuery):
 
 @router.callback_query(F.data == "fc_addlist")
 async def on_fc_addlist(cb: CallbackQuery):
-    cache = _file_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("file", cb.message.chat.id, cb.from_user.id)
     if not cache:
         await cb.answer("❌ Đã hết phiên lưu trữ, vui lòng gửi lại file!", show_alert=True)
         return
@@ -3242,7 +3239,7 @@ async def on_fc_addlist(cb: CallbackQuery):
 
 @router.callback_query(F.data == "fc_tracklive")
 async def on_fc_tracklive(cb: CallbackQuery):
-    cache = _file_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("file", cb.message.chat.id, cb.from_user.id)
     if not cache:
         await cb.answer("❌ Đã hết phiên lưu trữ, vui lòng gửi lại file!", show_alert=True)
         return
@@ -3299,7 +3296,7 @@ def _build_excel_bytes(sheets: dict) -> bytes:
 
 @router.callback_query(F.data == "fc_exportxlsx")
 async def on_fc_exportxlsx(cb: CallbackQuery):
-    cache = _file_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("file", cb.message.chat.id, cb.from_user.id)
     if not cache:
         await cb.answer("❌ Đã hết phiên lưu trữ!", show_alert=True)
         return
@@ -3324,7 +3321,7 @@ async def on_fc_exportxlsx(cb: CallbackQuery):
 
 @router.callback_query(F.data == "fc_exportcsv")
 async def on_fc_exportcsv(cb: CallbackQuery):
-    cache = _file_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("file", cb.message.chat.id, cb.from_user.id)
     if not cache:
         await cb.answer("❌ Đã hết phiên lưu trữ!", show_alert=True)
         return
@@ -3473,7 +3470,7 @@ async def _process_cookie_text(msg: Message, raw_text: str, wait_msg=None, file_
     tasks = [_check_line(line) for line in lines[:500]]
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    _cookie_check_cache[_cache_key(msg.chat.id, msg.from_user.id)] = {
+    check_cache_set("cookie", msg.chat.id, msg.from_user.id, {
         "file_name": file_name,
         "live": live_items,
         "checkpoint_282": cp282_items,
@@ -3481,7 +3478,7 @@ async def _process_cookie_text(msg: Message, raw_text: str, wait_msg=None, file_
         "checkpoint": checkpoint_items,
         "die": die_items,
         "total": len(lines)
-    }
+    })
 
     text = (
         f"🍪 <b>KẾT QUẢ CHECK COOKIE FACEBOOK</b>\n"
@@ -3516,7 +3513,7 @@ async def _process_cookie_text(msg: Message, raw_text: str, wait_msg=None, file_
 
 @router.callback_query(F.data == "ck_export_live")
 async def on_ck_export_live(cb: CallbackQuery):
-    cache = _cookie_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("cookie", cb.message.chat.id, cb.from_user.id)
     if not cache or not cache["live"]:
         await cb.answer("❌ Không có nick LIVE nào!", show_alert=True)
         return
@@ -3530,7 +3527,7 @@ async def on_ck_export_live(cb: CallbackQuery):
 
 @router.callback_query(F.data == "fc_export_die_ck")
 async def on_fc_export_die_ck(cb: CallbackQuery):
-    cache = _cookie_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("cookie", cb.message.chat.id, cb.from_user.id)
     if not cache or not cache["die"]:
         await cb.answer("❌ Không có nick DIE nào!", show_alert=True)
         return
@@ -4048,7 +4045,7 @@ async def on_code(msg: Message, command: CommandObject):
 
 @router.callback_query(F.data == "ck_export_282")
 async def on_ck_export_282(cb: CallbackQuery):
-    cache = _cookie_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("cookie", cb.message.chat.id, cb.from_user.id)
     if not cache or not cache.get("checkpoint_282"):
         await cb.answer("❌ Không có nick Checkpoint 282 nào!", show_alert=True)
         return
@@ -4061,7 +4058,7 @@ async def on_ck_export_282(cb: CallbackQuery):
 
 @router.callback_query(F.data == "ck_export_956")
 async def on_ck_export_956(cb: CallbackQuery):
-    cache = _cookie_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("cookie", cb.message.chat.id, cb.from_user.id)
     if not cache or not cache.get("checkpoint_956"):
         await cb.answer("❌ Không có nick Checkpoint 956 nào!", show_alert=True)
         return
@@ -4508,7 +4505,7 @@ async def on_khoakey(msg: Message):
 
 @router.callback_query(F.data == "ck_export_xlsx")
 async def on_ck_export_xlsx(cb: CallbackQuery):
-    cache = _cookie_check_cache.get(_cache_key(cb.message.chat.id, cb.from_user.id))
+    cache = check_cache_get("cookie", cb.message.chat.id, cb.from_user.id)
     if not cache:
         await cb.answer("❌ Đã hết phiên lưu trữ!", show_alert=True)
         return

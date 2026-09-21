@@ -2070,6 +2070,26 @@ def migrate_new_features():
         "ALTER TABLE acc_stock ADD COLUMN stale_warned INTEGER DEFAULT 0",
         "ALTER TABLE acc_orders ADD COLUMN followup_sent INTEGER DEFAULT 0",
         "ALTER TABLE acc_orders ADD COLUMN delivered_at BIGINT DEFAULT 0",
+        # Luu tru ben vung cho FSM aiogram + cache ket qua check file/cookie
+        # (song sot qua restart backend; xem app/persist.py)
+        """CREATE TABLE IF NOT EXISTS fsm_storage (
+            bot_id     BIGINT NOT NULL,
+            chat_id    BIGINT NOT NULL,
+            user_id    BIGINT NOT NULL,
+            state      TEXT,
+            data       TEXT,
+            updated_at BIGINT NOT NULL,
+            PRIMARY KEY (bot_id, chat_id, user_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS check_cache (
+            chat_id    BIGINT NOT NULL,
+            user_id    BIGINT NOT NULL,
+            kind       TEXT NOT NULL,
+            payload    TEXT NOT NULL,
+            blob1      BLOB,
+            updated_at BIGINT NOT NULL,
+            PRIMARY KEY (chat_id, user_id, kind)
+        )""",
     ]:
         try:
             c.execute(sql)
