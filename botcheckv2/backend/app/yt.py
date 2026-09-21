@@ -5,13 +5,17 @@ import os
 
 from . import db
 
+YT_TIMEOUT = 30
+
 def get_yt_api():
     from googleapiclient.discovery import build
+    import httplib2
     api_key = db.get_setting("yt_api_key", "")
     
     if not api_key:
         raise Exception("Chưa cấu hình YouTube API Key")
-    return build('youtube', 'v3', developerKey=api_key)
+    return build('youtube', 'v3', developerKey=api_key,
+                 http=httplib2.Http(timeout=YT_TIMEOUT))
 
 def parse_yt_username(link: str) -> str:
     link = (link or "").strip()
@@ -44,16 +48,16 @@ async def fetch_yt_info(username: str) -> dict:
         else:
             request = youtube.channels().list(part='snippet,statistics', forHandle=username)
             
-        response = await asyncio.to_thread(request.execute)
+        response = await asyncio.wait_for(asyncio.to_thread(request.execute), timeout=YT_TIMEOUT)
         
         if not response.get('items'):
             # Fallback if forHandle doesn't work, search by query
             search_request = youtube.search().list(part='snippet', q=username, type='channel', maxResults=1)
-            search_response = await asyncio.to_thread(search_request.execute)
+            search_response = await asyncio.wait_for(asyncio.to_thread(search_request.execute), timeout=YT_TIMEOUT)
             if search_response.get('items'):
                 channel_id = search_response['items'][0]['id']['channelId']
                 request = youtube.channels().list(part='snippet,statistics', id=channel_id)
-                response = await asyncio.to_thread(request.execute)
+                response = await asyncio.wait_for(asyncio.to_thread(request.execute), timeout=YT_TIMEOUT)
                 
         if response.get('items'):
             item = response['items'][0]
@@ -100,7 +104,7 @@ async def fetch_yt_video_info(url: str) -> dict:
     try:
         from googleapiclient.errors import HttpError
         request = youtube.videos().list(part='snippet,statistics', id=video_id)
-        response = await asyncio.to_thread(request.execute)
+        response = await asyncio.wait_for(asyncio.to_thread(request.execute), timeout=YT_TIMEOUT)
         
         if response.get('items'):
             item = response['items'][0]

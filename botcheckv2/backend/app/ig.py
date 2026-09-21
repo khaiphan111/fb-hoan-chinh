@@ -160,7 +160,7 @@ def _attempt_ig_login(L):
     except Exception as e:
         raise ValueError(f"Lỗi tự động đăng nhập Instagram: {e}")
 
-async def _fetch_ig_instaloader(username: str) -> dict:
+def _fetch_ig_instaloader_sync(username: str) -> dict:
     try: import instaloader
     except ImportError: raise ValueError("Thư viện instaloader chưa được cài đặt.")
     L = _get_instaloader_instance()
@@ -189,7 +189,7 @@ async def _fetch_ig_instaloader(username: str) -> dict:
         "posts": profile.mediacount,
     }
 
-async def _fetch_ig_post_instaloader(shortcode: str) -> dict:
+def _fetch_ig_post_instaloader_sync(shortcode: str) -> dict:
     try: import instaloader
     except ImportError: raise ValueError("Thư viện instaloader chưa được cài đặt.")
     L = _get_instaloader_instance()
@@ -215,6 +215,18 @@ async def _fetch_ig_post_instaloader(shortcode: str) -> dict:
         "comments": post.comments,
         "views": post.video_view_count if post.is_video else 0,
     }
+
+async def _fetch_ig_instaloader(username: str) -> dict:
+    """Wrapper async: chạy instaloader (blocking) trong thread riêng để không đơ event loop."""
+    import asyncio
+    return await asyncio.to_thread(_fetch_ig_instaloader_sync, username)
+
+
+async def _fetch_ig_post_instaloader(shortcode: str) -> dict:
+    """Wrapper async: chạy instaloader (blocking) trong thread riêng để không đơ event loop."""
+    import asyncio
+    return await asyncio.to_thread(_fetch_ig_post_instaloader_sync, shortcode)
+
 
 # ─── PUBLIC METHOD (FALLBACK) ────────────────────────────────
 async def _fetch_ig_public(username: str) -> dict:

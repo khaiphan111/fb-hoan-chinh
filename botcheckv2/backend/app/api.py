@@ -74,6 +74,12 @@ class SettingsIn(BaseModel):
     zalo_cookie: str | None = None
     zalo_imei: str | None = None
     web_domain: str | None = None
+    ref_f1_pct: str | None = None
+    ref_f1_silver_min: str | None = None
+    ref_f1_silver_pct: str | None = None
+    ref_f1_gold_min: str | None = None
+    ref_f1_gold_pct: str | None = None
+    ref_f2_pct: str | None = None
 
 
 class TokenIn(BaseModel):

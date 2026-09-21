@@ -1,7 +1,7 @@
 # FB Live/Die Checker & Tiktok Checker
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,22 +9,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config, db, util
 from .api import router as api_router
 from .campaigns_api import router as campaigns_router
+from .reseller_api import router as reseller_router
 from .bot import manager, zalo_manager
 from .admin_bot import manager as admin_manager
+from .notify_bot import manager as notify_manager
 from .poller import poller
 from .keep_alive import start_keep_alive, stop_keep_alive
 
 app = FastAPI(title=config.APP_NAME)
 
+# CORS: dashboard chạy cùng origin nên không cần mở. Chỉ mở cho các domain
+# reseller/API bên ngoài khai báo qua biến môi trường CORS_ORIGINS (cách nhau bằng dấu phẩy).
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 app.include_router(api_router)
 app.include_router(campaigns_router, prefix="/api")
+app.include_router(reseller_router)
+
+from .miniapp import router as miniapp_router
+app.include_router(miniapp_router)
 
 
 import asyncio
@@ -42,9 +51,13 @@ async def on_startup():
         token = db.get_setting("bot_token")
         zalo_token = db.get_setting("zalo_bot_token")
         setup_done = db.get_setting("setup_done")
+        # Token co san (VD: tu env BOT_TOKEN) -> coi nhu da setup de bot tu chay
+        if token and setup_done != "1":
+            db.set_setting("setup_done", "1")
+            setup_done = "1"
         
         started_any = False
-        print(f"DEBUG: bot_token={'SET('+token[:12]+')' if token else 'EMPTY'}, zalo_token={bool(zalo_token)}, setup_done={setup_done!r}", flush=True)
+        print(f"DEBUG: bot_token={'set' if token else 'empty'}, setup_done={setup_done!r}", flush=True)
         
         if token and setup_done == "1":
             print("DEBUG: Calling manager.start(token)...", flush=True)
@@ -77,10 +90,15 @@ async def on_startup():
                 
         print("DEBUG: Start admin_manager.start()", flush=True)
         await admin_manager.start()
+        print("DEBUG: Start notify_manager.start()", flush=True)
+        await notify_manager.start()
                 
         if started_any:
             print("DEBUG: Start poller.start()", flush=True)
             poller.start()
+        print("DEBUG: Start payos.start()", flush=True)
+        from . import payos as payos_mod
+        payos_mod.start()
         print(f"DEBUG: Finish start_services. tg_running={manager.running}", flush=True)
 
     # Khởi chạy dưới nền để Uvicorn có thể mở port ngay lập tức
@@ -94,15 +112,34 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     await poller.stop()
+    try:
+        from . import payos as payos_mod
+        await payos_mod.stop()
+    except Exception:
+        pass
     await manager.stop()
     await zalo_manager.stop()
     await admin_manager.stop()
+    await notify_manager.stop()
     await stop_keep_alive()
 
 
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": config.APP_NAME, "version": config.APP_VERSION}
+
+
+@app.post("/payos/webhook")
+async def payos_webhook(request: Request):
+    """Webhook PayOS (dùng khi backend có public HTTPS).
+    Verify chữ ký HMAC rồi mới cộng tiền."""
+    from . import payos as payos_mod
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"ok": False, "message": "Body không phải JSON"}
+    ok, message = await payos_mod.handle_webhook(payload)
+    return {"ok": ok, "message": message}
 
 
 if os.path.isdir(config.STATIC_DIR):

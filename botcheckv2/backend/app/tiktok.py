@@ -130,6 +130,11 @@ async def _call_user_detail_api(username: str) -> Optional[dict]:
 
 async def _get_html(url: str) -> str:
     from . import db
+    from .safeurl import is_safe_url, TIKTOK_HOSTS
+
+    # Chống SSRF: chỉ fetch URL thuộc tiktok.com, chặn IP nội bộ
+    if not await is_safe_url(url, TIKTOK_HOSTS):
+        raise ValueError("URL không thuộc TikTok hoặc không an toàn")
     proxy = db.get_random_proxy()
     ua = _random.choice(USER_AGENTS)
     headers = {**HEADERS, "User-Agent": ua}

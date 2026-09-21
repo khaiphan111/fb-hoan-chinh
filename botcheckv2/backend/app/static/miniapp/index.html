@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Check UID Pro</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--tg-theme-bg-color, #0f0f1a);
+    color: var(--tg-theme-text-color, #fff);
+    padding: 16px;
+    min-height: 100vh;
+  }
+  .user-card {
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 16px;
+    border: 1px solid #2a2a4a;
+  }
+  .user-card .name { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+  .stats { display: flex; gap: 8px; }
+  .stat {
+    flex: 1; background: rgba(255,255,255,.06); border-radius: 10px;
+    padding: 8px; text-align: center;
+  }
+  .stat .v { font-size: 15px; font-weight: 700; color: #ffd166; }
+  .stat .l { font-size: 11px; opacity: .7; margin-top: 2px; }
+  .input-row { display: flex; gap: 8px; margin-bottom: 16px; }
+  input {
+    flex: 1; padding: 13px 14px; border-radius: 12px; font-size: 15px;
+    border: 1px solid #2a2a4a; background: #1a1a2e; color: #fff; outline: none;
+  }
+  input:focus { border-color: #4d7cfe; }
+  button.check {
+    padding: 13px 20px; border: none; border-radius: 12px; font-size: 15px; font-weight: 700;
+    background: linear-gradient(135deg, #4d7cfe, #7b2ff7); color: #fff; cursor: pointer;
+  }
+  button.check:disabled { opacity: .5; }
+  .result {
+    border-radius: 16px; padding: 16px; margin-bottom: 16px; display: none;
+    border: 1px solid #2a2a4a; background: #1a1a2e;
+  }
+  .result.show { display: block; }
+  .result.live { border-color: #2ecc71; }
+  .result.die { border-color: #e74c3c; }
+  .result .row { display: flex; align-items: center; gap: 12px; }
+  .result img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; }
+  .result .st { font-size: 20px; font-weight: 800; }
+  .result.live .st { color: #2ecc71; }
+  .result.die .st { color: #e74c3c; }
+  .result .meta { font-size: 13px; opacity: .8; margin-top: 6px; line-height: 1.6; }
+  .spinner { text-align: center; padding: 20px; display: none; }
+  .spinner.show { display: block; }
+  h3 { font-size: 14px; margin: 4px 0 10px; opacity: .85; }
+  .hist-item {
+    background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px; font-size: 13px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .hist-item .t { opacity: .6; font-size: 11px; }
+  .err { color: #e74c3c; text-align: center; padding: 12px; font-size: 14px; display: none; }
+  .err.show { display: block; }
+  .card {
+    background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 16px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .card h3 { font-size: 15px; margin: 0 0 10px; opacity: 1; }
+  .file-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  input[type=file] { flex: 1; padding: 10px 8px; font-size: 12px; min-width: 0; }
+  input[type=file]::file-selector-button {
+    background: #2a2a4a; color: #fff; border: none; border-radius: 8px;
+    padding: 8px 12px; margin-right: 8px; cursor: pointer; font-size: 13px;
+  }
+  .bulk-list { max-height: 280px; overflow-y: auto; border: 1px solid #2a2a4a; border-radius: 10px; }
+  .bulk-item {
+    display: flex; justify-content: space-between; padding: 8px 10px;
+    border-bottom: 1px solid #23233d; font-size: 13px;
+  }
+  .bulk-item:last-child { border-bottom: none; }
+  .ref-note { font-size: 12px; opacity: .7; margin-top: 8px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <div class="user-card">
+    <div class="name" id="uname">…</div>
+    <div class="stats">
+      <div class="stat"><div class="v" id="ubal">–</div><div class="l">Số dư</div></div>
+      <div class="stat"><div class="v" id="ucre">–</div><div class="l">Credits</div></div>
+      <div class="stat"><div class="v" id="uvip" style="font-size:12px">–</div><div class="l">Gói</div></div>
+    </div>
+  </div>
+
+  <div class="input-row">
+    <input id="inp" placeholder="Dán UID hoặc link Facebook…" inputmode="text">
+    <button class="check" id="btn" onclick="doCheck()">Check</button>
+  </div>
+
+  <div class="spinner" id="spin">⏳ Đang kiểm tra…</div>
+  <div class="err" id="err"></div>
+  <div class="result" id="res"></div>
+
+  <div class="card">
+    <h3>📦 Check hàng loạt bằng file</h3>
+    <div class="file-row">
+      <input type="file" id="bulkfile" accept=".txt,.csv,.xlsx">
+      <button class="check" id="bulkbtn" onclick="doBulk()">Check</button>
+    </div>
+    <div class="ref-note">File .xlsx: mọi cấu trúc cột, link Facebook tự giải thành UID rồi mới check.</div>
+    <div class="spinner" id="bulkspin">⏳ Đang kiểm tra hàng loạt, vui lòng đợi…</div>
+    <div class="err" id="bulkerr"></div>
+    <div id="bulkres"></div>
+  </div>
+
+  <h3>🕘 Lịch sử 7 ngày</h3>
+  <div id="hist"></div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>🤝 Giới thiệu kiếm hoa hồng</h3>
+    <div id="refbox" style="font-size:13px;opacity:.6">Đang tải…</div>
+  </div>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+const initData = tg.initData || "";
+
+function fmt(n){ return Number(n||0).toLocaleString("vi-VN"); }
+function fmtT(ts){ const d=new Date(ts*1000); return d.toLocaleDateString("vi-VN",{day:"2-digit",month:"2-digit"})+" "+d.toLocaleTimeString("vi-VN",{hour:"2-digit",minute:"2-digit"}); }
+
+async function loadMe(){
+  try{
+    const r = await fetch("/api/mini/me?initData="+encodeURIComponent(initData));
+    const j = await r.json();
+    document.getElementById("uname").textContent = "👋 " + (j.name || "Bạn");
+    document.getElementById("ubal").textContent = fmt(j.balance)+"đ";
+    document.getElementById("ucre").textContent = fmt(j.credits);
+    document.getElementById("uvip").textContent = j.vip || "–";
+  }catch(e){}
+}
+async function loadHist(){
+  try{
+    const r = await fetch("/api/mini/history?initData="+encodeURIComponent(initData));
+    const j = await r.json();
+    const box = document.getElementById("hist");
+    if(!j.history || !j.history.length){ box.innerHTML = '<div style="opacity:.5;font-size:13px">Chưa có lượt check nào.</div>'; return; }
+    const ic = s => s==="live" ? "🟢" : (s==="die"||s==="dead" ? "🔴" : "⚪");
+    box.innerHTML = j.history.map(h =>
+      `<div class="hist-item"><span>${ic(h.result)} <code>${h.target}</code></span><span class="t">${fmtT(h.at)}</span></div>`
+    ).join("");
+  }catch(e){}
+}
+async function doCheck(){
+  const inp = document.getElementById("inp").value.trim();
+  if(!inp) return;
+  const btn = document.getElementById("btn");
+  btn.disabled = true;
+  document.getElementById("spin").classList.add("show");
+  document.getElementById("res").classList.remove("show");
+  document.getElementById("err").classList.remove("show");
+  try{
+    const r = await fetch("/api/mini/check", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({initData, input: inp})
+    });
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "Lỗi không xác định");
+    const live = j.status === "live";
+    const box = document.getElementById("res");
+    box.className = "result show " + (live ? "live" : "die");
+    box.innerHTML = `
+      <div class="row">
+        ${j.avatar_url ? `<img src="${j.avatar_url}">` : ""}
+        <div>
+          <div class="st">${live ? "🟢 LIVE" : "🔴 DIE"}</div>
+          <div class="meta">🆔 <code>${j.uid}</code>${j.name ? `<br>👤 ${j.name}` : ""}${j.via ? `<br>🔎 ${j.via}` : ""}</div>
+        </div>
+      </div>`;
+    loadHist(); loadMe();
+  }catch(e){
+    const er = document.getElementById("err");
+    er.textContent = "❌ " + e.message;
+    er.classList.add("show");
+  }
+  btn.disabled = false;
+  document.getElementById("spin").classList.remove("show");
+}
+document.getElementById("inp").addEventListener("keydown", e => { if(e.key==="Enter") doCheck(); });
+loadMe(); loadHist(); loadRef();
+
+function escapeHtml(s){ return String(s==null?"":s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+async function loadRef(){
+  const box = document.getElementById("refbox");
+  try{
+    const r = await fetch("/api/mini/ref?initData="+encodeURIComponent(initData));
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "Lỗi");
+    const rt = j.rates || {};
+    const fp = x => { const n = parseFloat(x); return isNaN(n) ? x : (""+n); };
+    box.innerHTML = `
+      <div style="font-size:13px;opacity:.85;margin-bottom:8px">💰 Hoa hồng: F1 <b>${fp(rt.f1_pct)}%</b> • F2 <b>${fp(rt.f2_pct)}%</b></div>
+      <div class="file-row">
+        <input id="reflink" readonly value="${escapeHtml(j.link)}" onclick="this.select()">
+        <button class="check" onclick="copyRef()">Copy</button>
+      </div>
+      <div class="stats" style="margin-top:4px">
+        <div class="stat"><div class="v">${j.f1}</div><div class="l">F1</div></div>
+        <div class="stat"><div class="v">${j.f2}</div><div class="l">F2</div></div>
+        <div class="stat"><div class="v">${fmt(j.available)}đ</div><div class="l">Khả dụng</div></div>
+      </div>
+      <div class="ref-note">Tổng đã kiếm: ${fmt(j.earnings)}đ • Đã rút: ${fmt(j.withdrawn)}đ<br>Dùng lệnh /ruttien trên bot để rút về ngân hàng.</div>`;
+  }catch(e){
+    box.innerHTML = '<div style="opacity:.5">Không tải được dữ liệu giới thiệu.</div>';
+  }
+}
+function copyRef(){
+  const i = document.getElementById("reflink");
+  if(!i) return;
+  const done = () => { try{ tg.showPopup({message:"Đã copy link giới thiệu!"}); }catch(e){} };
+  const fallback = () => { i.select(); i.setSelectionRange(0, 99999); try{ document.execCommand("copy"); }catch(e){} done(); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(i.value).then(done).catch(fallback);
+  } else fallback();
+}
+
+let lastBulk = null;
+async function doBulk(){
+  const fi = document.getElementById("bulkfile");
+  if(!fi.files.length){ try{ tg.showPopup({message:"Chọn file .txt / .csv / .xlsx trước nhé"}); }catch(e){} return; }
+  const btn = document.getElementById("bulkbtn");
+  btn.disabled = true;
+  document.getElementById("bulkspin").classList.add("show");
+  document.getElementById("bulkerr").classList.remove("show");
+  document.getElementById("bulkres").innerHTML = "";
+  try{
+    const fd = new FormData();
+    fd.append("initData", initData);
+    fd.append("file", fi.files[0]);
+    const r = await fetch("/api/mini/bulk", {method:"POST", body: fd});
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.detail || "Lỗi không xác định");
+    lastBulk = j.results;
+    const ic = s => s==="live" ? "🟢" : (s==="die" ? "🔴" : "⚪");
+    const warn = j.low_credit_warn
+      ? `<div class="err show">⚠️ Credits sắp hết (còn ${fmt(j.credits_left)}). Mua thêm bằng /muacredit nhé.</div>` : "";
+    document.getElementById("bulkres").innerHTML = `
+      <div style="font-size:14px;margin-bottom:8px">📊 Tổng: <b>${j.total}</b> • 🟢 <b>${j.live}</b> • 🔴 <b>${j.die}</b>${j.error ? ` • ⚪ ${j.error}` : ""}</div>
+      ${warn}
+      <div style="font-size:12px;opacity:.7;margin-bottom:8px">Đã dùng ${fmt(j.credits_used)} credits • Còn lại ${fmt(j.credits_left)}</div>
+      <button class="check" style="width:100%;margin-bottom:8px" onclick="dlBulkCsv()">📥 Tải kết quả CSV</button>
+      <div class="bulk-list">` + j.results.map(x =>
+        `<div class="bulk-item"><span>${ic(x.status)} <code>${escapeHtml(x.uid)}</code>${x.name ? ` — ${escapeHtml(x.name)}` : ""}</span></div>`
+      ).join("") + `</div>`;
+    loadHist(); loadMe();
+  }catch(e){
+    const er = document.getElementById("bulkerr");
+    er.textContent = "❌ " + e.message;
+    er.classList.add("show");
+  }
+  btn.disabled = false;
+  document.getElementById("bulkspin").classList.remove("show");
+}
+function dlBulkCsv(){
+  if(!lastBulk || !lastBulk.length) return;
+  const rows = ["uid,status,name"].concat(lastBulk.map(x =>
+    `${x.uid},${x.status},"${String(x.name||"").replace(/"/g,'""')}"`
+  ));
+  const blob = new Blob(["\ufeff"+rows.join("\n")], {type:"text/csv;charset=utf-8"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "ketqua_check.csv";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+}
+</script>
+</body>
+</html>

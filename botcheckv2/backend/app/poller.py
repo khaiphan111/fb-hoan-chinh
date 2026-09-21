@@ -17,6 +17,35 @@ async def _handle_alerts(platform: str, target: str, condition: str, message: st
                 except:
                     pass
 
+async def _notify_admin_watch_change(uid: str, old: str, new: str, tg_id: int):
+    """Báo cho admin qua mọi kênh đang chạy khi UID được theo dõi đổi trạng thái."""
+    icon = "🔴" if new == "die" else "🟢"
+    msg = (
+        f"{icon} <b>WATCH ĐỔI TRẠNG THÁI</b>\n"
+        f"🆔 UID: <code>{uid}</code>\n"
+        f"👤 User: <code>{tg_id}</code>\n"
+        f"📊 {old} ➡️ <b>{new.upper()}</b>"
+    )
+    # 1. Admin Telegram bot
+    try:
+        from .admin_bot import manager as admin_manager
+        admin_bot = admin_manager.bot
+        admin_id = db.get_setting("admin_tg_id")
+        if admin_bot and admin_id:
+            await admin_bot.send_message(int(admin_id), msg, parse_mode="HTML")
+    except Exception as e:
+        log.warning("Admin TG notify failed: %s", e)
+    # 2. Zalo admin
+    try:
+        zalo_manager = getattr(botmod, "zalo_manager", None)
+        admin_zalo = db.get_setting("admin_zalo_chat_id") or db.get_setting("admin_zalo")
+        if zalo_manager and getattr(zalo_manager, "running", False) and admin_zalo:
+            import asyncio as _asyncio
+            _asyncio.create_task(zalo_manager.send_message(admin_zalo, msg))
+    except Exception as e:
+        log.warning("Admin Zalo notify failed: %s", e)
+
+
 log = logging.getLogger(__name__)
 
 
@@ -59,7 +88,9 @@ class FollowerPoller:
             self._proxy_task = asyncio.create_task(self._proxy_loop())
         if not hasattr(self, '_daily_summary_task') or not (self._daily_summary_task and not self._daily_summary_task.done()):
             self._daily_summary_task = asyncio.create_task(self._daily_summary_loop())
-        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign).")
+        if not hasattr(self, '_maint_task') or not (self._maint_task and not self._maint_task.done()):
+            self._maint_task = asyncio.create_task(self._maintenance_loop())
+        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign + maintenance).")
 
     async def _daily_summary_loop(self):
         while True:
@@ -141,6 +172,416 @@ class FollowerPoller:
 
             await asyncio.sleep(60) # Check every minute
 
+    async def _remind_overdue_warranty(self):
+        """5.6 Claim PENDING quá warranty_remind_hours (mặc định 12h) chưa xử lý
+        → nhắc admin 1 lần qua bot admin."""
+        import html as _html
+        try:
+            hours = int(db.get_setting("warranty_remind_hours", "12") or 12)
+        except Exception:
+            hours = 12
+        claims = db.acc_claims_overdue(hours)
+        if not claims:
+            return
+        lines = [f"⏰ <b>NHẮC: {len(claims)} BẢO HÀNH QUÁ {hours}H CHƯA XỬ LÝ</b>",
+                 "━━━━━━━━━━━━", ""]
+        for w in claims:
+            w = dict(w)
+            lines.append(
+                f"#{w['id']} — đơn <b>#{w['order_id']}</b> — {_html.escape(w['cat_name'] or '')}\n"
+                f"👤 UID <code>{_html.escape(w['uid'] or '')}</code> | "
+                f"khách <code>{w['tg_id']}</code>\n"
+                f"📅 Gửi lúc: {vn_time_str(w['created_at'])}\n"
+                f"Xử lý xong: <code>/bhdone {w['id']}</code>")
+        db.acc_claim_mark_reminded([int(w["id"]) for w in claims])
+        await self._send_admin_report("\n\n".join(lines))
+
+    async def _send_admin_report(self, text: str) -> None:
+        """Gửi báo cáo cho admin: ưu tiên admin bot, fallback bot chính."""
+        sent = False
+        try:
+            from .admin_bot import manager as admin_manager
+            admin_bot = admin_manager.bot
+            admin_id = db.get_setting("admin_tg_id")
+            if admin_bot and admin_id:
+                await admin_bot.send_message(int(admin_id), text, parse_mode="HTML")
+                sent = True
+        except Exception as e:
+            log.warning("Admin report via admin_bot failed: %s", e)
+        if not sent:
+            try:
+                bot_inst = self._bot or getattr(botmod.manager, "bot", None)
+                admin_id = db.get_setting("admin_tg_id")
+                if bot_inst and admin_id:
+                    await bot_inst.send_message(int(admin_id), text, parse_mode="HTML")
+            except Exception as e:
+                log.warning("Admin report via main bot failed: %s", e)
+
+    async def _maintenance_loop(self):
+        """Job bảo trì: 3h sáng dọn cookie pool, 8h sáng báo cáo doanh thu."""
+        while True:
+            try:
+                now_t = time.localtime()
+                today = time.strftime("%Y-%m-%d", now_t)
+                if now_t.tm_hour == 3 and db.get_setting("maint_cookie_clean") != today:
+                    try:
+                        await self._clean_cookie_pool()
+                    finally:
+                        db.set_setting("maint_cookie_clean", today)
+                if now_t.tm_hour == 8 and db.get_setting("maint_revenue_report") != today:
+                    try:
+                        await self._send_revenue_report()
+                    finally:
+                        db.set_setting("maint_revenue_report", today)
+                # 5.6 Nhắc claim bảo hành quá hạn chưa xử lý
+                try:
+                    await self._remind_overdue_warranty()
+                except Exception as e:
+                    log.warning("warranty remind: %s", e)
+                # 5.13 Hỏi thăm sau 24h mua acc
+                try:
+                    await self._followup_orders()
+                except Exception as e:
+                    log.warning("followup: %s", e)
+                # Cảm ơn + xin đánh giá sau khi mua ~90 phút
+                try:
+                    await self._nudge_reviews()
+                except Exception as e:
+                    log.warning("review nudge: %s", e)
+                # 5.10 Cảnh báo acc nằm kho lâu
+                try:
+                    await self._warn_stale_stock()
+                except Exception as e:
+                    log.warning("stale stock: %s", e)
+                # 5.5 Dọn kho định kỳ 2h sáng
+                if now_t.tm_hour == 2 and db.get_setting("maint_clean_stock") != today:
+                    try:
+                        await self._clean_old_stock()
+                    finally:
+                        db.set_setting("maint_clean_stock", today)
+                # 5.8 Backup kho sau khi dọn cookie (3h sáng)
+                if now_t.tm_hour == 3 and db.get_setting("maint_stock_backup") != today:
+                    try:
+                        await self._backup_stock()
+                    except Exception as e:
+                        log.warning("backup stock: %s", e)
+                    finally:
+                        db.set_setting("maint_stock_backup", today)
+                # 5.4 Nhập kho tự động từ NCC (6h sáng)
+                if now_t.tm_hour == 6 and db.get_setting("maint_supplier_import") != today:
+                    try:
+                        await self._auto_import_supplier()
+                    except Exception as e:
+                        log.warning("supplier import: %s", e)
+                    finally:
+                        db.set_setting("maint_supplier_import", today)
+            except Exception as e:
+                log.warning("maintenance loop: %s", e)
+            await asyncio.sleep(300)
+
+    async def _followup_orders(self):
+        """5.13 Hỏi thăm sau 24h mua acc: acc ổn không, cần BH không."""
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        import html as _html
+        orders = db.acc_orders_need_followup()
+        if not orders:
+            return
+        try:
+            import app.bot as botmod
+            bot = self._bot or getattr(botmod.manager, "bot", None)
+        except Exception:
+            bot = None
+        if not bot:
+            return
+        for o in orders:
+            o = dict(o)
+            try:
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="👍 Acc ổn, cảm ơn!",
+                                          callback_data=f"accok:{o['id']}")],
+                    [InlineKeyboardButton(text="🛡 Acc có vấn đề — bảo hành",
+                                          callback_data=f"accwarranty:{o['id']}")],
+                ])
+                await bot.send_message(
+                    int(o["tg_id"]),
+                    f"💬 <b>Chào bạn!</b>\n\n"
+                    f"Acc <b>{_html.escape(o['cat_name'] or '')}</b> (đơn #{o['id']}) "
+                    f"bạn mua hôm qua dùng ổn không?\n\n"
+                    f"Nếu acc lỗi trong thời gian bảo hành, bấm nút bên dưới để được xử lý ngay nhé!",
+                    parse_mode="HTML", reply_markup=kb)
+                db.acc_order_mark_followup(o["id"])
+            except Exception:
+                continue
+
+    async def _nudge_reviews(self):
+        """Cảm ơn + xin đánh giá sau review_nudge_minutes (mặc định 90 phút) mua acc."""
+        try:
+            minutes = int(db.get_setting("review_nudge_minutes", "90") or 90)
+        except Exception:
+            minutes = 90
+        orders = db.acc_orders_need_review_nudge(minutes)
+        if not orders:
+            return
+        try:
+            import app.bot as botmod
+            bot = self._bot or getattr(botmod.manager, "bot", None)
+        except Exception:
+            bot = None
+        if not bot:
+            return
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        import html as _html
+        for o in orders:
+            o = dict(o)
+            try:
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⭐ Đánh giá ngay",
+                                          callback_data=f"accreview:{o['id']}")],
+                ])
+                await bot.send_message(
+                    int(o["tg_id"]),
+                    f"🙏 <b>Cảm ơn bạn đã mua acc!</b>\n\n"
+                    f"Acc <b>{_html.escape(o['cat_name'] or '')}</b> (đơn #{o['id']}) "
+                    f"dùng có ổn không bạn?\n"
+                    f"Cho shop xin 1 đánh giá nhé — đánh giá xong được tặng credits ngay!",
+                    parse_mode="HTML", reply_markup=kb)
+                db.acc_order_mark_review_nudged(o["id"])
+            except Exception:
+                continue
+
+    async def _warn_stale_stock(self):
+        """5.10 Cảnh báo acc nằm kho lâu chưa bán (mặc định 30 ngày)."""
+        try:
+            days = int(db.get_setting("stale_days", "30") or 30)
+        except Exception:
+            days = 30
+        rows = db.acc_stale_stock(days, 20)
+        if not rows:
+            return
+        import html as _html
+        lines = [f"⏳ <b>ACC NẰM KHO LÂU (>{days} ngày chưa bán)</b>",
+                 "━━━━━━━━━━━━━━━", ""]
+        ids = []
+        for r in rows:
+            r = dict(r)
+            ids.append(r["id"])
+            d = time.strftime("%d/%m/%Y", time.localtime(r["added_at"] or 0))
+            lines.append(
+                f"• <code>{_html.escape(r['uid'] or '')}</code> — "
+                f"{_html.escape(r['cat_name'] or '')} (nhập {d})")
+        lines += ["", f"<i>Gợi ý: giảm giá xả kho bằng /gia, "
+                     f"hoặc đưa vào hộp mù (/hopmu).</i>"]
+        db.acc_mark_stale_warned(ids)
+        await self._send_admin_report("\n".join(lines))
+
+    async def _clean_old_stock(self):
+        """5.5 Dọn kho định kỳ 2h sáng: acc tồn quá clean_stock_days mà die -> loại."""
+        from . import fb as fb_mod
+        try:
+            days = int(db.get_setting("clean_stock_days", "60") or 60)
+        except Exception:
+            days = 60
+        rows = db.acc_old_stock(days, 50)
+        if not rows:
+            return
+        sem = asyncio.Semaphore(5)
+        dead_ids = []
+
+        async def _one(sid, uid):
+            async with sem:
+                try:
+                    r = await fb_mod.check_uid(str(uid))
+                    if str(r.get("status", "")).lower() in ("die", "dead"):
+                        dead_ids.append(sid)
+                except Exception:
+                    pass
+
+        await asyncio.gather(*[_one(r["id"], r["uid"]) for r in rows])
+        for sid in dead_ids:
+            db.acc_mark_status(sid, "DEAD")
+        await self._send_admin_report(
+            f"🧹 <b>DỌN KHO ĐỊNH KỲ (2h sáng)</b>\n"
+            f"🔢 Đã quét: <b>{len(rows)}</b> acc tồn trên {days} ngày\n"
+            f"🔴 Loại khỏi kho: <b>{len(dead_ids)}</b> acc die")
+
+    async def _backup_stock(self):
+        """5.8 Backup kho tự động: xuất xlsx toàn bộ acc AVAILABLE, giữ 7 bản."""
+        import os
+        from openpyxl import Workbook
+        rows = db.get_conn().execute(
+            "SELECT s.*, c.name cat_name FROM acc_stock s "
+            "LEFT JOIN acc_categories c ON c.id=s.cat_id "
+            "WHERE s.status='AVAILABLE' ORDER BY s.cat_id, s.id").fetchall()
+        if not rows:
+            return
+        d = os.path.expanduser("~/workspace/fb-hoan-chinh/backups")
+        os.makedirs(d, exist_ok=True)
+        fn = time.strftime("stock_%Y%m%d_%H%M.xlsx", time.localtime())
+        path = os.path.join(d, fn)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "kho"
+        ws.append(["loai", "uid", "mk", "ngay_tao", "mail_thay", "ghi_chu",
+                   "2fa", "cookie", "token", "batch", "ngay_nhap"])
+        for r in rows:
+            r = dict(r)
+            ws.append([r.get("cat_name"), r.get("uid"), r.get("password"),
+                       r.get("created_date"), r.get("backup_mail"), r.get("note"),
+                       r.get("totp"), r.get("cookie"), r.get("token"),
+                       r.get("batch"),
+                       time.strftime("%d/%m/%Y", time.localtime(r.get("added_at") or 0))])
+        wb.save(path)
+        files = sorted(f for f in os.listdir(d)
+                       if f.startswith("stock_") and f.endswith(".xlsx"))
+        for old in files[:-7]:
+            try:
+                os.remove(os.path.join(d, old))
+            except Exception:
+                pass
+        await self._send_admin_report(
+            f"💾 <b>BACKUP KHO (3h sáng)</b>\n"
+            f"📦 Đã lưu <b>{len(rows)}</b> acc chưa bán vào file:\n<code>{fn}</code>")
+
+    async def _auto_import_supplier(self):
+        """5.4 Nhập kho tự động từ NCC mỗi sáng 6h."""
+        url = db.get_setting("supplier_auto_url", "")
+        if not url:
+            return
+        try:
+            cat_id = int(db.get_setting("supplier_auto_cat", "0") or 0)
+            sup_id = int(db.get_setting("supplier_auto_supplier", "0") or 0)
+        except Exception:
+            return
+        cat = db.acc_category_get(cat_id) if cat_id else None
+        if not cat:
+            return
+        import urllib.request
+        import socket
+        from urllib.parse import urlparse
+        try:
+            host = urlparse(url).hostname or ""
+            ip = socket.gethostbyname(host)
+            oc = [int(x) for x in ip.split(".")]
+            if oc[0] in (10, 127) or (oc[0] == 172 and 16 <= oc[1] <= 31) \
+                    or (oc[0] == 192 and oc[1] == 168) or ip.startswith("0."):
+                raise ValueError("blocked private ip")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read(5 * 1024 * 1024)
+            text = raw.decode("utf-8", errors="ignore")
+        except Exception as e:
+            await self._send_admin_report(
+                f"⚠️ <b>Nhập kho NCC tự động thất bại:</b> không tải được file: {e}")
+            return
+        rows = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            p = [x.strip() for x in line.split("|")]
+            while len(p) < 8:
+                p.append("")
+            rows.append({"uid": p[0], "password": p[1], "created_date": p[2],
+                         "backup_mail": p[3], "note": p[4], "totp": p[5],
+                         "cookie": p[6], "token": p[7]})
+        if not rows:
+            return
+        batch = "Lô NCC " + time.strftime("%d/%m %H:%M", time.localtime())
+        added, skipped = db.acc_stock_add_batch(cat_id, rows, batch=batch,
+                                                supplier_id=sup_id)
+        await self._send_admin_report(
+            f"📥 <b>NHẬP KHO TỰ ĐỘNG TỪ NCC (6h sáng)</b>\n"
+            f"📦 Loại: <b>{cat['name']}</b>\n"
+            f"➕ Thêm: <b>{added}</b> acc | ⏭ Bỏ qua: {skipped}\n"
+            f"📊 Tồn kho: <b>{db.acc_stock_count(cat_id)}</b> acc")
+
+    async def _clean_cookie_pool(self):
+        """Kiểm tra từng cookie trong pool bằng chính acc của nó; loại cookie chết."""
+        from .fb import get_fb_cookie_pool, set_fb_cookie_pool, _check_with_cookie
+        import re
+        pool = get_fb_cookie_pool()
+        if not pool:
+            return
+        log.info("Cookie maintenance: kiem tra %d cookie...", len(pool))
+        sem = asyncio.Semaphore(5)
+
+        async def _one(ck: str):
+            async with sem:
+                try:
+                    m = re.search(r"c_user=(\d+)", ck)
+                    uid = m.group(1) if m else "me"
+                    res = await _check_with_cookie(uid, ck)
+                    return (ck, res.get("status"))
+                except Exception:
+                    return (ck, "error")
+
+        results = await asyncio.gather(*[_one(ck) for ck in pool])
+        kept, removed = [], []
+        for ck, status in results:
+            if status == "live":
+                kept.append(ck)
+            else:
+                removed.append(status)
+        if len(kept) != len(pool):
+            set_fb_cookie_pool(kept)
+        # Thống kê chi tiết
+        from collections import Counter
+        cnt = Counter(removed)
+        detail = ", ".join(f"{k}: {v}" for k, v in cnt.items()) or "—"
+        await self._send_admin_report(
+            f"🍪 <b>DỌN COOKIE POOL (3h sáng)</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"🔢 Đã kiểm tra: <b>{len(pool)}</b>\n"
+            f"🟢 Giữ lại: <b>{len(kept)}</b>\n"
+            f"🔴 Đã loại: <b>{len(removed)}</b> ({detail})\n\n"
+            f"<i>Chỉ giữ cookie còn LIVE để pool xoay vòng ổn định.</i>"
+        )
+        log.info("Cookie maintenance xong: giu %d, loai %d.", len(kept), len(removed))
+
+    async def _send_revenue_report(self):
+        """Báo cáo doanh thu hôm qua cho admin lúc 8h sáng."""
+        y = time.localtime(time.time() - 86400)
+        day_str = time.strftime("%d/%m/%Y", y)
+        day_key = time.strftime("%Y-%m-%d", y)
+        start = int(time.mktime(time.strptime(day_key + " 00:00", "%Y-%m-%d %H:%M")))
+        end = start + 86400
+        c = db.get_conn()
+        revenue = c.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM txns WHERE ts>=? AND ts<? AND amount>0 "
+            "AND (reason='bank_transfer' OR reason LIKE 'Admin topup%')",
+            (start, end),
+        ).fetchone()[0]
+        new_users = c.execute(
+            "SELECT COUNT(*) FROM tg_users WHERE created_at>=? AND created_at<?", (start, end)
+        ).fetchone()[0]
+        checks = c.execute(
+            "SELECT COUNT(*) FROM check_stats WHERE checked_at>=? AND checked_at<?", (start, end)
+        ).fetchone()[0]
+        bulk_checks = c.execute(
+            "SELECT COUNT(*) FROM check_history WHERE checked_at>=? AND checked_at<?", (start, end)
+        ).fetchone()[0]
+        top = c.execute(
+            "SELECT tg_id, COALESCE(SUM(amount),0) s FROM txns WHERE ts>=? AND ts<? AND amount>0 "
+            "AND (reason='bank_transfer' OR reason LIKE 'Admin topup%') "
+            "GROUP BY tg_id ORDER BY s DESC LIMIT 5",
+            (start, end),
+        ).fetchall()
+        lines = [
+            f"📊 <b>BÁO CÁO NGÀY {day_str}</b>",
+            "━━━━━━━━━━━━━━━",
+            f"💰 Doanh thu nạp: <b>{int(revenue):,}đ</b>",
+            f"👥 User mới: <b>{new_users}</b>",
+            f"⚡ Lượt check đơn: <b>{checks}</b>",
+            f"📦 Lượt check bulk: <b>{bulk_checks}</b>",
+        ]
+        if top:
+            lines.append("")
+            lines.append("🏆 <b>Top nạp tiền:</b>")
+            for i, r in enumerate(top, 1):
+                lines.append(f"{i}. <code>{r['tg_id']}</code> — {int(r['s']):,}đ")
+        await self._send_admin_report("\n".join(lines))
+        log.info("Revenue report sent for %s: %sđ", day_str, int(revenue))
+
     async def _campaign_scheduler_loop(self):
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         import json
@@ -151,7 +592,7 @@ class FollowerPoller:
         while True:
             try:
                 now_ts = int(time.time())
-                camps = db.get_campaigns("pending")
+                camps = [dict(c) for c in db.get_campaigns(status="pending")]
                 
                 # Lấy bot instance từ self._bot hoặc fallback sang manager.bot
                 bot_inst = self._bot
@@ -249,7 +690,7 @@ class FollowerPoller:
                             await asyncio.sleep(0.05)
                         except Exception as e:
                             last_error = str(e)
-                            log.error(f"Send campaign #{camp['id']} err for {u.get('tg_id')}: {e}")
+                            log.error(f"Send campaign #{camp['id']} err for {u['tg_id']}: {e}")
 
                     stats = {"sent": success_count}
                     if last_error:
@@ -347,9 +788,18 @@ class FollowerPoller:
                         c.execute("UPDATE tg_users SET balance = balance - ?, sub_until = ? WHERE tg_id=?", (price, now_ts + 30*86400, tg_id))
                         c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)", (now_ts, tg_id, -price, "auto_renew_sub"))
                         c.commit()
+                    # Tặng credits kèm gia hạn tháng: 90% so với mua gói credit thẳng
+                    bonus = botmod._sub_credit_bonus(price)
+                    bonus_txt = ""
+                    if bonus > 0:
+                        try:
+                            total_cr = db.add_credits(tg_id, bonus, "Tặng kèm gia hạn tháng (auto-renew)")
+                            bonus_txt = f"\n🎁 Tặng kèm: <b>{bonus}</b> credits (tổng: {total_cr})"
+                        except Exception:
+                            pass
                     valid.append(t)
                     if self._bot:
-                        try: await self._bot.send_message(tg_id, f"🔄 <b>Gia hạn tự động thành công!</b>\nHệ thống đã trừ <b>{price:,}đ</b> và gia hạn thêm 30 ngày sử dụng.", parse_mode="HTML")
+                        try: await self._bot.send_message(tg_id, f"🔄 <b>Gia hạn tự động thành công!</b>\nHệ thống đã trừ <b>{price:,}đ</b> và gia hạn thêm 30 ngày sử dụng.{bonus_txt}", parse_mode="HTML")
                         except: pass
                     continue
                 
@@ -651,13 +1101,25 @@ class FollowerPoller:
                     "new_status": new_status,
                     "tg_id": w['tg_id']
                 }))
+                # Chế độ báo của watch: 'die_only' chỉ báo user khi chuyển sang DIE
+                try:
+                    alert_mode = w["alert_mode"] or "all"
+                except Exception:
+                    alert_mode = "all"
+                notify_user = (alert_mode == "all") or (new_status == "die")
                 bot = botmod.manager.bot
-                if bot:
+                if bot and notify_user:
                     try:
                         db.add_batch_notification(w["tg_id"], f"FB UID {w['uid']}: {old} ➡️ {new_status}")
                     except Exception as e:
                         db.add_log("system", f"Lỗi lưu batch_notification {w['tg_id']}: {e}")
-                
+
+                # Đa kênh cho admin: báo mọi lần đổi trạng thái qua admin bot + Zalo
+                try:
+                    await _notify_admin_watch_change(w["uid"], old, new_status, w["tg_id"])
+                except Exception as e:
+                    log.warning("Notify admin watch change: %s", e)
+
                 # Check alerts
                 await _handle_alerts("fb_watch", w["uid"], new_status, f"UID {w['uid']} status changed to {new_status}", botmod.manager.bot)
             await asyncio.sleep(0.3)

@@ -1,0 +1,15 @@
+.env
+.env.*
+!**/.env.example
+*.db
+*.db-shm
+*.db-wal
+*.log
+__pycache__/
+*.pyc
+cloudflared/
+ngrok/
+tailscale/
+node_modules/
+watchdog/
+.DS_Store

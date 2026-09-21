@@ -1,10 +1,16 @@
 import asyncio
+import html
 import logging
+import os
 import time
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from . import config, db
 
@@ -323,7 +329,7 @@ async def on_admin_withdraw_reject(cb: CallbackQuery):
 class AdminBotManager:
     def __init__(self):
         self.bot = None
-        self.dp = Dispatcher()
+        self.dp = Dispatcher(storage=MemoryStorage())
         self.dp.include_router(router)
         self.task = None
         self.running = False
@@ -335,7 +341,14 @@ class AdminBotManager:
             log.info("Admin bot token not set or identical to main bot token. Admin bot polling disabled.")
             return
             
-        self.bot = Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"))
+        proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+        )
+        session = AiohttpSession(proxy=proxy) if proxy else None
+        self.bot = Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"), session=session)
         self.running = True
         log.info("Admin Bot starting...")
         
@@ -649,6 +662,106 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
             f"⏳ Hạn: <b>{expire_text}</b>",
             parse_mode="HTML")
 
+    # ── /adm taopromo <CODE> <%> [lượt] [giờ] ─────────────────────────────
+    elif subcmd == "taopromo":
+        args = rest.split()
+        if len(args) < 2:
+            await msg.answer("❌ HDSD: <code>/adm taopromo &lt;CODE&gt; &lt;phần_trăm&gt; [số_lượt] [số_giờ]</code>\nVD: <code>/adm taopromo SALE20 20 100 24</code>", parse_mode="HTML"); return
+        try:
+            pct = int(args[1])
+        except ValueError:
+            await msg.answer("❌ Phần trăm phải là số (1-90)."); return
+        max_uses = int(args[2]) if len(args) > 2 and args[2].isdigit() else 0
+        hours = int(args[3]) if len(args) > 3 and args[3].isdigit() else 0
+        ok, txt = db.create_promo(args[0], pct, max_uses, hours)
+        extra = ""
+        if ok:
+            if max_uses: extra += f"\n🎫 Giới hạn: {max_uses} lượt"
+            if hours: extra += f"\n⏳ Hiệu lực: {hours} giờ"
+            extra += f"\n\n📢 Gõ <code>/adm flashsale {args[0].strip().upper()}</code> để thông báo cho toàn bộ user."
+        await msg.answer(("✅ " if ok else "❌ ") + txt + extra, parse_mode="HTML")
+
+    # ── /adm dspromo ─────────────────────────────────────────────────────
+    elif subcmd == "dspromo":
+        rows = db.list_promos()
+        if not rows:
+            await msg.answer("Chưa có mã giảm giá nào. Tạo bằng <code>/adm taopromo</code>", parse_mode="HTML"); return
+        lines = ["🎟️ <b>DANH SÁCH MÃ GIẢM GIÁ</b>", "━━━━━━━━━━━━━━━"]
+        for r in rows:
+            d = dict(r)
+            status = "✅" if db.promo_valid(d["code"])[0] else "⛔"
+            lim = f"{int(d['used_count'])}/{int(d['max_uses'])}" if d["max_uses"] else f"{int(d['used_count'])}/∞"
+            lines.append(f"{status} <code>{d['code']}</code> — giảm {int(d['pct'])}% — đã dùng {lim}")
+        await msg.answer("\n".join(lines), parse_mode="HTML")
+
+    # ── /adm xoapromo <CODE> ─────────────────────────────────────────────
+    elif subcmd == "xoapromo":
+        args = rest.split()
+        if not args:
+            await msg.answer("❌ HDSD: <code>/adm xoapromo &lt;CODE&gt;</code>", parse_mode="HTML"); return
+        if db.delete_promo(args[0]):
+            await msg.answer(f"✅ Đã xóa mã <b>{args[0].strip().upper()}</b>.", parse_mode="HTML")
+        else:
+            await msg.answer("❌ Mã không tồn tại.")
+
+    # ── /adm flashsale <CODE> ────────────────────────────────────────────
+    elif subcmd == "flashsale":
+        args = rest.split()
+        if not args:
+            await msg.answer("❌ HDSD: <code>/adm flashsale &lt;CODE&gt;</code>", parse_mode="HTML"); return
+        ok, why, row = db.promo_valid(args[0])
+        if not ok:
+            await msg.answer(f"❌ {why}"); return
+        d = dict(row)
+        exp_txt = f"\n⏰ Kết thúc: {util.vn_time_str('%d/%m %H:%M', d['expires_at'])}" if d["expires_at"] else ""
+        lim_txt = f"\n🎫 Chỉ {int(d['max_uses']) - int(d['used_count'])} suất" if d["max_uses"] else ""
+        text = (
+            f"🔥 <b>FLASH SALE — GIẢM {int(d['pct'])}% GÓI CREDITS!</b> 🔥\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🎟️ Mã: <code>{d['code']}</code>\n"
+            f"💸 Giảm <b>{int(d['pct'])}%</b> khi mua gói credits{lim_txt}{exp_txt}\n\n"
+            f"👉 Áp mã ngay: <code>/promo {d['code']}</code>\n"
+            f"⚡ Mua gói: /muacredit"
+        )
+        import asyncio as _asyncio
+        sent, failed = 0, 0
+        sem = _asyncio.Semaphore(20)
+        target_bot = bot_instance or msg.bot
+
+        async def _send(uid):
+            nonlocal sent, failed
+            async with sem:
+                try:
+                    await target_bot.send_message(uid, text, parse_mode="HTML")
+                    sent += 1
+                except Exception:
+                    failed += 1
+
+        uids = [r["tg_id"] for r in db.get_all_users_for_broadcast()]
+        await _asyncio.gather(*[_send(u) for u in uids], return_exceptions=True)
+        await msg.answer(f"📢 Đã gửi flash sale <b>{d['code']}</b>: <b>{sent}</b> thành công, {failed} thất bại.", parse_mode="HTML")
+
+    # ── /adm webhook <tên_key|id> <url|off> ──────────────────────────────
+    elif subcmd == "webhook":
+        args = rest.split(maxsplit=1)
+        if not args:
+            await msg.answer("❌ HDSD: <code>/adm webhook &lt;tên_key|id&gt; &lt;url|off&gt;</code>", parse_mode="HTML"); return
+        key = db.get_reseller_by_name_or_id(args[0])
+        if not key:
+            await msg.answer(f"❌ Không tìm thấy key <b>{args[0]}</b>.", parse_mode="HTML"); return
+        url = ""
+        if len(args) > 1:
+            u = args[1].strip()
+            if u.lower() not in ("off", "xoa", "xóa", "-"):
+                if not (u.startswith("http://") or u.startswith("https://")):
+                    await msg.answer("❌ URL phải bắt đầu bằng http:// hoặc https://"); return
+                url = u
+        db.set_reseller_webhook(key["id"], url)
+        if url:
+            await msg.answer(f"✅ Đã gán webhook cho key <b>{key['name']}</b>:\n<code>{url}</code>", parse_mode="HTML")
+        else:
+            await msg.answer(f"✅ Đã xóa webhook của key <b>{key['name']}</b>.", parse_mode="HTML")
+
     else:
         await msg.answer(f"❓ Không hiểu sub-command: <code>{subcmd}</code>\nGõ /adm help để xem danh sách.", parse_mode="HTML")
 
@@ -708,6 +821,68 @@ async def _show_adm_help(msg: Message):
         "  👉 <i>Tạo mã quà tặng/Giftcode cho user nhập qua /code.</i>\n"
         "  💡 VD: <code>/adm promo SALE 50000 100 24h</code>\n\n"
 
+        "<b>🔑 API RESELLER</b>\n"
+        "• <code>/taokey &lt;tên shop&gt; [credits]</code>\n"
+        "  👉 <i>Tạo API key cho reseller. Key chỉ hiện 1 lần!</i>\n"
+        "  💡 VD: <code>/taokey shopA 1000</code>\n\n"
+
+        "• <code>/napkey &lt;key_id&gt; &lt;credits&gt;</code>\n"
+        "  👉 <i>Nạp thêm credits cho key.</i>\n"
+        "  💡 VD: <code>/napkey 3 500</code>\n\n"
+
+        "• <code>/khoakey &lt;key_id&gt; [on|off]</code>\n"
+        "  👉 <i>Khóa/mở API key (VD: <code>/khoakey 3 off</code>).</i>\n\n"
+
+        "<b>🍪 COOKIE POOL FACEBOOK</b>\n"
+        "• <code>/cookieadd</code>\n"
+        "  👉 <i>Thêm cookie vào pool xoay vòng (gửi cookie ở tin nhắn tiếp theo, bot tự xóa).</i>\n\n"
+
+        "• <code>/cookielist</code> — <i>Xem pool cookie (đã che).</i>\n"
+        "• <code>/cookiedel &lt;stt&gt;</code> — <i>Xóa cookie khỏi pool.</i>\n\n"
+
+        
+        "<b>🛒 SHOP ACC FACEBOOK</b>\n"
+        "• <code>/themloai &lt;tên&gt; | &lt;giá&gt; | &lt;giờ_BH&gt; | [mô_tả]</code> — Thêm loại acc mới\n"
+        "• <code>/xoaloai &lt;id&gt;</code> — Ẩn loại acc khỏi shop (tên vẫn giữ)\n"
+        "• <code>/hienloai &lt;id&gt;</code> — Hiện lại loại acc đã ẩn\n"
+        "• <code>/xoahan &lt;id&gt; yes</code> — <i>XÓA HẲN loại acc (không khôi phục được).</i>\n"
+        "• <code>/xoakho &lt;id&gt; yes</code> — <i>Xóa toàn bộ acc CHƯA BÁN trong kho của 1 loại.</i>\n"
+        "• <code>/themacc &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho (gửi file ở tin tiếp theo)\n"
+        "• <code>/kho</code> — Xem tồn kho (kể cả loại đã tự ẩn)\n"
+        "• <code>/xuatkho [id_loại]</code> — <i>Xuất toàn bộ acc ra file .xlsx (sao lưu dự phòng).</i>\n"
+        "• <code>/gia &lt;id&gt; &lt;giá_mới&gt;</code> — Đổi giá bán\n"
+        "• <code>/creditbonus &lt;id&gt; &lt;số&gt;</code> — Combo mua acc tặng credits\n"
+        "• <code>/quadoi &lt;id_loại&gt;</code> — Chọn quà đổi điểm loyalty\n"
+        "• <code>/giovang &lt;id|0&gt; [giờ] [%]</code> / <code>off</code> — Giờ vàng giảm giá\n"
+        "• <code>/hopmugia &lt;giá&gt;</code> (0 = tắt) — Bật/tắt hộp mù\n"
+        "• <code>/hopmu &lt;id&gt;</code> — Cho loại acc tham gia/rời hộp mù\n"
+        "• <code>/accinfo &lt;uid&gt;</code> — Truy xuất hành trình 1 acc\n"
+        "• <code>/donhang</code> — Đơn hàng gần đây\n"
+        "• <code>/bhdon</code> — Đơn BH chờ duyệt | <code>/bhdone &lt;id&gt;</code> — Duyệt xong\n"
+        "• <code>/suabh &lt;id_loại&gt; &lt;giờ&gt;</code> — Đổi thời gian bảo hành\n"
+        "• <code>/lo &lt;id_loại&gt;</code> — Xem lãi từng lô nhập\n"
+        "• <code>/anhbia &lt;id_loại&gt;</code> — Đặt ảnh bìa (gửi ảnh ở tin tiếp theo) | <code>xoa</code> để gỡ\n"
+        "• <code>/faq</code> — Xem FAQ | <code>/themcauhoi &lt;kw&gt; | &lt;trả_lời&gt;</code> — Thêm | <code>/xoacauhoi &lt;số&gt;</code> — Xóa\n\n"
+
+        "<b>🏭 NHÀ CUNG CẤP</b>\n"
+        "• <code>/themncc &lt;tên&gt; | &lt;liên_hệ&gt;</code> — Thêm NCC vào sổ\n"
+        "• <code>/ncc</code> — Sổ NCC (⭐ tay + tỉ lệ sống tự động)\n"
+        "• <code>/danhgiancc &lt;id&gt; &lt;sao 1-5&gt;</code> — Đánh giá tay\n"
+        "• <code>/chamdiem &lt;id&gt; [số_ngày=7]</code> — Chấm tỉ lệ sống theo lô\n"
+        "• <code>/nccauto &lt;url_file&gt; &lt;id_loại&gt; [ncc_id]</code> / <code>off</code> — Nhập kho tự động 6h sáng\n\n"
+
+"<b>🎟️ FLASH SALE (mã giảm giá)</b>\n"
+        "• <code>/adm taopromo &lt;CODE&gt; &lt;%&gt; [lượt] [giờ]</code>\n"
+        "  💡 VD: <code>/adm taopromo SALE20 20 100 24</code>\n\n"
+        "• <code>/adm dspromo</code> — <i>Xem các mã đang có.</i>\n"
+        "• <code>/adm xoapromo &lt;CODE&gt;</code> — <i>Xóa mã.</i>\n"
+        "• <code>/adm flashsale &lt;CODE&gt;</code> — <i>Gửi thông báo sale cho toàn bộ user.</i>\n\n"
+
+        "<b>🔔 WEBHOOK RESELLER</b>\n"
+        "• <code>/adm webhook &lt;tên_key|id&gt; &lt;url|off&gt;</code>\n"
+        "  👉 <i>Mỗi lượt API sẽ POST kết quả về URL.</i>\n"
+        "  💡 VD: <code>/adm webhook shopA https://site.com/hook</code>\n\n"
+
         "<i>Chỉ Admin ID được cấp phép mới sử dụng được các lệnh này.</i>"
     )
     await msg.answer(help_text, parse_mode="HTML")
@@ -720,6 +895,182 @@ _pending_broadcasts = {}
 async def admin_bot_adm(msg: Message):
     """Handler /adm trong admin_bot — chuyển tới _handle_adm_cmd."""
     await _handle_adm_cmd(msg, bot_instance=manager.bot)
+
+
+class CookieAddState(StatesGroup):
+    waiting_for_cookie = State()
+
+
+def _mask_cookie(ck: str) -> str:
+    ck = ck or ""
+    return (ck[:10] + "..." + ck[-6:]) if len(ck) > 20 else "***"
+
+
+@router.message(Command("taokey"))
+async def adm_taokey(msg: Message):
+    """Admin bot: tạo API key cho reseller. /taokey <tên shop> [số credits]"""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/taokey &lt;tên shop&gt; [số credits]</code>\nVí dụ: <code>/taokey shopA 1000</code>")
+        return
+    name = parts[1]
+    credits = 0
+    if len(parts) > 2:
+        try:
+            credits = max(0, int(parts[2]))
+        except ValueError:
+            await msg.answer("❌ Số credits phải là số nguyên!")
+            return
+    k = db.create_reseller_key(name, credits)
+    await msg.answer(
+        "🔑 <b>TẠO API KEY THÀNH CÔNG</b>\n\n"
+        f"🏪 Shop: <b>{html.escape(name)}</b>\n"
+        f"🆔 Key ID: <code>{k['id']}</code>\n"
+        f"⚡ Credits: <b>{k['credits']}</b>\n\n"
+        f"🔐 API Key:\n<code>{k['api_key']}</code>\n\n"
+        "⚠️ <i>Gửi key này cho reseller qua kênh riêng. Key chỉ hiện 1 lần!</i>\n\n"
+        "📖 Tài liệu API:\n"
+        "• <code>POST /api/v1/fb/check</code> — header <code>X-API-Key</code>, body <code>{\"uid\": \"...\"}</code>\n"
+        "• <code>POST /api/v1/fb/getuid</code> — body <code>{\"link\": \"...\"}</code>\n"
+        "• <code>GET /api/v1/balance</code> — xem credits\n"
+        "• <code>GET /api/v1/usage</code> — lịch sử dùng",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("napkey"))
+async def adm_napkey(msg: Message):
+    """Admin bot: nạp credits cho reseller key. /napkey <key_id> <số credits>"""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 3:
+        await msg.answer("⚠️ Cú pháp: <code>/napkey &lt;key_id&gt; &lt;số credits&gt;</code>")
+        return
+    try:
+        key_id, n = int(parts[1]), int(parts[2])
+    except ValueError:
+        await msg.answer("❌ key_id và số credits phải là số!")
+        return
+    db.add_reseller_credits(key_id, n)
+    await msg.answer(f"✅ Đã nạp <b>{n}</b> credits cho key <code>{key_id}</code>.", parse_mode="HTML")
+
+
+@router.message(Command("khoakey"))
+async def adm_khoakey(msg: Message):
+    """Admin bot: khóa/mở API key reseller. /khoakey <key_id> [on|off]"""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/khoakey &lt;key_id&gt; [on|off]</code>")
+        return
+    try:
+        key_id = int(parts[1])
+    except ValueError:
+        await msg.answer("❌ key_id phải là số!")
+        return
+    active = True
+    if len(parts) > 2:
+        active = parts[2].lower() not in ("off", "0", "khoa", "khóa", "lock")
+    db.set_reseller_active(key_id, active)
+    await msg.answer(f"{'🟢 Đã mở' if active else '🔴 Đã khóa'} key <code>{key_id}</code>.", parse_mode="HTML")
+
+
+@router.message(Command("cookieadd"))
+async def adm_cookieadd(msg: Message, state: FSMContext):
+    """Admin bot: thêm cookie vào pool xoay vòng (1 bước hoặc 2 bước)."""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    inline_ck = (msg.text or "").partition(" ")[2].strip()
+    if inline_ck:
+        await _adm_save_pool_cookie(msg, state, inline_ck)
+        return
+    await state.set_state(CookieAddState.waiting_for_cookie)
+    await msg.answer(
+        "🍪 <b>THÊM COOKIE VÀO POOL</b>\n\n"
+        "Hãy gửi <b>chuỗi cookie Facebook</b> (1 tin nhắn).\n"
+        "Sau khi lưu, tin nhắn chứa cookie sẽ được <b>xóa ngay</b> để bảo mật.\n\n"
+        "Gõ /cancel để hủy.",
+        parse_mode="HTML",
+    )
+
+
+async def _adm_save_pool_cookie(msg: Message, state: FSMContext, ck_text: str):
+    if "c_user" not in ck_text and "xs" not in ck_text:
+        await msg.answer("❌ Chuỗi này không giống cookie Facebook (thiếu c_user/xs).")
+        return
+    from .fb import get_fb_cookie_pool, set_fb_cookie_pool
+    pool = get_fb_cookie_pool()
+    if ck_text in pool:
+        await msg.answer("⚠️ Cookie này đã có trong pool rồi.")
+    else:
+        pool.append(ck_text)
+        set_fb_cookie_pool(pool)
+        await msg.answer(f"✅ Đã thêm cookie vào pool. Pool hiện có <b>{len(pool)}</b> cookie.", parse_mode="HTML")
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    await state.clear()
+
+
+@router.message(CookieAddState.waiting_for_cookie)
+async def adm_cookieadd_received(msg: Message, state: FSMContext):
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        await state.clear()
+        return
+    if (msg.text or "").strip() == "/cancel":
+        await state.clear()
+        await msg.answer("Đã hủy.")
+        return
+    ck_text = (msg.text or "").strip()
+    if ck_text.startswith("/cookieadd"):
+        ck_text = ck_text.partition(" ")[2].strip()
+    await _adm_save_pool_cookie(msg, state, ck_text)
+
+
+@router.message(Command("cookielist"))
+async def adm_cookielist(msg: Message):
+    """Admin bot: xem danh sách cookie trong pool (đã che)."""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    from .fb import get_fb_cookie_pool
+    pool = get_fb_cookie_pool()
+    if not pool:
+        await msg.answer("🍪 Pool đang trống. Thêm bằng /cookieadd")
+        return
+    lines = ["🍪 <b>COOKIE POOL</b>", "━━━━━━━━━━━━", ""]
+    for i, ck in enumerate(pool, 1):
+        lines.append(f"{i}. <code>{html.escape(_mask_cookie(ck))}</code> ({len(ck)} ký tự)")
+    lines += ["", f"Tổng: <b>{len(pool)}</b> cookie", "", "Xóa: /cookiedel &lt;số thứ tự&gt;"]
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("cookiedel"))
+async def adm_cookiedel(msg: Message):
+    """Admin bot: xóa cookie khỏi pool. /cookiedel <số thứ tự>"""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/cookiedel &lt;số thứ tự&gt;</code> (xem số bằng /cookielist)")
+        return
+    try:
+        idx = int(parts[1]) - 1
+    except ValueError:
+        await msg.answer("❌ Số thứ tự phải là số!")
+        return
+    from .fb import get_fb_cookie_pool, set_fb_cookie_pool
+    pool = get_fb_cookie_pool()
+    if idx < 0 or idx >= len(pool):
+        await msg.answer("❌ Số thứ tự không đúng!")
+        return
+    pool.pop(idx)
+    set_fb_cookie_pool(pool)
+    await msg.answer(f"✅ Đã xóa. Pool còn <b>{len(pool)}</b> cookie.", parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm_bcast_confirm")

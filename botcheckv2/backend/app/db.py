@@ -61,7 +61,7 @@ class PgConnection:
         # self.conn.commit()
         pass
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _pg_conn = None
 
 import sqlite3
@@ -487,7 +487,6 @@ def migrate_db():
             "CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT, action TEXT, target TEXT, details TEXT, ip_address TEXT, created_at BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS alert_rules (id BIGSERIAL PRIMARY KEY, tg_id TEXT, platform TEXT, target TEXT, condition TEXT, is_active BIGINT DEFAULT 1, created_at BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS alert_history (id BIGSERIAL PRIMARY KEY, tg_id TEXT, rule_id BIGINT, message TEXT, triggered_at BIGINT NOT NULL)",
-            "DROP TABLE IF EXISTS campaigns", # Drop old schema since it was never used
             "CREATE TABLE IF NOT EXISTS campaigns (id BIGSERIAL PRIMARY KEY, name TEXT, type TEXT, status TEXT DEFAULT 'pending', scheduled_for BIGINT DEFAULT 0, config TEXT, stats TEXT, text_content TEXT, image_url TEXT, created_at BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS campaign_participants (id BIGSERIAL PRIMARY KEY, campaign_id BIGINT, tg_id BIGINT, status TEXT, extra_data TEXT, created_at BIGINT NOT NULL)",
             "ALTER TABLE watches ADD COLUMN campaign_id BIGINT",
@@ -526,6 +525,27 @@ def set_setting(key: str, value: str) -> None:
             (key, str(value)),
         )
         c.commit()
+
+# ─── REF COMMISSION RATES (cấu hình được qua settings) ─────────────────────
+def _ref_num(key: str, default: float) -> float:
+    try:
+        v = str(get_setting(key, "")).strip().replace(",", ".")
+        return float(v) if v else default
+    except (ValueError, TypeError):
+        return default
+
+def get_ref_rates() -> dict:
+    """Tỉ lệ hoa hồng giới thiệu. Đổi qua settings:
+    ref_f1_pct, ref_f1_silver_min, ref_f1_silver_pct,
+    ref_f1_gold_min, ref_f1_gold_pct, ref_f2_pct."""
+    return {
+        "f1_pct": _ref_num("ref_f1_pct", 10),
+        "f1_silver_min": _ref_num("ref_f1_silver_min", 5000000),
+        "f1_silver_pct": _ref_num("ref_f1_silver_pct", 15),
+        "f1_gold_min": _ref_num("ref_f1_gold_min", 20000000),
+        "f1_gold_pct": _ref_num("ref_f1_gold_pct", 20),
+        "f2_pct": _ref_num("ref_f2_pct", 3),
+    }
 
 def clear_logs() -> None:
     with _lock:
@@ -573,6 +593,8 @@ def all_settings() -> dict:
 
 # --- FB USER & BALANCE ---
 def upsert_user(tg_id: int, username: str, name: str, referrer_id: int = 0) -> Any:
+    if referrer_id and int(referrer_id) == int(tg_id):
+        referrer_id = 0  # chống tự giới thiệu chính mình
     with _lock:
         c = get_conn()
         c.execute(
@@ -592,9 +614,14 @@ def list_users() -> list:
         "FROM tg_users t ORDER BY created_at DESC"
     ).fetchall()
 
-def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
+def adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
+    """Cộng/trừ số dư. Trừ tiền thì kiểm tra nguyên tử: không đủ -> False, không trừ."""
     with _lock:
         c = get_conn()
+        if amount < 0:
+            r = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+            if not r or int(r["balance"] or 0) + amount < 0:
+                return False
         if amount > 0:
             c.execute("UPDATE tg_users SET balance = balance + ?, total_topup = total_topup + ? WHERE tg_id=?", (amount, amount, tg_id))
         else:
@@ -610,11 +637,12 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
                 f1_id = user["referrer_id"]
                 f1_topup_row = c.execute("SELECT SUM(total_topup) as s FROM tg_users WHERE referrer_id=?", (f1_id,)).fetchone()
                 total_f1_topup = f1_topup_row["s"] if f1_topup_row and f1_topup_row["s"] else 0
-                percentage = 0.10
-                if total_f1_topup >= 20000000:
-                    percentage = 0.20
-                elif total_f1_topup >= 5000000:
-                    percentage = 0.15
+                rates = get_ref_rates()
+                percentage = rates["f1_pct"] / 100
+                if total_f1_topup >= rates["f1_gold_min"]:
+                    percentage = rates["f1_gold_pct"] / 100
+                elif total_f1_topup >= rates["f1_silver_min"]:
+                    percentage = rates["f1_silver_pct"] / 100
                 f1_bonus = int(amount * percentage)
                 if f1_bonus > 0:
                     c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?", (f1_bonus, f1_id))
@@ -636,7 +664,7 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
                 f1_user = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?", (f1_id,)).fetchone()
                 if f1_user and f1_user["referrer_id"]:
                     f2_id = f1_user["referrer_id"]
-                    f2_bonus = int(amount * 0.03) # 3%
+                    f2_bonus = int(amount * rates["f2_pct"] / 100)
                     if f2_bonus > 0:
                         c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?", (f2_bonus, f2_id))
                         c.execute(
@@ -654,6 +682,7 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
                                 asyncio.create_task(manager.bot.send_message(f2_id, f"🎁 <b>Hoa hồng giới thiệu F2!</b>\nBạn vừa nhận được <b>{vnd(f2_bonus)}</b> từ lượt nạp của F2!", parse_mode="HTML"))
                         except: pass
         c.commit()
+        return True
         
 _magic_links = {}
 
@@ -940,6 +969,19 @@ def add_log(kind: str, message: str, tg_id: int = 0, uid: str = "") -> None:
 
 def recent_logs(limit: int = 50) -> list:
     return get_conn().execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+def get_user_logs(tg_id: int, kind: str = None, limit: int = 15) -> list:
+    """Lịch sử check của 1 user, lọc theo kind (fb/tiktok/ig/yt/zalo)."""
+    c = get_conn()
+    if kind:
+        return c.execute(
+            "SELECT * FROM logs WHERE tg_id=? AND kind=? ORDER BY id DESC LIMIT ?",
+            (tg_id, kind, limit),
+        ).fetchall()
+    return c.execute(
+        "SELECT * FROM logs WHERE tg_id=? ORDER BY id DESC LIMIT ?",
+        (tg_id, limit),
+    ).fetchall()
 
 # --- ADMIN USERS & AUDIT LOG ---
 def create_admin(username: str, password_hash: str, display_name: str, role: str = 'moderator', tg_id: int = 0, created_by: int = 0):
@@ -1480,12 +1522,16 @@ def remove_zalo_track(tg_user_id: int, phone: str) -> bool:
 def create_alert_rule(tg_id: str, platform: str, target: str, condition: str = 'status_change') -> int:
     with _lock:
         c = get_conn()
-        c.execute(
-            "INSERT INTO alert_rules (tg_id, platform, target, condition, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        cur = c.execute(
+            "INSERT INTO alert_rules (tg_id, platform, target, condition, created_at) VALUES (?, ?, ?, ?, ?)",
             (tg_id, platform, target, condition, int(time.time()))
         )
         c.commit()
-        return c.lastrowid
+        # get_conn() trả về wrapper không có .lastrowid -> lấy từ cursor, fallback SELECT
+        if getattr(cur, "lastrowid", None):
+            return cur.lastrowid
+        row = c.execute("SELECT id FROM alert_rules ORDER BY id DESC LIMIT 1").fetchone()
+        return row["id"] if row else 0
 
 def get_alert_rules(tg_id: str = None, target: str = None) -> list:
     c = get_conn()
@@ -1555,15 +1601,7 @@ def add_campaign(tg_id: int, name: str) -> int:
         row = c.execute("SELECT id FROM campaigns WHERE tg_id=? ORDER BY id DESC LIMIT 1", (tg_id,)).fetchone()
         return row["id"] if row else 0
 
-def get_campaigns(tg_id: int) -> list:
-    return [dict(r) for r in get_conn().execute("SELECT * FROM campaigns WHERE tg_id=? ORDER BY created_at DESC", (tg_id,)).fetchall()]
-
-def delete_campaign(campaign_id: int, tg_id: int) -> bool:
-    with _lock:
-        c = get_conn()
-        cur = c.execute("DELETE FROM campaigns WHERE id=? AND tg_id=?", (campaign_id, tg_id))
-        c.commit()
-        return cur.rowcount > 0
+# (Xóa định nghĩa cũ bị trùng tên — dùng get_campaigns/delete_campaign hợp nhất bên dưới)
 
 # Gamification Daily Check-in
 def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
@@ -1602,8 +1640,9 @@ def checkin_daily(tg_id: int) -> tuple[bool, int, int]:
                 reward = int(get_setting("daily_reward_7d", "5000"))
             except: reward = 5000
             
+        # Cộng thưởng NGAY TRONG lock (RLock) để 2 request song song không thể nhận 2 lần
+        adjust_balance(tg_id, reward, f"Điểm danh hằng ngày (Chuỗi {streak} ngày)")
         c.commit()
-    adjust_balance(tg_id, reward, f"Điểm danh hằng ngày (Chuỗi {streak} ngày)")
     return True, streak, reward
 
 # Batch Notifications
@@ -1632,21 +1671,34 @@ def get_and_clear_batch_notifications() -> dict:
 def create_campaign(name: str, ctype: str, scheduled_for: int, config: str, text_content: str, image_url: str) -> int:
     with _lock:
         c = get_conn()
+        # SQLite: cot id BIGSERIAL khong tu tang -> tu gan id
+        row = c.execute("SELECT COALESCE(MAX(id), 0) + 1 AS nid FROM campaigns").fetchone()
+        new_id = row["nid"] if row else 1
         cur = c.execute(
-            "INSERT INTO campaigns(name, type, status, scheduled_for, config, stats, text_content, image_url, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (name, ctype, 'pending', scheduled_for, config, '{}', text_content, image_url, int(time.time()))
+            "INSERT INTO campaigns(id, name, type, status, scheduled_for, config, stats, text_content, image_url, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (new_id, name, ctype, 'pending', scheduled_for, config, '{}', text_content, image_url, int(time.time()))
         )
         c.commit()
         if hasattr(cur, "lastrowid"): return cur.lastrowid
         res = c.execute("SELECT id FROM campaigns ORDER BY id DESC LIMIT 1").fetchone()
         return res["id"] if res else 0
 
-def get_campaigns(status: str = None) -> list:
+def get_campaigns(tg_id: int = None, status: str = None) -> list:
+    """Lấy campaigns, lọc theo tg_id và/hoặc status (hợp nhất 2 định nghĩa cũ bị trùng tên)."""
     with _lock:
         c = get_conn()
+        conds, params = [], []
+        if tg_id is not None:
+            conds.append("tg_id=?")
+            params.append(tg_id)
         if status:
-            return c.execute("SELECT * FROM campaigns WHERE status=? ORDER BY id DESC", (status,)).fetchall()
-        return c.execute("SELECT * FROM campaigns ORDER BY id DESC").fetchall()
+            conds.append("status=?")
+            params.append(status)
+        q = "SELECT * FROM campaigns"
+        if conds:
+            q += " WHERE " + " AND ".join(conds)
+        q += " ORDER BY id DESC"
+        return [dict(r) for r in c.execute(q, params).fetchall()]
 
 def get_campaign(campaign_id: int) -> Optional[dict]:
     with _lock:
@@ -1680,12 +1732,17 @@ def add_campaign_participant(campaign_id: int, tg_id: int, status: str, extra_da
         )
         c.commit()
 
-def delete_campaign(campaign_id: int):
+def delete_campaign(campaign_id: int, tg_id: int = None) -> bool:
+    """Xóa campaign; nếu có tg_id thì chỉ xóa campaign của đúng user đó."""
     with _lock:
         c = get_conn()
-        c.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
+        if tg_id is not None:
+            cur = c.execute("DELETE FROM campaigns WHERE id=? AND tg_id=?", (campaign_id, tg_id))
+        else:
+            cur = c.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
         c.execute("DELETE FROM campaign_participants WHERE campaign_id=?", (campaign_id,))
         c.commit()
+        return cur.rowcount > 0
 
 
 # ─── USER LISTS (newlist, addtolist, scanlist...) ────────────────────────────
@@ -1695,7 +1752,7 @@ def migrate_new_features():
     c = get_conn()
     for sql in [
         """CREATE TABLE IF NOT EXISTS user_lists (
-            id         BIGINT PRIMARY KEY AUTOINCREMENT,
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
             tg_id      BIGINT NOT NULL,
             name       TEXT NOT NULL,
             platform   TEXT DEFAULT 'fb',
@@ -1703,7 +1760,7 @@ def migrate_new_features():
             UNIQUE(tg_id, name)
         )""",
         """CREATE TABLE IF NOT EXISTS user_list_items (
-            id         BIGINT PRIMARY KEY AUTOINCREMENT,
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
             list_id    BIGINT NOT NULL,
             tg_id      BIGINT NOT NULL,
             value      TEXT NOT NULL,
@@ -1711,7 +1768,7 @@ def migrate_new_features():
             added_at   BIGINT NOT NULL
         )""",
         """CREATE TABLE IF NOT EXISTS check_history (
-            id         BIGINT PRIMARY KEY AUTOINCREMENT,
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
             tg_id      BIGINT NOT NULL,
             platform   TEXT NOT NULL,
             target     TEXT NOT NULL,
@@ -1720,17 +1777,235 @@ def migrate_new_features():
         )""",
         "ALTER TABLE alert_rules ADD COLUMN is_paused BIGINT DEFAULT 0",
         "ALTER TABLE alert_rules ADD COLUMN snooze_until BIGINT DEFAULT 0",
+        "ALTER TABLE tg_users ADD COLUMN credits BIGINT DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS reseller_keys (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            api_key    TEXT NOT NULL UNIQUE,
+            credits    BIGINT DEFAULT 0,
+            is_active  BIGINT DEFAULT 1,
+            created_at BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS reseller_usage (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_id      BIGINT NOT NULL,
+            endpoint    TEXT NOT NULL,
+            target      TEXT DEFAULT '',
+            credits_used BIGINT DEFAULT 0,
+            created_at  BIGINT NOT NULL
+        )""",
+        "ALTER TABLE watches ADD COLUMN alert_mode TEXT DEFAULT 'all'",
+        """CREATE TABLE IF NOT EXISTS check_stats (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id      BIGINT NOT NULL,
+            platform   TEXT NOT NULL,
+            target     TEXT NOT NULL,
+            result     TEXT NOT NULL,
+            via        TEXT DEFAULT '',
+            checked_at BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS credit_txns (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts         BIGINT NOT NULL,
+            tg_id      BIGINT,
+            key_id     BIGINT,
+            delta      BIGINT NOT NULL,
+            reason     TEXT DEFAULT ''
+        )""",
+        """CREATE TABLE IF NOT EXISTS promo_codes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            code       TEXT NOT NULL UNIQUE,
+            pct        BIGINT NOT NULL DEFAULT 10,
+            max_uses   BIGINT DEFAULT 0,
+            used_count BIGINT DEFAULT 0,
+            expires_at BIGINT DEFAULT 0,
+            created_at BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS user_promos (
+            tg_id      BIGINT PRIMARY KEY,
+            code       TEXT NOT NULL,
+            applied_at BIGINT NOT NULL
+        )""",
+        "ALTER TABLE reseller_keys ADD COLUMN webhook_url TEXT DEFAULT ''",
+        """CREATE TABLE IF NOT EXISTS payos_orders (
+            order_code     INTEGER PRIMARY KEY,
+            tg_id          BIGINT NOT NULL,
+            amount         BIGINT NOT NULL,
+            status         TEXT DEFAULT 'PENDING',
+            payment_link_id TEXT DEFAULT '',
+            checkout_url   TEXT DEFAULT '',
+            qr_code        TEXT DEFAULT '',
+            created_at     BIGINT NOT NULL,
+            updated_at     BIGINT NOT NULL
+        )""",
+        "ALTER TABLE payos_orders ADD COLUMN qr_code TEXT DEFAULT ''",
+        "ALTER TABLE payos_orders ADD COLUMN final_checked INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS acc_categories (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            name           TEXT UNIQUE NOT NULL,
+            price          BIGINT NOT NULL DEFAULT 0,
+            warranty_hours INTEGER NOT NULL DEFAULT 24,
+            description    TEXT DEFAULT '',
+            active         INTEGER DEFAULT 1,
+            created_at     BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS acc_stock (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            cat_id       INTEGER NOT NULL,
+            uid          TEXT NOT NULL,
+            password     TEXT DEFAULT '',
+            created_date TEXT DEFAULT '',
+            backup_mail  TEXT DEFAULT '',
+            note         TEXT DEFAULT '',
+            totp         TEXT DEFAULT '',
+            cookie       TEXT DEFAULT '',
+            token        TEXT DEFAULT '',
+            status       TEXT DEFAULT 'AVAILABLE',
+            sold_to      BIGINT DEFAULT 0,
+            sold_at      BIGINT DEFAULT 0,
+            price_sold   BIGINT DEFAULT 0,
+            added_at     BIGINT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_acc_stock_cat_status ON acc_stock(cat_id, status)",
+        """CREATE TABLE IF NOT EXISTS acc_orders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id      BIGINT NOT NULL,
+            stock_id   INTEGER NOT NULL,
+            cat_id     INTEGER NOT NULL,
+            price      BIGINT NOT NULL,
+            created_at BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS acc_warranty_claims (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id     INTEGER NOT NULL,
+            tg_id        BIGINT NOT NULL,
+            stock_id     INTEGER NOT NULL,
+            check_result TEXT DEFAULT '',
+            status       TEXT DEFAULT 'PENDING',
+            created_at   BIGINT NOT NULL,
+            handled_at   BIGINT DEFAULT 0
+        )""",
+        "ALTER TABLE acc_categories ADD COLUMN credit_bonus INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS spin_tickets (
+            tg_id   BIGINT PRIMARY KEY,
+            tickets INTEGER NOT NULL DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS spin_history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id       BIGINT NOT NULL,
+            prize_label TEXT DEFAULT '',
+            prize_kind  TEXT DEFAULT '',
+            prize_value BIGINT DEFAULT 0,
+            created_at  BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS acc_restock_subs (
+            tg_id      BIGINT NOT NULL,
+            cat_id     INTEGER NOT NULL,
+            created_at BIGINT NOT NULL,
+            PRIMARY KEY (tg_id, cat_id)
+        )""",
+        """CREATE TABLE IF NOT EXISTS loyalty_points (
+            tg_id  BIGINT PRIMARY KEY,
+            points INTEGER NOT NULL DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS loyalty_history (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id      BIGINT NOT NULL,
+            delta      INTEGER NOT NULL,
+            reason     TEXT DEFAULT '',
+            created_at BIGINT NOT NULL
+        )""",
+        "ALTER TABLE acc_stock ADD COLUMN batch TEXT DEFAULT ''",
+        "ALTER TABLE acc_warranty_claims ADD COLUMN reminded_at BIGINT DEFAULT 0",
+        # ---- GĐ4/GĐ5 đợt 4: giá khan hiếm, hộp mù, cọc, review, NCC, lô hàng ----
+        "ALTER TABLE acc_categories ADD COLUMN low_threshold INTEGER DEFAULT 10",
+        "ALTER TABLE acc_categories ADD COLUMN scarcity_pct INTEGER DEFAULT 15",
+        "ALTER TABLE acc_categories ADD COLUMN mystery_eligible INTEGER DEFAULT 0",
+        "ALTER TABLE acc_categories ADD COLUMN hidden INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS acc_deposits (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id      BIGINT NOT NULL,
+            cat_id     INTEGER NOT NULL,
+            amount     BIGINT NOT NULL DEFAULT 0,
+            status     TEXT DEFAULT 'WAITING',
+            order_id   BIGINT DEFAULT 0,
+            created_at BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS acc_reviews (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id   INTEGER NOT NULL UNIQUE,
+            tg_id      BIGINT NOT NULL,
+            cat_id     INTEGER NOT NULL,
+            stars      INTEGER NOT NULL DEFAULT 5,
+            created_at BIGINT NOT NULL
+        )""",
+        # ---- Làm đẹp shop: ảnh bìa, lời đánh giá, nhắc đánh giá ----
+        "ALTER TABLE acc_categories ADD COLUMN cover_photo TEXT DEFAULT ''",
+        "ALTER TABLE acc_reviews ADD COLUMN comment TEXT DEFAULT ''",
+        "ALTER TABLE acc_orders ADD COLUMN review_nudged_at BIGINT DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS suppliers (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            contact    TEXT DEFAULT '',
+            rating     INTEGER DEFAULT 0,
+            created_at BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS acc_batches (
+            batch        TEXT PRIMARY KEY,
+            cat_id       INTEGER NOT NULL DEFAULT 0,
+            supplier_id  INTEGER DEFAULT 0,
+            cost_per_acc BIGINT DEFAULT 0,
+            created_at   BIGINT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS supplier_scores (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id INTEGER NOT NULL,
+            batch       TEXT DEFAULT '',
+            total       INTEGER DEFAULT 0,
+            alive       INTEGER DEFAULT 0,
+            note        TEXT DEFAULT '',
+            scored_at   BIGINT NOT NULL
+        )""",
+        "ALTER TABLE acc_stock ADD COLUMN stale_warned INTEGER DEFAULT 0",
+        "ALTER TABLE acc_orders ADD COLUMN followup_sent INTEGER DEFAULT 0",
+        "ALTER TABLE acc_orders ADD COLUMN delivered_at BIGINT DEFAULT 0",
     ]:
         try:
             c.execute(sql)
         except Exception:
             pass
     try:
-        c.commit()
+        # 2026-09-21: don hang luu toan bo thong tin acc (ban xong xoa acc khoi kho)
+        for _col in ["uid TEXT DEFAULT ''", "password TEXT DEFAULT ''",
+                     "created_date TEXT DEFAULT ''", "backup_mail TEXT DEFAULT ''",
+                     "note TEXT DEFAULT ''", "totp TEXT DEFAULT ''",
+                     "cookie TEXT DEFAULT ''", "token TEXT DEFAULT ''",
+                     "batch TEXT DEFAULT ''"]:
+            try:
+                c.execute(f"ALTER TABLE acc_orders ADD COLUMN {_col}")
+            except Exception:
+                pass
+        if get_setting("order_details_migrated") != "1":
+            c.execute("""UPDATE acc_orders SET
+                uid=(SELECT s.uid FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                password=(SELECT s.password FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                created_date=(SELECT s.created_date FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                backup_mail=(SELECT s.backup_mail FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                note=(SELECT s.note FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                totp=(SELECT s.totp FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                cookie=(SELECT s.cookie FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                token=(SELECT s.token FROM acc_stock s WHERE s.id=acc_orders.stock_id),
+                batch=(SELECT s.batch FROM acc_stock s WHERE s.id=acc_orders.stock_id)
+                WHERE (uid='' OR uid IS NULL)""")
+            c.commit()
+            set_setting("order_details_migrated", "1")
+        # Doi warranty_hours tu GIO sang PHUT (cho phep BH dang 30p) - chay 1 lan duy nhat
+        if get_setting("warranty_min_migrated") != "1":
+            c.execute("UPDATE acc_categories SET warranty_hours = warranty_hours * 60")
+            c.commit()
+            set_setting("warranty_min_migrated", "1")
     except Exception:
         pass
-
-
 def create_user_list(tg_id: int, name: str, platform: str = 'fb') -> tuple[bool, str]:
     """Returns (success, message)"""
     with _lock:
@@ -1896,6 +2171,14 @@ def get_leaderboard(kind: str = 'topup', limit: int = 10) -> list:
 
 def transfer_balance(from_id: int, to_id: int, amount: int) -> tuple[bool, str]:
     """Transfer balance from one user to another. Returns (success, message)."""
+    try:
+        amount = int(amount)
+    except (TypeError, ValueError):
+        return False, "Số tiền không hợp lệ."
+    if amount <= 0:
+        return False, "Số tiền chuyển phải lớn hơn 0."
+    if from_id == to_id:
+        return False, "Không thể chuyển tiền cho chính mình."
     with _lock:
         c = get_conn()
         sender = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (from_id,)).fetchone()
@@ -2069,3 +2352,1541 @@ def get_users_for_daily_report(hour: int) -> list:
     c = get_conn()
     return c.execute("SELECT * FROM tg_users WHERE daily_report_hour=? AND is_blocked=0", (hour,)).fetchall()
 
+
+
+# ─── CREDITS (lượt check) ──────────────────────────────────────────────
+def get_credits(tg_id: int) -> int:
+    """Số credits còn lại của user (0 nếu chưa có cột/user)."""
+    try:
+        with _lock:
+            c = get_conn()
+            row = c.execute("SELECT credits FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+            return int(row["credits"] or 0) if row else 0
+    except Exception:
+        return 0
+
+
+def add_credits(tg_id: int, n: int, reason: str = "") -> int:
+    """Cộng/trừ credits cho user, ghi log. Trả về số dư mới."""
+    n = int(n)
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE tg_users SET credits = COALESCE(credits,0) + ? WHERE tg_id=?", (n, tg_id))
+        c.execute(
+            "INSERT INTO credit_txns(ts, tg_id, delta, reason) VALUES(?,?,?,?)",
+            (int(time.time()), tg_id, n, reason),
+        )
+        c.commit()
+        row = c.execute("SELECT credits FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+        return int(row["credits"] or 0) if row else 0
+
+
+def consume_credits(tg_id: int, n: int) -> bool:
+    """Trừ n credits nếu đủ. Atomic — trả về True nếu trừ thành công."""
+    n = int(n)
+    if n <= 0:
+        return True
+    with _lock:
+        c = get_conn()
+        row = c.execute("SELECT credits FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+        cur = int(row["credits"] or 0) if row else 0
+        if cur < n:
+            return False
+        c.execute("UPDATE tg_users SET credits = credits - ? WHERE tg_id=?", (n, tg_id))
+        c.execute(
+            "INSERT INTO credit_txns(ts, tg_id, delta, reason) VALUES(?,?,?,?)",
+            (int(time.time()), tg_id, -n, "check_bulk"),
+        )
+        c.commit()
+        return True
+
+
+# ─── RESELLER API KEYS ─────────────────────────────────────────────────
+def create_reseller_key(name: str, credits: int = 0) -> dict:
+    """Tạo API key mới cho reseller. Trả về dict gồm id, name, api_key, credits."""
+    import secrets
+    key = "rsk_" + secrets.token_urlsafe(32)
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO reseller_keys(name, api_key, credits, created_at) VALUES(?,?,?,?)",
+            (name, key, int(credits), int(time.time())),
+        )
+        c.commit()
+        return {"id": cur.lastrowid, "name": name, "api_key": key, "credits": int(credits)}
+
+
+def get_reseller_key(api_key: str):
+    """Lấy reseller key còn active theo api_key. Trả về Row hoặc None."""
+    try:
+        c = get_conn()
+        return c.execute(
+            "SELECT * FROM reseller_keys WHERE api_key=? AND is_active=1", (api_key,)
+        ).fetchone()
+    except Exception:
+        return None
+
+
+def list_reseller_keys():
+    c = get_conn()
+    return c.execute("SELECT id, name, credits, is_active, created_at FROM reseller_keys ORDER BY id DESC").fetchall()
+
+
+def set_reseller_active(key_id: int, active: bool) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE reseller_keys SET is_active=? WHERE id=?", (1 if active else 0, key_id))
+        c.commit()
+
+
+def add_reseller_credits(key_id: int, n: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE reseller_keys SET credits = credits + ? WHERE id=?", (int(n), key_id))
+        c.execute(
+            "INSERT INTO credit_txns(ts, key_id, delta, reason) VALUES(?,?,?,?)",
+            (int(time.time()), key_id, int(n), "reseller_topup"),
+        )
+        c.commit()
+
+
+def consume_reseller_credits(key_id: int, n: int = 1) -> bool:
+    """Trừ credits của reseller key. Atomic — True nếu thành công."""
+    n = int(n)
+    with _lock:
+        c = get_conn()
+        row = c.execute("SELECT credits FROM reseller_keys WHERE id=? AND is_active=1", (key_id,)).fetchone()
+        cur = int(row["credits"] or 0) if row else 0
+        if cur < n:
+            return False
+        c.execute("UPDATE reseller_keys SET credits = credits - ? WHERE id=?", (n, key_id))
+        c.commit()
+        return True
+
+
+def log_reseller_usage(key_id: int, endpoint: str, target: str = "", credits_used: int = 0) -> None:
+    try:
+        with _lock:
+            c = get_conn()
+            c.execute(
+                "INSERT INTO reseller_usage(key_id, endpoint, target, credits_used, created_at) VALUES(?,?,?,?,?)",
+                (key_id, endpoint, target or "", int(credits_used), int(time.time())),
+            )
+            c.commit()
+    except Exception:
+        pass
+
+
+def get_reseller_usage(key_id: int, limit: int = 50):
+    c = get_conn()
+    return c.execute(
+        "SELECT endpoint, target, credits_used, created_at FROM reseller_usage WHERE key_id=? ORDER BY id DESC LIMIT ?",
+        (key_id, limit),
+    ).fetchall()
+
+
+def set_reseller_webhook(key_id: int, url: str) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("UPDATE reseller_keys SET webhook_url=? WHERE id=?", (url or "", key_id))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def get_reseller_by_name_or_id(ref: str):
+    c = get_conn()
+    try:
+        kid = int(ref)
+        return c.execute("SELECT * FROM reseller_keys WHERE id=?", (kid,)).fetchone()
+    except (ValueError, TypeError):
+        return c.execute("SELECT * FROM reseller_keys WHERE name=?", (ref,)).fetchone()
+
+
+# ─── PROMO CODES (flash sale giảm giá gói credit) ──────────────────────
+
+def create_promo(code: str, pct: int, max_uses: int = 0, hours: int = 0) -> tuple[bool, str]:
+    code = (code or "").strip().upper()
+    if not code or len(code) > 32:
+        return False, "Mã không hợp lệ (1-32 ký tự)."
+    pct = max(1, min(90, int(pct)))
+    exp = int(time.time()) + int(hours) * 3600 if hours > 0 else 0
+    with _lock:
+        c = get_conn()
+        try:
+            c.execute(
+                "INSERT INTO promo_codes(code, pct, max_uses, used_count, expires_at, created_at) VALUES(?,?,?,?,?,?)",
+                (code, pct, int(max_uses), 0, exp, int(time.time())),
+            )
+            c.commit()
+            return True, f"Đã tạo mã <b>{code}</b> giảm <b>{pct}%</b>."
+        except Exception:
+            return False, f"Mã <b>{code}</b> đã tồn tại."
+
+
+def get_promo(code: str):
+    c = get_conn()
+    return c.execute("SELECT * FROM promo_codes WHERE code=?", ((code or "").strip().upper(),)).fetchone()
+
+
+def delete_promo(code: str) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("DELETE FROM promo_codes WHERE code=?", ((code or "").strip().upper(),))
+        c.execute("DELETE FROM user_promos WHERE code=?", ((code or "").strip().upper(),))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def list_promos():
+    c = get_conn()
+    return c.execute("SELECT * FROM promo_codes ORDER BY id DESC LIMIT 30").fetchall()
+
+
+def promo_valid(code: str) -> tuple[bool, str, object]:
+    """Trả về (ok, lý_do, row)."""
+    row = get_promo(code)
+    if not row:
+        return False, "Mã không tồn tại.", None
+    now = int(time.time())
+    if row["expires_at"] and row["expires_at"] < now:
+        return False, "Mã đã hết hạn.", None
+    if row["max_uses"] and row["used_count"] >= row["max_uses"]:
+        return False, "Mã đã hết lượt dùng.", None
+    return True, "", row
+
+
+def set_user_promo(tg_id: int, code: str) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO user_promos(tg_id, code, applied_at) VALUES(?,?,?) "
+            "ON CONFLICT(tg_id) DO UPDATE SET code=excluded.code, applied_at=excluded.applied_at",
+            (tg_id, code.strip().upper(), int(time.time())),
+        )
+        c.commit()
+
+
+def get_user_promo(tg_id: int):
+    c = get_conn()
+    return c.execute("SELECT * FROM user_promos WHERE tg_id=?", (tg_id,)).fetchone()
+
+
+def clear_user_promo(tg_id: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM user_promos WHERE tg_id=?", (tg_id,))
+        c.commit()
+
+
+def consume_promo(code: str) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE promo_codes SET used_count = used_count + 1 WHERE code=?", (code.strip().upper(),))
+        c.commit()
+
+
+def apply_user_promo(tg_id: int, price: int) -> tuple[int, str]:
+    """Áp mã giảm giá đang giữ của user vào giá. Trả về (giá_mới, mã_đã_dùng)."""
+    up = get_user_promo(tg_id)
+    if not up:
+        return price, ""
+    ok, _, row = promo_valid(up["code"])
+    if not ok:
+        clear_user_promo(tg_id)
+        return price, ""
+    pct = int(row["pct"])
+    new_price = int(price * (100 - pct) / 100)
+    consume_promo(up["code"])
+    clear_user_promo(tg_id)
+    return new_price, up["code"]
+
+
+# ─── CHECK ACCURACY STATS ──────────────────────────────────────────────
+def log_check_stat(tg_id: int, platform: str, target: str, result: str, via: str = "") -> None:
+    """Ghi 1 lượt check vào bảng thống kê (dùng tính độ chính xác/nhất quán)."""
+    try:
+        with _lock:
+            c = get_conn()
+            c.execute(
+                "INSERT INTO check_stats(tg_id, platform, target, result, via, checked_at) VALUES(?,?,?,?,?,?)",
+                (tg_id, platform, target, result, via or "", int(time.time())),
+            )
+            # Xóa dữ liệu quá 90 ngày để bảng không phình
+            c.execute("DELETE FROM check_stats WHERE checked_at < ?", (int(time.time()) - 90 * 86400,))
+            c.commit()
+    except Exception:
+        pass
+
+
+def get_accuracy_stats(tg_id: int) -> dict:
+    """Thống kê độ chính xác/nhất quán của user từ check_stats (90 ngày)."""
+    out = {"total": 0, "unique": 0, "live": 0, "die": 0, "error": 0,
+           "rechecked": 0, "consistent": 0}
+    try:
+        c = get_conn()
+        row = c.execute(
+            "SELECT COUNT(*) n, COUNT(DISTINCT target) u FROM check_stats WHERE tg_id=?",
+            (tg_id,),
+        ).fetchone()
+        if not row or not row["n"]:
+            return out
+        out["total"], out["unique"] = row["n"], row["u"]
+        for r in c.execute(
+            "SELECT result, COUNT(*) n FROM check_stats WHERE tg_id=? GROUP BY result", (tg_id,)
+        ).fetchall():
+            if r["result"] in out:
+                out[r["result"]] = r["n"]
+        # Độ nhất quán: các target check >= 2 lần, kết quả các lần có giống nhau không
+        for r in c.execute(
+            "SELECT target, COUNT(*) n, COUNT(DISTINCT result) d FROM check_stats "
+            "WHERE tg_id=? GROUP BY target HAVING n >= 2", (tg_id,)
+        ).fetchall():
+            out["rechecked"] += 1
+            if r["d"] == 1:
+                out["consistent"] += 1
+    except Exception:
+        pass
+    return out
+
+
+def set_watch_alert_mode(watch_id: int, tg_id: int, mode: str) -> bool:
+    """Đặt chế độ báo cho watch: 'all' (mọi thay đổi) hoặc 'die_only' (chỉ khi DIE)."""
+    mode = "die_only" if mode == "die_only" else "all"
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE watches SET alert_mode=? WHERE id=? AND tg_id=?", (mode, watch_id, tg_id)
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
+def get_user_watches(tg_id: int):
+    c = get_conn()
+    return c.execute(
+        "SELECT id, uid, note, last_status, alert_mode, created_at FROM watches "
+        "WHERE tg_id=? AND active=1 ORDER BY created_at DESC", (tg_id,)
+    ).fetchall()
+
+
+# ---------------------------------------------------------------- PayOS orders
+def create_payos_order(order_code: int, tg_id: int, amount: int,
+                       payment_link_id: str = "", checkout_url: str = "",
+                       qr_code: str = "") -> None:
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO payos_orders(order_code, tg_id, amount, status, "
+            "payment_link_id, checkout_url, qr_code, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (order_code, tg_id, amount, "PENDING",
+             payment_link_id or "", checkout_url or "", qr_code or "", now, now),
+        )
+        c.commit()
+
+
+def get_payos_order(order_code: int):
+    c = get_conn()
+    return c.execute(
+        "SELECT * FROM payos_orders WHERE order_code=?", (order_code,)
+    ).fetchone()
+
+
+def get_user_pending_payos_order(tg_id: int, max_age_sec: int):
+    """Đơn chờ mới nhất của user (chống tạo đơn trùng)."""
+    c = get_conn()
+    return c.execute(
+        "SELECT * FROM payos_orders WHERE tg_id=? AND status='PENDING' "
+        "AND created_at > ? ORDER BY created_at DESC LIMIT 1",
+        (tg_id, int(time.time()) - max_age_sec),
+    ).fetchone()
+
+
+def get_pending_payos_orders(max_age_sec: int):
+    c = get_conn()
+    return c.execute(
+        "SELECT * FROM payos_orders WHERE status='PENDING' "
+        "AND created_at > ? ORDER BY created_at",
+        (int(time.time()) - max_age_sec,),
+    ).fetchall()
+
+
+def touch_payos_order(order_code: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "UPDATE payos_orders SET updated_at=? WHERE order_code=?",
+            (int(time.time()), order_code),
+        )
+        c.commit()
+
+
+def mark_payos_paid(order_code: int) -> bool:
+    """Đánh dấu PAID nguyên tử — True nếu đơn đang PENDING/EXPIRED (chống cộng trùng)."""
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE payos_orders SET status='PAID', updated_at=? "
+            "WHERE order_code=? AND status IN ('PENDING','EXPIRED')",
+            (int(time.time()), order_code),
+        )
+        c.commit()
+        return cur.rowcount > 0
+
+
+def get_recently_expired_payos_orders(max_age_sec: int) -> list:
+    """Đơn EXPIRED trong max_age_sec chưa kiểm tra lần cuối (khách trả trễ)."""
+    c = get_conn()
+    try:
+        return c.execute(
+            "SELECT * FROM payos_orders WHERE status='EXPIRED' "
+            "AND COALESCE(final_checked,0)=0 AND created_at > ? "
+            "ORDER BY created_at DESC LIMIT 50",
+            (int(time.time()) - max_age_sec,)).fetchall()
+    except Exception:
+        # DB cũ chưa có cột final_checked
+        return []
+
+
+def mark_payos_final_checked(order_code: int) -> None:
+    try:
+        c = get_conn()
+        c.execute("UPDATE payos_orders SET final_checked=1 WHERE order_code=?",
+                  (order_code,))
+        c.commit()
+    except Exception:
+        pass
+
+
+def mark_payos_status(order_code: int, status: str) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "UPDATE payos_orders SET status=?, updated_at=? WHERE order_code=?",
+            (status, int(time.time()), order_code),
+        )
+        c.commit()
+
+
+def payos_stats_today() -> dict:
+    """Thống kê đơn PayOS hôm nay cho admin."""
+    import datetime
+    start = int(datetime.datetime.now().replace(
+        hour=0, minute=0, second=0, microsecond=0).timestamp())
+    c = get_conn()
+    out = {"pending": 0, "paid": 0, "paid_amount": 0}
+    try:
+        for r in c.execute(
+            "SELECT status, COUNT(*) n, COALESCE(SUM(amount),0) s FROM payos_orders "
+            "WHERE created_at >= ? GROUP BY status", (start,)
+        ).fetchall():
+            st = str(r["status"]).upper()
+            if st == "PENDING":
+                out["pending"] = r["n"]
+            elif st == "PAID":
+                out["paid"] = r["n"]
+                out["paid_amount"] = r["s"]
+    except Exception:
+        pass
+    return out
+
+
+# ============================ SHOP ACC FB ============================
+def acc_category_add(name: str, price: int, warranty_hours: int,
+                     description: str = "") -> int:
+    """Thêm loại acc. Trả id, -1 nếu tên đã tồn tại."""
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        try:
+            cur = c.execute(
+                "INSERT INTO acc_categories(name, price, warranty_hours, description, active, created_at) "
+                "VALUES(?,?,?,?,1,?)",
+                (name.strip(), int(price), int(warranty_hours), description or "", now),
+            )
+            cid = cur.lastrowid
+            c.commit()
+            return cid
+        except Exception:
+            return -1
+
+
+def acc_category_list(active_only: bool = True, include_hidden: bool = False) -> list:
+    c = get_conn()
+    q = "SELECT * FROM acc_categories"
+    conds = []
+    if active_only:
+        conds.append("active=1")
+    if not include_hidden:
+        conds.append("hidden=0")
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY id"
+    return c.execute(q).fetchall()
+
+
+def acc_category_get(cat_id: int):
+    return get_conn().execute(
+        "SELECT * FROM acc_categories WHERE id=?", (cat_id,)).fetchone()
+
+
+def acc_stock_delete_available(cat_id: int) -> int:
+    """Xóa toàn bộ acc CHƯA BÁN trong kho của 1 loại. Trả số acc đã xóa."""
+    with _lock:
+        c = get_conn()
+        cur = c.execute("DELETE FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
+                        (cat_id,))
+        c.commit()
+        return cur.rowcount
+
+
+def acc_category_delete_hard(cat_id: int) -> tuple[bool, str]:
+    """Xóa loại acc. Chỉ cho xóa khi không còn acc CHƯA BÁN.
+    - Không còn acc nào: xóa hẳn dòng loại.
+    - Còn acc ĐÃ BÁN: đổi tên loại thành "<tên> [xóa ...]" + ẩn đi (giữ lịch sử
+      đơn hàng/bảo hành của khách), tên gốc được nhả để tạo lại.
+    Trả (ok, thông_báo)."""
+    import datetime as _dt
+    with _lock:
+        c = get_conn()
+        cat = c.execute("SELECT * FROM acc_categories WHERE id=?",
+                        (cat_id,)).fetchone()
+        if not cat:
+            return (False, "Không tìm thấy loại này.")
+        n_av = c.execute("SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? "
+                         "AND status='AVAILABLE'", (cat_id,)).fetchone()["n"]
+        if n_av:
+            return (False, f"Loại này còn <b>{n_av}</b> acc chưa bán trong kho.\n"
+                           f"Xóa hết bằng <code>/xoakho {cat_id} yes</code> trước "
+                           f"(nhớ <code>/xuatkho {cat_id}</code> sao lưu nếu cần).")
+        n_sold = c.execute("SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? "
+                           "AND status!='AVAILABLE'", (cat_id,)).fetchone()["n"]
+        if n_sold:
+            stamp = _dt.datetime.now().strftime("%d/%m")
+            new_name = f"{cat['name']} [xóa {stamp}]"
+            c.execute("UPDATE acc_categories SET name=?, active=0, hidden=1 WHERE id=?",
+                      (new_name, cat_id))
+            c.commit()
+            return (True, f"Đã xóa loại <b>#{cat_id}</b>. "
+                           f"Giữ lại {n_sold} acc đã bán trong lịch sử "
+                           f"(loại cũ đổi tên thành {new_name}).")
+        c.execute("DELETE FROM acc_categories WHERE id=?", (cat_id,))
+        c.commit()
+        return (True, f"Đã xóa hẳn loại <b>#{cat_id}</b> khỏi hệ thống.")
+
+
+def acc_category_update(cat_id: int, **kw) -> bool:
+    allowed = {"name", "price", "warranty_hours", "description", "active",
+               "credit_bonus", "low_threshold", "scarcity_pct",
+               "mystery_eligible", "hidden", "cover_photo"}
+    sets, params = [], []
+    for k, v in kw.items():
+        if k in allowed:
+            sets.append(f"{k}=?")
+            params.append(v)
+    if not sets:
+        return False
+    params.append(cat_id)
+    with _lock:
+        c = get_conn()
+        try:
+            c.execute(f"UPDATE acc_categories SET {', '.join(sets)} WHERE id=?", tuple(params))
+            c.commit()
+            return True
+        except Exception:
+            return False
+
+
+def acc_stock_add_batch(cat_id: int, rows: list[dict], batch: str = "",
+                        supplier_id: int = 0, cost_per_acc: int = 0) -> tuple[int, int]:
+    """Nhập kho. rows: list dict với keys uid,password,created_date,backup_mail,note,totp,cookie,token.
+    batch: nhãn lô nhập (VD "Lô 21/09 10:52"). Trả (added, skipped)."""
+    now = int(time.time())
+    added = skipped = 0
+    with _lock:
+        c = get_conn()
+        for r in rows:
+            uid = (r.get("uid") or "").strip()
+            if not uid:
+                skipped += 1
+                continue
+            c.execute(
+                "INSERT INTO acc_stock(cat_id, uid, password, created_date, backup_mail, "
+                "note, totp, cookie, token, status, added_at, batch) "
+                "VALUES(?,?,?,?,?,?,?,?,?,'AVAILABLE',?,?)",
+                (cat_id, uid, r.get("password", ""), r.get("created_date", ""),
+                 r.get("backup_mail", ""), r.get("note", ""), r.get("totp", ""),
+                 r.get("cookie", ""), r.get("token", ""), now, batch or ""),
+            )
+            added += 1
+        if added:
+            # Có hàng về -> tự hiện lại danh mục (5.7)
+            c.execute("UPDATE acc_categories SET hidden=0 WHERE id=?", (cat_id,))
+            if batch:
+                try:
+                    c.execute(
+                        "INSERT INTO acc_batches(batch, cat_id, supplier_id, cost_per_acc, created_at) "
+                        "VALUES(?,?,?,?,?) ON CONFLICT(batch) DO UPDATE SET "
+                        "cat_id=excluded.cat_id, supplier_id=excluded.supplier_id, "
+                        "cost_per_acc=excluded.cost_per_acc",
+                        (batch, cat_id, int(supplier_id or 0),
+                         int(cost_per_acc or 0), now))
+                except Exception:
+                    pass
+        c.commit()
+    return added, skipped
+
+
+def acc_sold_count(cat_id: int) -> int:
+    """Tổng số acc đã bán của 1 loại (social proof cho shop)."""
+    try:
+        r = get_conn().execute(
+            "SELECT COUNT(*) AS c FROM acc_orders WHERE cat_id=?", (cat_id,)).fetchone()
+        return int(r["c"] or 0)
+    except Exception:
+        return 0
+
+
+def acc_stock_count(cat_id: int) -> int:
+    r = get_conn().execute(
+        "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
+        (cat_id,)).fetchone()
+    return r["n"] if r else 0
+
+
+def _rv(row, key: str) -> str:
+    """Đọc an toàn 1 cột từ sqlite3.Row (trả '' nếu thiếu/None)."""
+    try:
+        v = row[key]
+        return "" if v is None else v
+    except Exception:
+        return ""
+
+
+def _acc_order_create(c, tg_id: int, row, cat_id: int, price: int, now: int) -> int:
+    """Tạo đơn hàng kèm TOÀN BỘ thông tin acc, rồi XÓA acc khỏi kho.
+    Trả order_id."""
+    cur = c.execute(
+        "INSERT INTO acc_orders(tg_id, stock_id, cat_id, price, created_at, delivered_at,"
+        " uid, password, created_date, backup_mail, note, totp, cookie, token, batch)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (tg_id, row["id"], cat_id, price, now, now,
+         _rv(row, "uid"), _rv(row, "password"), _rv(row, "created_date"),
+         _rv(row, "backup_mail"), _rv(row, "note"), _rv(row, "totp"),
+         _rv(row, "cookie"), _rv(row, "token"), _rv(row, "batch")))
+    order_id = cur.lastrowid
+    c.execute("DELETE FROM acc_stock WHERE id=?", (row["id"],))
+    return order_id
+
+
+def acc_sell_one(cat_id: int, tg_id: int, price: int):
+    """Bán 1 acc: lấy acc AVAILABLE cũ nhất, lưu chi tiết vào đơn rồi XÓA khỏi kho.
+    Trả (order_id, stock_row) hoặc None nếu hết hàng."""
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        row = c.execute(
+            "SELECT * FROM acc_stock WHERE cat_id=? AND status='AVAILABLE' "
+            "ORDER BY id LIMIT 1", (cat_id,)).fetchone()
+        if not row:
+            return None
+        order_id = _acc_order_create(c, tg_id, row, cat_id, price, now)
+        c.commit()
+        _acc_autohide(c, cat_id)
+        return order_id, row
+
+
+def acc_sell_many(cat_id: int, tg_id: int, price_total: int, qty: int):
+    """Bán nhiều acc cùng lúc, nguyên tử: lấy qty acc AVAILABLE cũ nhất, xóa khỏi kho.
+    price_total là TỔNG tiền khách trả (đã giảm giá) — chia đều từng đơn, đơn cuối
+    nhận phần dư để tổng doanh thu khớp số tiền thực thu.
+    Trả list [(order_id, stock_row)] hoặc None nếu không đủ hàng."""
+    qty = max(1, int(qty))
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        rows = c.execute(
+            "SELECT * FROM acc_stock WHERE cat_id=? AND status='AVAILABLE' "
+            "ORDER BY id LIMIT ?", (cat_id, qty)).fetchall()
+        if len(rows) < qty:
+            return None
+        out = []
+        each = price_total // qty if qty else price_total
+        for i, row in enumerate(rows):
+            chk = c.execute("SELECT id FROM acc_stock WHERE id=? AND status='AVAILABLE'",
+                            (row["id"],)).fetchone()
+            if not chk:
+                c.rollback()
+                return None
+            p = each if i < len(rows) - 1 else price_total - each * (len(rows) - 1)
+            out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
+        c.commit()
+        _acc_autohide(c, cat_id)
+        return out
+
+
+def _acc_autohide(c, cat_id: int):
+    """5.7 Tự ẩn danh mục khi hết hàng. Gọi trong transaction bán hàng."""
+    try:
+        r = c.execute(
+            "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
+            (cat_id,)).fetchone()
+        if r and r["n"] == 0:
+            c.execute("UPDATE acc_categories SET hidden=1 WHERE id=?", (cat_id,))
+            c.commit()
+    except Exception:
+        pass
+
+
+def ref_shop_commission(buyer_tg_id: int, amount: int) -> tuple[int, int]:
+    """Hoa hồng F1 cho đơn mua acc shop. Trả (f1_tg_id, bonus). Không lồng F2."""
+    try:
+        pct = float(get_setting("ref_shop_pct", "10") or 10)
+    except Exception:
+        pct = 10
+    bonus = int(int(amount) * pct / 100)
+    if bonus <= 0:
+        return 0, 0
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        u = c.execute("SELECT referrer_id FROM tg_users WHERE tg_id=?",
+                      (buyer_tg_id,)).fetchone()
+        if not u or not u["referrer_id"]:
+            return 0, 0
+        f1_id = int(u["referrer_id"])
+        c.execute("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?",
+                  (bonus, f1_id))
+        c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                  (now, f1_id, bonus, "Hoa hồng shop acc F1"))
+        c.execute(
+            "INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (f1_id, buyer_tg_id, 1, int(amount), bonus, now))
+        c.commit()
+        return f1_id, bonus
+    return 0, 0
+
+
+# ============================ VÒNG QUAY MAY MẮN ============================
+def spin_add_tickets(tg_id: int, n: int) -> int:
+    """Cộng vé quay. Trả tổng vé hiện tại."""
+    n = max(0, int(n))
+    with _lock:
+        c = get_conn()
+        c.execute("INSERT INTO spin_tickets(tg_id, tickets) VALUES(?,?) "
+                  "ON CONFLICT(tg_id) DO UPDATE SET tickets = tickets + ?",
+                  (tg_id, n, n))
+        c.commit()
+        r = c.execute("SELECT tickets FROM spin_tickets WHERE tg_id=?",
+                      (tg_id,)).fetchone()
+        return int(r["tickets"]) if r else 0
+
+
+def spin_get_tickets(tg_id: int) -> int:
+    r = get_conn().execute("SELECT tickets FROM spin_tickets WHERE tg_id=?",
+                           (tg_id,)).fetchone()
+    return int(r["tickets"]) if r else 0
+
+
+def spin_consume_ticket(tg_id: int) -> bool:
+    """Trừ 1 vé nguyên tử. True nếu trừ được."""
+    with _lock:
+        c = get_conn()
+        cur = c.execute("UPDATE spin_tickets SET tickets = tickets - 1 "
+                        "WHERE tg_id=? AND tickets > 0", (tg_id,))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def spin_default_prizes() -> list:
+    return [
+        {"label": "🎁 +10 credits", "kind": "credits", "value": 10, "weight": 30},
+        {"label": "🎁 +25 credits", "kind": "credits", "value": 25, "weight": 18},
+        {"label": "🎁 +50 credits", "kind": "credits", "value": 50, "weight": 10},
+        {"label": "💵 +5.000đ số dư", "kind": "balance", "value": 5000, "weight": 15},
+        {"label": "💵 +15.000đ số dư", "kind": "balance", "value": 15000, "weight": 7},
+        {"label": "😅 Chúc may mắn lần sau", "kind": "none", "value": 0, "weight": 20},
+    ]
+
+
+def spin_get_prizes() -> list:
+    """Đọc cấu hình giải từ setting spin_prizes (JSON), fallback mặc định."""
+    import json
+    try:
+        raw = get_setting("spin_prizes", "")
+        if raw:
+            prizes = json.loads(raw)
+            if isinstance(prizes, list) and prizes:
+                return prizes
+    except Exception:
+        pass
+    return spin_default_prizes()
+
+
+def spin_roll() -> dict:
+    """Quay weighted random, trả 1 prize dict."""
+    import random
+    prizes = spin_get_prizes()
+    total = sum(max(0, int(p.get("weight", 0))) for p in prizes) or 1
+    r = random.uniform(0, total)
+    acc = 0
+    for p in prizes:
+        acc += max(0, int(p.get("weight", 0)))
+        if r <= acc:
+            return p
+    return prizes[-1]
+
+
+def spin_award(tg_id: int, prize: dict) -> None:
+    """Trao giải: cộng credits / số dư. Ghi lịch sử."""
+    kind = prize.get("kind", "none")
+    value = int(prize.get("value", 0) or 0)
+    if kind == "credits" and value > 0:
+        add_credits(tg_id, value, "trung_vong_quay")
+    elif kind == "balance" and value > 0:
+        add_balance_only(tg_id, value, "trung_vong_quay")
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO spin_history(tg_id, prize_label, prize_kind, prize_value, created_at) "
+            "VALUES(?,?,?,?,?)",
+            (tg_id, prize.get("label", ""), kind, value, int(time.time())))
+        c.commit()
+
+
+# ============================ BÁO HÀNG MỚI + HẠNG TV + LOYALTY ============================
+def acc_sub_restock(tg_id: int, cat_id: int) -> bool:
+    """Đăng ký báo khi có hàng. True nếu đăng ký mới."""
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT OR IGNORE INTO acc_restock_subs(tg_id, cat_id, created_at) VALUES(?,?,?)",
+            (tg_id, cat_id, int(time.time())))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def acc_unsub_restock(tg_id: int, cat_id: int) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("DELETE FROM acc_restock_subs WHERE tg_id=? AND cat_id=?",
+                        (tg_id, cat_id))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def acc_is_sub_restock(tg_id: int, cat_id: int) -> bool:
+    r = get_conn().execute(
+        "SELECT 1 FROM acc_restock_subs WHERE tg_id=? AND cat_id=?",
+        (tg_id, cat_id)).fetchone()
+    return bool(r)
+
+
+def acc_restock_subscribers(cat_id: int) -> list:
+    return [r["tg_id"] for r in get_conn().execute(
+        "SELECT tg_id FROM acc_restock_subs WHERE cat_id=?", (cat_id,)).fetchall()]
+
+
+def acc_clear_restock_subs(cat_id: int) -> int:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("DELETE FROM acc_restock_subs WHERE cat_id=?", (cat_id,))
+        c.commit()
+        return cur.rowcount
+
+
+def acc_user_spent(tg_id: int) -> int:
+    """Tổng tiền user đã mua acc shop."""
+    r = get_conn().execute(
+        "SELECT COALESCE(SUM(price),0) s FROM acc_orders WHERE tg_id=?",
+        (tg_id,)).fetchone()
+    return int(r["s"]) if r else 0
+
+
+def member_tier_info(tg_id: int) -> dict:
+    """Hạng thành viên theo tổng chi tiêu shop acc.
+    Settings: member_tier_silver_min/pct, member_tier_gold_min/pct."""
+    def _num(key, default):
+        try:
+            return int(get_setting(key, str(default)) or default)
+        except Exception:
+            return default
+    spent = acc_user_spent(tg_id)
+    silver_min = _num("member_tier_silver_min", 500000)
+    gold_min = _num("member_tier_gold_min", 2000000)
+    silver_pct = _num("member_tier_silver_pct", 3)
+    gold_pct = _num("member_tier_gold_pct", 7)
+    if spent >= gold_min:
+        tier, pct = "🥇 Vàng", gold_pct
+        nxt, nxt_min = None, 0
+    elif spent >= silver_min:
+        tier, pct = "🥈 Bạc", silver_pct
+        nxt, nxt_min = "🥇 Vàng", gold_min
+    else:
+        tier, pct = "🥉 Đồng", 0
+        nxt, nxt_min = "🥈 Bạc", silver_min
+    return {"tier": tier, "pct": pct, "spent": spent,
+            "next_tier": nxt, "next_min": nxt_min,
+            "silver_min": silver_min, "gold_min": gold_min,
+            "silver_pct": silver_pct, "gold_pct": gold_pct}
+
+
+def loyalty_get(tg_id: int) -> int:
+    r = get_conn().execute("SELECT points FROM loyalty_points WHERE tg_id=?",
+                           (tg_id,)).fetchone()
+    return int(r["points"]) if r else 0
+
+
+def loyalty_add(tg_id: int, delta: int, reason: str = "") -> int:
+    """Cộng/trừ điểm loyalty. Trả tổng điểm mới."""
+    delta = int(delta)
+    if delta == 0:
+        return loyalty_get(tg_id)
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        c.execute("INSERT INTO loyalty_points(tg_id, points) VALUES(?,?) "
+                  "ON CONFLICT(tg_id) DO UPDATE SET points = points + ?",
+                  (tg_id, delta, delta))
+        c.execute("INSERT INTO loyalty_history(tg_id, delta, reason, created_at) "
+                  "VALUES(?,?,?,?)", (tg_id, delta, reason or "", now))
+        c.commit()
+        return loyalty_get(tg_id)
+
+
+def loyalty_consume(tg_id: int, n: int) -> bool:
+    """Trừ n điểm nếu đủ. Atomic."""
+    n = int(n)
+    if n <= 0:
+        return True
+    with _lock:
+        c = get_conn()
+        cur = c.execute("UPDATE loyalty_points SET points = points - ? "
+                        "WHERE tg_id=? AND points >= ?", (n, tg_id, n))
+        if cur.rowcount:
+            c.execute("INSERT INTO loyalty_history(tg_id, delta, reason, created_at) "
+                      "VALUES(?,?,?,?)", (tg_id, -n, "doi_qua", int(time.time())))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def loyalty_redeem_cat() -> int:
+    """ID loại acc dùng để đổi quà. 0 = chưa cấu hình."""
+    try:
+        return int(get_setting("loyalty_redeem_cat", "0") or 0)
+    except Exception:
+        return 0
+
+
+def acc_get_order(order_id: int):
+    return get_conn().execute(
+        "SELECT o.*, COALESCE(c.name,'[đã xóa]') AS cat_name, "
+        "COALESCE(c.warranty_hours,0) AS warranty_hours "
+        "FROM acc_orders o "
+        "LEFT JOIN acc_categories c ON c.id=o.cat_id "
+        "WHERE o.id=?", (order_id,)).fetchone()
+
+
+def acc_user_orders(tg_id: int, limit: int = 20) -> list:
+    return get_conn().execute(
+        "SELECT o.*, COALESCE(c.name,'[đã xóa]') AS cat_name, "
+        "COALESCE(c.warranty_hours,0) AS warranty_hours "
+        "FROM acc_orders o LEFT JOIN acc_categories c ON c.id=o.cat_id "
+        "WHERE o.tg_id=? ORDER BY o.id DESC LIMIT ?", (tg_id, limit)).fetchall()
+
+
+def acc_recent_orders(limit: int = 20) -> list:
+    return get_conn().execute(
+        "SELECT o.*, COALESCE(c.name,'[đã xóa]') AS cat_name, u.username FROM acc_orders o "
+        "LEFT JOIN acc_categories c ON c.id=o.cat_id "
+        "LEFT JOIN tg_users u ON u.tg_id=o.tg_id "
+        "ORDER BY o.id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def acc_revenue() -> dict:
+    c = get_conn()
+    out = {"total": 0, "count": 0, "by_cat": []}
+    try:
+        r = c.execute("SELECT COUNT(*) n, COALESCE(SUM(price),0) s FROM acc_orders").fetchone()
+        out["count"], out["total"] = r["n"], r["s"]
+        out["by_cat"] = c.execute(
+            "SELECT c.name, COUNT(*) n, COALESCE(SUM(o.price),0) s FROM acc_orders o "
+            "JOIN acc_categories c ON c.id=o.cat_id GROUP BY c.id ORDER BY s DESC").fetchall()
+    except Exception:
+        pass
+    return out
+
+
+def acc_warranty_claim(order_id: int, tg_id: int, stock_id: int,
+                       check_result: str = "") -> int:
+    """Tạo khiếu nại bảo hành. Trả claim id, -1 nếu đã có claim PENDING cho đơn này."""
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        dup = c.execute(
+            "SELECT id FROM acc_warranty_claims WHERE order_id=? AND status IN ('PENDING','NEEDS_REVIEW')",
+            (order_id,)).fetchone()
+        if dup:
+            return -1
+        cur = c.execute(
+            "INSERT INTO acc_warranty_claims(order_id, tg_id, stock_id, check_result, status, created_at) "
+            "VALUES(?,?,?,?,'PENDING',?)",
+            (order_id, tg_id, stock_id, check_result or "", now))
+        cid = cur.lastrowid
+        c.commit()
+        return cid
+
+
+def acc_warranty_pending(limit: int = 30) -> list:
+    return get_conn().execute(
+        "SELECT w.*, COALESCE(c.name,'[đã xóa]') AS cat_name, o.uid FROM acc_warranty_claims w "
+        "JOIN acc_orders o ON o.id=w.order_id "
+        "LEFT JOIN acc_categories c ON c.id=o.cat_id "
+        "WHERE w.status IN ('PENDING','NEEDS_REVIEW') ORDER BY w.id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def acc_auto_replace(order_id: int, old_stock_id: int, cat_id: int, tg_id: int):
+    """Bảo hành tự động: acc cũ (bot check DIE) đánh dấu DEAD, giao acc AVAILABLE
+    khác cùng loại giá 0đ. Trả (new_order_id, stock_row) hoặc None nếu hết hàng đổi."""
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        # acc cũ đã bị xóa khỏi kho lúc bán nên không cần đánh dấu DEAD nữa
+        row = c.execute(
+            "SELECT * FROM acc_stock WHERE cat_id=? AND status='AVAILABLE' "
+            "ORDER BY id LIMIT 1", (cat_id,)).fetchone()
+        if not row:
+            c.commit()
+            return None
+        chk = c.execute("SELECT id FROM acc_stock WHERE id=? AND status='AVAILABLE'",
+                        (row["id"],)).fetchone()
+        if not chk:
+            c.commit()
+            return None
+        order_id = _acc_order_create(c, tg_id, row, cat_id, 0, now)
+        c.commit()
+        return order_id, dict(row)
+
+
+def acc_claims_overdue(hours: int = 12) -> list:
+    """Các claim PENDING quá hạn chưa được nhắc."""
+    cutoff = int(time.time()) - hours * 3600
+    return get_conn().execute(
+        "SELECT w.*, COALESCE(c.name,'[đã xóa]') AS cat_name, o.uid FROM acc_warranty_claims w "
+        "JOIN acc_orders o ON o.id=w.order_id "
+        "LEFT JOIN acc_categories c ON c.id=o.cat_id "
+        "WHERE w.status='PENDING' AND w.created_at < ? AND w.reminded_at = 0 "
+        "ORDER BY w.created_at", (cutoff,)).fetchall()
+
+
+def acc_claim_mark_reminded(claim_ids: list) -> None:
+    if not claim_ids:
+        return
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        for i in claim_ids:
+            c.execute("UPDATE acc_warranty_claims SET reminded_at=? WHERE id=?",
+                      (now, int(i)))
+        c.commit()
+
+
+def acc_stock_by_uid(uid: str):
+    r = get_conn().execute(
+        "SELECT s.*, c.name AS cat_name FROM acc_stock s "
+        "LEFT JOIN acc_categories c ON c.id=s.cat_id "
+        "WHERE s.uid=? ORDER BY s.id DESC LIMIT 1", (uid.strip(),)).fetchone()
+    return dict(r) if r else None
+
+
+def acc_stock_orders(stock_id: int) -> list:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT o.*, u.username FROM acc_orders o "
+        "LEFT JOIN tg_users u ON u.tg_id=o.tg_id "
+        "WHERE o.stock_id=? ORDER BY o.id", (stock_id,)).fetchall()]
+
+
+def acc_stock_claim_count(stock_id: int) -> int:
+    r = get_conn().execute(
+        "SELECT COUNT(*) n FROM acc_warranty_claims WHERE stock_id=?",
+        (stock_id,)).fetchone()
+    return int(r["n"]) if r else 0
+
+
+# ============================ FAQ TỰ ĐỘNG ============================
+_DEFAULT_FAQ = [
+    {"kw": ["bảo hành", "bh acc", "acc die thì", "acc chết thì", "đổi acc"],
+     "a": "🛡 <b>BẢO HÀNH SHOP ACC</b>\n\n"
+          "• Mỗi loại acc có thời gian bảo hành riêng (xem ở /shop).\n"
+          "• Acc die trong thời gian BH: vào /damua → bấm nút <b>Bảo hành</b> ở đơn hàng.\n"
+          "• Bot tự kiểm tra, nếu die thật sẽ <b>tự đổi acc mới ngay</b>, bạn không cần chờ.\n"
+          "• Hết hàng đổi thì admin xử lý tay sớm nhất."},
+    {"kw": ["2fa", "2 fa", "xác thực 2"],
+     "a": "🔐 <b>VỀ 2FA</b>\n\n"
+          "Acc có mã 2FA sẽ được giao kèm trong thông tin acc sau khi mua.\n"
+          "Nhớ bật 2FA mới của bạn ngay sau khi đổi mật khẩu nhé."},
+    {"kw": ["mua acc", "mua như nào", "mua thế nào", "mua sao", "đặt hàng", "cách mua"],
+     "a": "🛒 <b>CÁCH MUA ACC</b>\n\n"
+          "1. Gõ /shop → chọn loại acc\n"
+          "2. Bấm nút Mua (có thể mua 5/10 acc để được giảm giá)\n"
+          "3. Bot trừ số dư và giao acc ngay trong chat\n\n"
+          "Chưa đủ số dư? Nạp bằng /nap (quét QR, tự cộng tiền)."},
+    {"kw": ["nạp tiền", "nap tien", "nạp sao", "nạp như nào"],
+     "a": "💳 <b>NẠP TIỀN</b>\n\n"
+          "Gõ /nap + số tiền (VD: <code>/nap 100000</code>), quét mã QR để thanh toán.\n"
+          "Tiền tự cộng vào số dư sau vài giây, bot báo ngay khi nhận được."},
+    {"kw": ["vòng quay", "quay thưởng", "vé quay"],
+     "a": "🎡 <b>VÒNG QUAY MAY MẮN</b>\n\n"
+          "Mua 1 acc = 1 vé quay. Gõ /quay để thử vận may: trúng credits, số dư..."},
+    {"kw": ["điểm", "loyalty", "đổi quà", "tích điểm"],
+     "a": "⭐ <b>ĐIỂM LOYALTY</b>\n\n"
+          "Mua 100k = 1 điểm. Đủ 10 điểm gõ /doiqua để đổi acc miễn phí.\n"
+          "Xem điểm ở /damua, xem hạng thành viên ở /hang."},
+]
+
+
+def shop_faq_list() -> list:
+    """Danh sách FAQ: mặc định + admin thêm. Lưu ở setting shop_faq_json."""
+    import json as _json
+    try:
+        extra = _json.loads(get_setting("shop_faq_json", "[]") or "[]")
+        if not isinstance(extra, list):
+            extra = []
+    except Exception:
+        extra = []
+    return list(_DEFAULT_FAQ) + extra
+
+
+def shop_faq_add(keywords: str, answer: str) -> int:
+    """Thêm 1 câu FAQ. keywords: chuỗi cách nhau dấu phẩy. Trả tổng số câu custom."""
+    import json as _json
+    kws = [k.strip().lower() for k in keywords.split(",") if k.strip()]
+    if not kws or not answer.strip():
+        return -1
+    try:
+        extra = _json.loads(get_setting("shop_faq_json", "[]") or "[]")
+        if not isinstance(extra, list):
+            extra = []
+    except Exception:
+        extra = []
+    extra.append({"kw": kws, "a": answer.strip()})
+    set_setting("shop_faq_json", _json.dumps(extra, ensure_ascii=False))
+    return len(extra)
+
+
+def shop_faq_del(idx: int) -> bool:
+    """Xóa câu FAQ custom theo số thứ tự (bắt đầu từ 1)."""
+    import json as _json
+    try:
+        extra = _json.loads(get_setting("shop_faq_json", "[]") or "[]")
+        if not isinstance(extra, list):
+            extra = []
+    except Exception:
+        extra = []
+    if 1 <= idx <= len(extra):
+        extra.pop(idx - 1)
+        set_setting("shop_faq_json", _json.dumps(extra, ensure_ascii=False))
+        return True
+    return False
+
+
+def shop_faq_match(text: str):
+    """Tìm câu FAQ khớp với tin nhắn. Trả answer hoặc None."""
+    t = (text or "").lower().strip()
+    if not t or len(t) > 200:
+        return None
+    for item in shop_faq_list():
+        for kw in item.get("kw", []):
+            if kw and kw in t:
+                return item.get("a", "")
+    return None
+
+
+def acc_warranty_get(claim_id: int):
+    return get_conn().execute(
+        "SELECT * FROM acc_warranty_claims WHERE id=?", (claim_id,)).fetchone()
+
+
+def acc_warranty_set_status(claim_id: int, status: str) -> bool:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE acc_warranty_claims SET status=?, handled_at=? WHERE id=?",
+                  (status, int(time.time()), claim_id))
+        c.commit()
+        return True
+
+
+def add_balance_only(tg_id: int, amount: int, reason: str) -> None:
+    """Cộng/trừ số dư KHÔNG động vào total_topup (dùng cho hoàn tiền)."""
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE tg_users SET balance = balance + ? WHERE tg_id=?", (amount, tg_id))
+        c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                  (int(time.time()), tg_id, amount, reason))
+        c.commit()
+
+
+def acc_mark_status(stock_id: int, status: str) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE acc_stock SET status=? WHERE id=?", (status, stock_id))
+        c.commit()
+
+
+# ================= SHOP MỞ RỘNG — GĐ4/GĐ5 đợt 4 =================
+# 4.3 giá khan hiếm, 4.6 upsell, 4.8 hộp mù, 4.9 đặt cọc, 4.10 giờ vàng,
+# 4.11 đánh giá, 5.2/5.15 NCC + chấm điểm, 5.3 chống lạm dụng BH,
+# 5.7 ẩn/hiện (hook trong sell/add), 5.10 acc nằm kho lâu, 5.13 hỏi thăm 24h,
+# 5.14 giá vốn/lãi theo lô.
+
+def shop_unit_price(cat) -> dict:
+    """Giá 1 acc sau: giá khan hiếm (4.3) + giờ vàng (4.10).
+    Trả dict(price, base, stock, scarcity, scarcity_pct, happy, happy_pct)."""
+    cat = dict(cat)
+    base = int(cat.get("price") or 0)
+    price = base
+    cat_id = int(cat.get("id") or 0)
+    n = acc_stock_count(cat_id)
+    # Tính năng giá khan hiếm đã BỎ (2026-09-21): giá luôn = giá gốc.
+    scarcity = False
+    s_pct = 0
+    happy = False
+    h_pct = 0
+    try:
+        h_pct = int(get_setting("happy_hour_pct", "10") or 0)
+        h_range = (get_setting("happy_hour_range", "20-22") or "20-22").strip()
+        h_cat = int(get_setting("happy_hour_cat", "0") or 0)
+    except Exception:
+        h_pct, h_range, h_cat = 0, "20-22", 0
+    if h_pct > 0 and (h_cat == 0 or h_cat == cat_id):
+        try:
+            a, b = [int(x) for x in h_range.split("-")]
+            h = time.localtime().tm_hour
+            in_range = (a <= h < b) if a < b else (h >= a or h < b)
+            if in_range:
+                price = price * (100 - h_pct) // 100
+                happy = True
+        except Exception:
+            pass
+    return {"price": price, "base": base, "stock": n, "scarcity": scarcity,
+            "scarcity_pct": s_pct, "happy": happy,
+            "happy_pct": h_pct if happy else 0}
+
+
+def happy_hour_active() -> tuple[bool, int, int]:
+    """(đang giờ vàng?, % giảm, cat_id áp dụng)."""
+    try:
+        h_pct = int(get_setting("happy_hour_pct", "10") or 0)
+        h_range = (get_setting("happy_hour_range", "20-22") or "20-22").strip()
+        h_cat = int(get_setting("happy_hour_cat", "0") or 0)
+    except Exception:
+        return False, 0, 0
+    if h_pct <= 0:
+        return False, 0, h_cat
+    try:
+        a, b = [int(x) for x in h_range.split("-")]
+        h = time.localtime().tm_hour
+        in_range = (a <= h < b) if a < b else (h >= a or h < b)
+        return in_range, h_pct, h_cat
+    except Exception:
+        return False, 0, h_cat
+
+
+def acc_mystery_sell(tg_id: int, price: int):
+    """4.8 Hộp mù: giao ngẫu nhiên 1 acc từ các loại mystery_eligible còn hàng.
+    Trả (order_id, row, cat_name) hoặc None nếu hết."""
+    import random
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        cats = c.execute(
+            "SELECT id, name FROM acc_categories WHERE active=1 AND hidden=0 "
+            "AND mystery_eligible=1").fetchall()
+        avail = []
+        for ct in cats:
+            rows = c.execute(
+                "SELECT * FROM acc_stock WHERE cat_id=? AND status='AVAILABLE' "
+                "ORDER BY id", (ct["id"],)).fetchall()
+            if rows:
+                avail.append((ct, rows))
+        if not avail:
+            return None
+        ct, rows = random.choice(avail)
+        row = random.choice(rows)
+        chk = c.execute("SELECT id FROM acc_stock WHERE id=? AND status='AVAILABLE'",
+                        (row["id"],)).fetchone()
+        if not chk:
+            return None
+        order_id = _acc_order_create(c, tg_id, row, ct["id"], price, now)
+        c.commit()
+        _acc_autohide(c, ct["id"])
+        return order_id, row, ct["name"]
+
+
+# ---- 4.9 Đặt cọc giữ hàng ----
+def acc_deposit_create(tg_id: int, cat_id: int, amount: int) -> int:
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO acc_deposits(tg_id, cat_id, amount, status, created_at) "
+            "VALUES(?,?,?,?,?)", (tg_id, cat_id, int(amount), "WAITING", now))
+        c.commit()
+        return cur.lastrowid
+
+
+def acc_deposit_list(tg_id: int) -> list:
+    return get_conn().execute(
+        "SELECT d.*, c.name cat_name, c.price cat_price FROM acc_deposits d "
+        "LEFT JOIN acc_categories c ON c.id=d.cat_id "
+        "WHERE d.tg_id=? ORDER BY d.id DESC LIMIT 20", (tg_id,)).fetchall()
+
+
+def acc_deposit_waiting(cat_id: int) -> list:
+    return get_conn().execute(
+        "SELECT * FROM acc_deposits WHERE cat_id=? AND status='WAITING' "
+        "ORDER BY created_at LIMIT 50", (cat_id,)).fetchall()
+
+
+def acc_deposit_set_status(dep_id: int, status: str, order_id: int = 0) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE acc_deposits SET status=?, order_id=? WHERE id=?",
+                  (status, int(order_id or 0), dep_id))
+        c.commit()
+
+
+def acc_deposit_cancel(dep_id: int, tg_id: int):
+    """Hủy cọc của chính user. Trả amount hoàn lại hoặc None."""
+    with _lock:
+        c = get_conn()
+        r = c.execute(
+            "SELECT * FROM acc_deposits WHERE id=? AND tg_id=? AND status='WAITING'",
+            (dep_id, tg_id)).fetchone()
+        if not r:
+            return None
+        c.execute("UPDATE acc_deposits SET status='CANCELLED' WHERE id=?", (dep_id,))
+        c.commit()
+        return int(r["amount"])
+
+
+# ---- 4.11 Đánh giá có thưởng ----
+def acc_review_add(order_id: int, tg_id: int, cat_id: int, stars: int) -> bool:
+    now = int(time.time())
+    stars = max(1, min(5, int(stars)))
+    with _lock:
+        c = get_conn()
+        try:
+            c.execute(
+                "INSERT INTO acc_reviews(order_id, tg_id, cat_id, stars, created_at) "
+                "VALUES(?,?,?,?,?)", (order_id, tg_id, cat_id, stars, now))
+            c.commit()
+            return True
+        except Exception:
+            return False
+
+
+def acc_order_reviewed(order_id: int) -> bool:
+    r = get_conn().execute(
+        "SELECT 1 FROM acc_reviews WHERE order_id=?", (order_id,)).fetchone()
+    return bool(r)
+
+
+def acc_review_avg(cat_id: int) -> tuple[float, int]:
+    r = get_conn().execute(
+        "SELECT AVG(stars) a, COUNT(*) n FROM acc_reviews WHERE cat_id=?",
+        (cat_id,)).fetchone()
+    if not r or not r["n"]:
+        return 0.0, 0
+    return round(float(r["a"] or 0), 1), int(r["n"])
+
+
+def acc_review_set_comment(order_id: int, text: str) -> bool:
+    """Lưu lời nhận xét của khách cho đánh giá."""
+    try:
+        with _lock:
+            c = get_conn()
+            c.execute("UPDATE acc_reviews SET comment=? WHERE order_id=?",
+                      ((text or "")[:500], order_id))
+            c.commit()
+        return True
+    except Exception:
+        return False
+
+
+def acc_review_list(cat_id: int, limit: int = 3) -> list:
+    """Các đánh giá có lời nhận xét mới nhất của 1 loại acc."""
+    try:
+        return get_conn().execute(
+            "SELECT stars, comment, created_at FROM acc_reviews "
+            "WHERE cat_id=? AND comment<>'' ORDER BY id DESC LIMIT ?",
+            (cat_id, limit)).fetchall()
+    except Exception:
+        return []
+
+
+def acc_orders_need_review_nudge(minutes: int) -> list:
+    """Đơn mua đã qua `minutes` phút, chưa nhắc đánh giá, chưa đánh giá."""
+    try:
+        cutoff = int(time.time()) - minutes * 60
+        return get_conn().execute(
+            "SELECT o.id, o.tg_id, o.cat_id, c.name AS cat_name FROM acc_orders o "
+            "LEFT JOIN acc_categories c ON c.id=o.cat_id "
+            "WHERE o.created_at<=? AND o.review_nudged_at=0 "
+            "AND NOT EXISTS(SELECT 1 FROM acc_reviews r WHERE r.order_id=o.id)",
+            (cutoff,)).fetchall()
+    except Exception:
+        return []
+
+
+def acc_order_mark_review_nudged(order_id: int):
+    try:
+        with _lock:
+            c = get_conn()
+            c.execute("UPDATE acc_orders SET review_nudged_at=? WHERE id=?",
+                      (int(time.time()), order_id))
+            c.commit()
+    except Exception:
+        pass
+
+
+# ---- 5.15 Sổ NCC ----
+def supplier_add(name: str, contact: str = "") -> int:
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO suppliers(name, contact, rating, created_at) VALUES(?,?,0,?)",
+            (name.strip(), contact.strip(), now))
+        c.commit()
+        return cur.lastrowid
+
+
+def supplier_list() -> list:
+    return get_conn().execute("SELECT * FROM suppliers ORDER BY id DESC").fetchall()
+
+
+def supplier_get(sid: int):
+    return get_conn().execute("SELECT * FROM suppliers WHERE id=?", (sid,)).fetchone()
+
+
+def supplier_rate(sid: int, stars: int) -> bool:
+    stars = max(1, min(5, int(stars)))
+    with _lock:
+        c = get_conn()
+        cur = c.execute("UPDATE suppliers SET rating=? WHERE id=?", (stars, sid))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def supplier_score_add(supplier_id: int, batch: str, total: int, alive: int,
+                       note: str = "") -> int:
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO supplier_scores(supplier_id, batch, total, alive, note, scored_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (supplier_id, batch or "", int(total), int(alive), note or "", now))
+        c.commit()
+        return cur.lastrowid
+
+
+def supplier_scores(supplier_id: int, limit: int = 10) -> list:
+    return get_conn().execute(
+        "SELECT * FROM supplier_scores WHERE supplier_id=? ORDER BY id DESC LIMIT ?",
+        (supplier_id, limit)).fetchall()
+
+
+def supplier_live_rate(supplier_id: int) -> tuple[float, int, int]:
+    """Tỉ lệ sống tổng hợp từ các lần chấm điểm. Trả (pct, alive, total)."""
+    r = get_conn().execute(
+        "SELECT COALESCE(SUM(alive),0) a, COALESCE(SUM(total),0) t "
+        "FROM supplier_scores WHERE supplier_id=?", (supplier_id,)).fetchone()
+    a, t = int(r["a"] or 0), int(r["t"] or 0)
+    return (round(a * 100 / t, 1) if t else 0.0), a, t
+
+
+# ---- 5.14 Giá vốn / lãi theo lô ----
+def acc_batches_by_cat(cat_id: int) -> list:
+    return get_conn().execute(
+        "SELECT * FROM acc_batches WHERE cat_id=? ORDER BY created_at DESC LIMIT 30",
+        (cat_id,)).fetchall()
+
+
+def acc_profit_by_batch(batch: str) -> dict:
+    """Vốn, doanh thu, lãi của 1 lô."""
+    b = get_conn().execute("SELECT * FROM acc_batches WHERE batch=?", (batch,)).fetchone()
+    c = get_conn()
+    n_stock = c.execute("SELECT COUNT(*) n FROM acc_stock WHERE batch=?", (batch,)).fetchone()["n"]
+    n_sold = c.execute("SELECT COUNT(*) n FROM acc_orders WHERE batch=?", (batch,)).fetchone()["n"]
+    n = n_stock + n_sold
+    rev = c.execute(
+        "SELECT COALESCE(SUM(price),0) s FROM acc_orders WHERE batch=?", (batch,)).fetchone()["s"]
+    cost_per = int(b["cost_per_acc"]) if b and b["cost_per_acc"] else 0
+    cost = cost_per * n
+    return {"batch": batch, "count": n, "cost_per": cost_per,
+            "cost": cost, "revenue": int(rev or 0),
+            "profit": int(rev or 0) - cost,
+            "supplier_id": int(b["supplier_id"]) if b else 0}
+
+
+# ---- 5.3 Chống lạm dụng bảo hành ----
+def acc_warranty_week_count(tg_id: int) -> int:
+    week_ago = int(time.time()) - 7 * 86400
+    r = get_conn().execute(
+        "SELECT COUNT(*) n FROM acc_warranty_claims WHERE tg_id=? AND created_at>=?",
+        (tg_id, week_ago)).fetchone()
+    return int(r["n"]) if r else 0
+
+
+# ---- 5.10 Acc nằm kho lâu / 5.5 dọn kho ----
+def acc_stale_stock(days: int, limit: int = 50) -> list:
+    cutoff = int(time.time()) - int(days) * 86400
+    return get_conn().execute(
+        "SELECT s.*, c.name cat_name FROM acc_stock s "
+        "LEFT JOIN acc_categories c ON c.id=s.cat_id "
+        "WHERE s.status='AVAILABLE' AND s.added_at<? AND s.stale_warned=0 "
+        "ORDER BY s.added_at LIMIT ?", (cutoff, limit)).fetchall()
+
+
+def acc_mark_stale_warned(ids: list) -> None:
+    if not ids:
+        return
+    with _lock:
+        c = get_conn()
+        for sid in ids:
+            c.execute("UPDATE acc_stock SET stale_warned=1 WHERE id=?", (sid,))
+        c.commit()
+
+
+def acc_old_stock(days: int, limit: int = 50) -> list:
+    cutoff = int(time.time()) - int(days) * 86400
+    return get_conn().execute(
+        "SELECT id, uid, cat_id FROM acc_stock WHERE status='AVAILABLE' "
+        "AND added_at<? ORDER BY added_at LIMIT ?", (cutoff, limit)).fetchall()
+
+
+# ---- 5.13 Hỏi thăm sau 24h / 4.6 upsell ----
+def acc_orders_need_followup() -> list:
+    cutoff = int(time.time()) - 86400
+    return get_conn().execute(
+        "SELECT o.*, c.name cat_name FROM acc_orders o "
+        "LEFT JOIN acc_categories c ON c.id=o.cat_id "
+        "WHERE o.delivered_at>0 AND o.delivered_at<? AND o.followup_sent=0 "
+        "ORDER BY o.delivered_at LIMIT 30", (cutoff,)).fetchall()
+
+
+def acc_order_mark_followup(order_id: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE acc_orders SET followup_sent=1 WHERE id=?", (order_id,))
+        c.commit()
+
+
+def acc_last_order_at(tg_id: int) -> int:
+    r = get_conn().execute(
+        "SELECT MAX(created_at) m FROM acc_orders WHERE tg_id=?", (tg_id,)).fetchone()
+    return int(r["m"] or 0)
