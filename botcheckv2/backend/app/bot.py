@@ -1416,18 +1416,22 @@ async def _send_payos_invoice(msg: Message, tg_id: int, amount: int,
                               order_code: int, checkout_url: str,
                               qr_code: str, reused: bool, target: str = "main"):
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        *([[InlineKeyboardButton(text="🌐 Mở trang thanh toán", url=checkout_url)]]
+          if checkout_url else []),
         [InlineKeyboardButton(text="❌ Hủy đơn", callback_data=f"payos_cancel:{order_code}")],
     ])
-    wallet_txt = "🛒 <b>Ví shop</b> (mua acc FB)" if target == "shop" else "💰 <b>Ví chính</b> (check UID, mua gói...)"
+    wallet_txt = "🛒 <b>Ví shop</b> <i>(mua tài khoản)</i>" if target == "shop" else "💰 <b>Ví chính</b> <i>(check UID • mua gói)</i>"
     caption = (
-        "⚡ <b>NẠP TIỀN TỰ ĐỘNG</b>" + (" <i>(dùng lại đơn đang chờ)</i>" if reused else "") + "\n\n"
-        f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
+        "💳 <b>NẠP TIỀN TỰ ĐỘNG</b>" + (" <i>(dùng lại đơn đang chờ)</i>" if reused else "") + "\n"
+        "━━━━━━━━━━━━━━\n"
+        f"💵 Số tiền: <b>{vnd(amount)}</b>\n"
         f"👛 Nạp vào: {wallet_txt}\n"
-        f"🧾 Mã đơn: <code>{order_code}</code>\n\n"
-        "📷 <b>Mở app ngân hàng quét mã QR bên dưới</b> để thanh toán.\n"
-        "Tiền sẽ <b>tự động cộng</b> vào tài khoản sau khi bạn thanh toán xong "
-        "(thường dưới 1 phút).\n\n"
-        "<i>Đơn tự hủy sau 45 phút nếu chưa thanh toán.</i>"
+        f"🧾 Mã đơn: <code>{order_code}</code>\n"
+        "━━━━━━━━━━━━━━\n"
+        "① Mở app ngân hàng, quét <b>mã QR</b> bên dưới\n"
+        "② Thanh toán đúng số tiền\n"
+        "③ Tiền <b>tự động cộng</b> vào ví (thường dưới 1 phút) ⚡\n\n"
+        "<i>⏰ Đơn tự hủy sau 45 phút nếu chưa thanh toán.</i>"
     )
     if qr_code:
         try:
@@ -1443,15 +1447,83 @@ async def _send_payos_invoice(msg: Message, tg_id: int, amount: int,
 
 async def _ask_payos_wallet(msg, amount: int):
     """Hỏi user nạp vào ví nào trước khi tạo đơn PayOS."""
+    u = db.get_user(msg.chat.id if hasattr(msg, "chat") else msg.from_user.id)
+    main_bal = int(u["balance"] or 0) if u else 0
+    shop_bal = int(u["shop_balance"] or 0) if u and "shop_balance" in u.keys() else 0
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 Ví chính — check UID, mua gói, credits...",
-                              callback_data=f"payos_wallet:main:{amount}")],
-        [InlineKeyboardButton(text="🛒 Ví shop — mua acc Facebook",
-                              callback_data=f"payos_wallet:shop:{amount}")],
+        [InlineKeyboardButton(
+            text=f"💰 Ví chính — đang có {vnd(main_bal)}",
+            callback_data=f"payos_wallet:main:{amount}")],
+        [InlineKeyboardButton(
+            text=f"🛒 Ví shop — đang có {vnd(shop_bal)}",
+            callback_data=f"payos_wallet:shop:{amount}")],
     ])
     await msg.answer(
-        f"💳 Nạp <b>{vnd(amount)}</b> vào ví nào?",
+        f"💳 <b>NẠP {vnd(amount)}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"Chọn ví muốn nạp vào:",
         parse_mode="HTML", reply_markup=kb)
+
+
+_NAP_QUICK_AMOUNTS = [50000, 100000, 200000, 500000, 1000000]
+
+
+async def _nap_amount_picker(msg: Message, target: str = "main"):
+    """Bàn phím chọn nhanh số tiền nạp."""
+    rows = []
+    row = []
+    for a in _NAP_QUICK_AMOUNTS:
+        row.append(InlineKeyboardButton(
+            text=f"{a // 1000}K", callback_data=f"nap_amt:{target}:{a}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="✏️ Nhập số khác",
+                                      callback_data=f"nap_custom:{target}")])
+    wallet_txt = "🛒 <b>Ví shop</b>" if target == "shop" else "💰 <b>Ví chính</b>"
+    await msg.answer(
+        f"💳 <b>NẠP TIỀN</b> → {wallet_txt}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"Chọn nhanh số tiền bên dưới, hoặc nhập số khác:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("nap_amt:"))
+async def on_nap_amt(cb: CallbackQuery):
+    await cb.answer()
+    try:
+        _, target, amount_s = cb.data.split(":")
+        amount = int(amount_s)
+        assert target in ("main", "shop") and amount > 0
+    except Exception:
+        await cb.message.answer("❌ Yêu cầu không hợp lệ, gõ /nap lại nhé.")
+        return
+    if target == "shop":
+        try:
+            order_code, checkout_url, qr_code, reused = await _make_payos_order(
+                cb.from_user.id, amount, "shop")
+        except Exception as e:
+            await cb.message.answer(f"❌ {e}")
+            return
+        await _send_payos_invoice(cb.message, cb.from_user.id, amount,
+                                  order_code, checkout_url, qr_code, reused, "shop")
+    else:
+        await _ask_payos_wallet(cb.message, amount)
+
+
+@router.callback_query(F.data.startswith("nap_custom:"))
+async def on_nap_custom(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    target = cb.data.split(":", 1)[1]
+    await cb.message.answer("✍️ Nhập <b>số tiền</b> muốn nạp (ví dụ: 50000):",
+                            parse_mode="HTML")
+    if target == "shop":
+        await state.set_state(PayOSState.waiting_for_shop_amount)
+    else:
+        await state.set_state(PayOSState.waiting_for_amount)
 
 
 @router.message(Command("nap"))
@@ -1465,8 +1537,7 @@ async def on_nap(msg: Message, state: FSMContext):
             return
         await _ask_payos_wallet(msg, amount)
     else:
-        await msg.answer("✍️ Nhập <b>số tiền</b> muốn nạp (ví dụ: 50000):")
-        await state.set_state(PayOSState.waiting_for_amount)
+        await _nap_amount_picker(msg, "main")
 
 
 @router.callback_query(F.data.startswith("payos_wallet:"))
@@ -1490,7 +1561,7 @@ async def on_payos_wallet(cb: CallbackQuery):
 
 
 @router.message(Command("napshop"))
-async def on_napshop(msg: Message, state: FSMContext):
+async def on_napshop(msg: Message):
     """Nạp thẳng vào ví shop (mua acc)."""
     parts = (msg.text or "").split(maxsplit=1)
     if len(parts) > 1:
@@ -1508,8 +1579,7 @@ async def on_napshop(msg: Message, state: FSMContext):
         await _send_payos_invoice(msg, msg.from_user.id, amount,
                                   order_code, checkout_url, qr_code, reused, "shop")
     else:
-        await msg.answer("✍️ Nhập <b>số tiền</b> muốn nạp vào <b>🛒 Ví shop</b> (ví dụ: 50000):")
-        await state.set_state(PayOSState.waiting_for_shop_amount)
+        await _nap_amount_picker(msg, "shop")
 
 
 @router.message(PayOSState.waiting_for_amount)
@@ -2166,14 +2236,39 @@ async def on_balance(msg: Message):
         return
     credits = db.get_credits(msg.from_user.id)
     shop_bal = int(user["shop_balance"] or 0) if "shop_balance" in user.keys() else 0
+    main_bal = int(user["balance"] or 0)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Nạp ví chính", callback_data="wal_nap:main"),
+         InlineKeyboardButton(text="🛒 Nạp ví shop", callback_data="wal_nap:shop")],
+        [InlineKeyboardButton(text="📜 Lịch sử giao dịch", callback_data="wal_hist")],
+    ])
     await msg.answer(
-        f"💰 Ví chính: <b>{vnd(user['balance'])}</b>\n"
-        f"🛒 Ví shop (mua acc): <b>{vnd(shop_bal)}</b>\n"
-        f"⚡ Credits: <b>{credits}</b> lượt\n"
-        f"Gói: <b>{_sub_text(user)}</b>\n\n"
-        f"<i>Nạp ví chính: /nap • Nạp ví shop: /napshop</i>",
-        parse_mode="HTML",
+        f"👛 <b>VÍ CỦA BẠN</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💰 <b>Ví chính</b>\n"
+        f"      <b>{vnd(main_bal)}</b>\n"
+        f"      <i>Check UID • mua gói • credits</i>\n\n"
+        f"🛒 <b>Ví shop</b>\n"
+        f"      <b>{vnd(shop_bal)}</b>\n"
+        f"      <i>Mua tài khoản tự động</i>\n\n"
+        f"⚡ <b>Credits:</b> {credits} lượt\n"
+        f"👑 <b>Gói:</b> {_sub_text(user)}\n"
+        f"━━━━━━━━━━━━━━",
+        parse_mode="HTML", reply_markup=kb,
     )
+
+
+@router.callback_query(F.data.startswith("wal_nap:"))
+async def on_wal_nap(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    target = cb.data.split(":", 1)[1]
+    await _nap_amount_picker(cb.message, target if target == "shop" else "main")
+
+
+@router.callback_query(F.data == "wal_hist")
+async def on_wal_hist(cb: CallbackQuery):
+    await cb.answer()
+    await cb.message.answer("📜 Xem lịch sử giao dịch bằng lệnh /lichsu nhé.")
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
@@ -5324,9 +5419,10 @@ def _pickup_suffix() -> str:
 def _acc_delivery_caption(o) -> str:
     e = html.escape
     parts = [
-        f"✅ <b>MUA THÀNH CÔNG — {e(o['cat_name'])}</b>",
-        f"🧾 Đơn hàng: <b>#{o['id']}</b> | 💰 {vnd(o['price'])}",
-        "",
+        f"🎉 <b>MUA THÀNH CÔNG!</b>",
+        f"{_cat_icon(o['cat_name'])} <b>{e(o['cat_name'])}</b>",
+        f"🧾 Đơn hàng: <b>#{o['id']}</b>  •  💰 <b>{vnd(o['price'])}</b>",
+        "━━━━━━━━━━━━━━",
         f"👤 UID: <code>{e(o['uid'] or '')}</code>",
         f"🔑 Mật khẩu: <code>{e(o['password'] or '')}</code>",
     ]
@@ -5380,17 +5476,17 @@ async def on_shop(msg: Message):
     _u = db.get_user(msg.from_user.id)
     _shop_bal = int(_u["shop_balance"] or 0) if _u and "shop_balance" in _u.keys() else 0
     lines = [
-        "🛒 <b>SHOP TÀI KHOẢN FACEBOOK</b>",
-        "<i>⚡ Giao tự động • 🛡 Bảo hành 1 đổi 1 • 💬 Hỗ trợ 24/7</i>",
-        f"👛 Ví shop của bạn: <b>{vnd(_shop_bal)}</b> <i>(nạp: /napshop)</i>",
-        "━━━━━━━━━━━━", "",
+        "🛒 <b>SHOP TÀI KHOẢN</b>",
+        "━━━━━━━━━━━━━━",
+        f"👛 Ví shop: <b>{vnd(_shop_bal)}</b>",
+        "",
     ]
     # 4.10 Giờ vàng giảm giá
     hh_on, hh_pct, hh_cat = db.happy_hour_active()
     if hh_on:
         scope = "toàn shop" if hh_cat == 0 else f"loại #{hh_cat}"
-        lines.append(f"⚡ <b>GIỜ VÀNG: giảm {hh_pct}% {scope}!</b>")
-        lines.append("")
+        lines += [f"⚡ <b>GIỜ VÀNG</b> — giảm <b>{hh_pct}%</b> {scope}!",
+              ""]
     # gom số liệu từng loại
     infos = []
     for c in cats:
@@ -5444,20 +5540,22 @@ async def on_shop(msg: Message):
                 badges.append("⚠️ SẮP HẾT")
         if up["happy"]:
             badges.append(f"⚡ giờ vàng −{up['happy_pct']}%")
-        badge_txt = (" — " + " ".join(badges)) if badges else ""
+        badge_txt = (" " + " ".join(badges)) if badges else ""
         stock_txt = f"📦 Còn <b>{n}</b>" if n else "📦 <b>Hết hàng</b>"
-        sold_txt = f" • 🔁 Đã bán <b>{sold}</b>" if sold else ""
+        sold_txt = f"  •  🔁 Đã bán <b>{sold}</b>" if sold else ""
         lines.append(f"{icon} <b>{html.escape(c['name'])}</b>{badge_txt}")
-        lines.append(f"   💰 {price_txt}/acc • {stock_txt}{sold_txt}")
+        lines.append(f"┌ 💰 <b>{price_txt}</b>/acc")
+        lines.append(f"└ {stock_txt}{sold_txt}")
         if rcnt:
-            lines.append(f"   ⭐ {avg}/5 ({rcnt} đánh giá)")
+            stars = "⭐" * int(round(avg)) if avg else "⭐"
+            lines.append(f"    {stars} <b>{avg}/5</b> <i>({rcnt} đánh giá)</i>")
         if c["description"]:
-            lines.append(f"   <i>{html.escape(c['description'])}</i>")
+            lines.append(f"    <i>{html.escape(c['description'])}</i>")
         if sample_uid:
-            lines.append(f'   🔗 Check thử: <a href="https://facebook.com/{html.escape(sample_uid)}">facebook.com/{html.escape(sample_uid)}</a>')
+            lines.append(f'    🔗 Check thử: <a href="https://facebook.com/{html.escape(sample_uid)}">facebook.com/{html.escape(sample_uid)}</a>')
         lines.append("")
         kb_rows.append([InlineKeyboardButton(
-            text=f"{icon} {c['name']} — {price_txt} ({n})",
+            text=f"{icon} {c['name']} • {price_txt}",
             callback_data=f"accbuy:{c['id']}")])
     # 4.8 Hộp mù acc
     try:
@@ -5473,9 +5571,12 @@ async def on_shop(msg: Message):
             kb_rows.append([InlineKeyboardButton(
                 text=f"🎁 Mua hộp mù — {vnd(m_price)}",
                 callback_data="accmystery")])
-    lines += ["👉 <i>Chạm vào loại acc để xem chi tiết, soi mẫu & mua.</i>",
+    lines += ["👉 <i>Chạm vào từng loại để xem chi tiết & mua.</i>",
               "",
-              "🎡 <i>/quay</i> vòng quay may mắn • 🏅 <i>/hang</i> hạng thành viên • 🎁 <i>/doiqua</i> đổi điểm"]
+              "🎡 <i>/quay</i> vòng quay may mắn  •  🏅 <i>/hang</i> hạng thành viên  •  🎁 <i>/doiqua</i> đổi điểm",
+              "🛒 <i>/giohang</i> giỏ hàng của bạn"]
+    kb_rows.append([InlineKeyboardButton(text="🛒 Xem giỏ hàng", callback_data="cartview"),
+                    InlineKeyboardButton(text="💰 Nạp ví shop", callback_data="wal_nap:shop")])
     await msg.answer("\n".join(lines), parse_mode="HTML",
                      reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
                      disable_web_page_preview=True)
@@ -5532,39 +5633,47 @@ async def on_acc_buy(cb: CallbackQuery):
     mail_line = _mail_app_line()
     txt = (
         f"{icon} <b>{html.escape(c['name'])}</b>\n"
-        f"━━━━━━━━━━━━\n"
-        f"💰 Giá: <b>{vnd(unit)}</b>/acc\n"
-        f"📊 Tồn kho: <b>{n}</b> acc"
-        + (f" • 🔁 Đã bán <b>{sold}</b>" if sold else "") + "\n"
-        f"🛡 Bảo hành: <b>Chỉ bảo hành log sai mk</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"💰 <b>{vnd(unit)}</b>/acc"
+        + (f"  <i>(gốc {vnd(up['base'])})</i>" if up["happy"] else "") + "\n"
+        f"📦 Tồn kho: <b>{n}</b> acc"
+        + (f"  •  🔁 Đã bán <b>{sold}</b>" if sold else "") + "\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"🛡 <b>Bảo hành:</b> 1 đổi 1 khi acc die\n"
         + (mail_line + "\n" if mail_line else "")
     )
     if sample and sample["uid"]:
         uid_e = html.escape(sample["uid"])
-        txt += f'🔗 Check thử: <a href="https://facebook.com/{uid_e}">facebook.com/{uid_e}</a>'
+        txt += f'🔍 <i>Acc mẫu: <a href="https://facebook.com/{uid_e}">facebook.com/{uid_e}</a>'
         if sample["created_date"]:
             txt += f" (tạo {html.escape(sample['created_date'])})"
-        txt += "\n"
+        txt += "</i>\n"
 
     if up["happy"]:
-        txt += f"⚡ <b>Giờ vàng:</b> đang giảm {up['happy_pct']}% (giá gốc {vnd(up['base'])}).\n"
+        txt += f"⚡ <b>GIỜ VÀNG −{up['happy_pct']}%</b> <i>(giá gốc {vnd(up['base'])})</i>\n"
     avg, rcnt = db.acc_review_avg(cat_id)
     if rcnt:
-        stars = "⭐" * int(round(avg)) if avg else ""
-        txt += f"{stars} Đánh giá: <b>{avg}/5</b> ({rcnt} lượt)\n"
+        stars = "⭐" * int(round(avg)) if avg else "⭐"
+        txt += f"{stars} <b>{avg}/5</b> <i>({rcnt} đánh giá)</i>\n"
         for rv in db.acc_review_list(cat_id, 2):
             q = html.escape((rv["comment"] or "")[:120])
             txt += f'   <i>"{q}"</i> {"⭐" * int(rv["stars"] or 5)}\n'
     if c["description"]:
         txt += f"\n<i>{html.escape(c['description'])}</i>\n"
     if int(c.get("credit_bonus") or 0) > 0:
-        txt += f"\n🎁 Tặng <b>{c['credit_bonus']} credits</b> check cho mỗi acc mua.\n"
+        txt += f"\n🎁 Tặng <b>{c['credit_bonus']} credits</b> cho mỗi acc mua.\n"
     if p5 > 0 or p10 > 0 or p20 > 0:
-        txt += f"\n🏷 <b>Mua nhiều giảm giá:</b> 5 acc −{p5}%, 10 acc −{p10}%, 20 acc −{p20}% (giá sỉ).\n"
+        txt += f"\n🏷 <b>Mua nhiều, giảm nhiều:</b>\n"
+        if p5 > 0:
+            txt += f"   5 acc → <b>−{p5}%</b>\n"
+        if p10 > 0:
+            txt += f"   10 acc → <b>−{p10}%</b>\n"
+        if p20 > 0:
+            txt += f"   20 acc → <b>−{p20}%</b> <i>(giá sỉ)</i>\n"
     tier = db.member_tier_info(cb.from_user.id)
     if tier["pct"] > 0:
-        txt += f"\n{tier['tier']} của bạn được <b>giảm thêm {tier['pct']}%</b> mọi đơn.\n"
-    txt += "\n<i>⚡ Giao acc tự động ngay sau khi thanh toán. Đổi mật khẩu ngay sau khi đăng nhập.</i>\n"
+        txt += f"\n{tier['tier']} — bạn được <b>giảm thêm {tier['pct']}%</b> mọi đơn.\n"
+    txt += "\n<i>⚡ Giao acc tự động sau thanh toán • Đổi mật khẩu ngay khi đăng nhập.</i>\n"
     kb_rows = []
     if n:
         kb_rows.append([InlineKeyboardButton(
@@ -5887,11 +5996,13 @@ async def on_acc_confirm(cb: CallbackQuery):
         if upsell_pct:
             disc_txt.append(f"giảm {upsell_pct}% mua thêm trong {wmin} phút")
         await cb.message.answer(
-            f"❌ <b>Ví shop không đủ!</b>\n\n"
+            f"😢 <b>VÍ SHOP KHÔNG ĐỦ</b>\n"
+            f"━━━━━━━━━━━━━━\n"
             f"Mua {qty} acc: <b>{vnd(final)}</b>"
-            + (f" ({', '.join(disc_txt)})" if disc_txt else "") + "\n"
-            f"Ví shop của bạn: <b>{vnd(balance)}</b>\n"
-            f"Còn thiếu: <b>{vnd(final - balance)}</b>\n\n"
+            + (f"\n<i>🎉 {', '.join(disc_txt)}</i>" if disc_txt else "") + "\n"
+            f"👛 Ví shop của bạn: <b>{vnd(balance)}</b>\n"
+            f"💸 Còn thiếu: <b>{vnd(final - balance)}</b>\n"
+            f"━━━━━━━━━━━━━━\n"
             f"Nạp thêm bằng /napshop (tự động, quét QR) rồi mua lại nhé.",
             parse_mode="HTML",
         )
@@ -5921,10 +6032,14 @@ async def on_acc_confirm(cb: CallbackQuery):
     for order in delivered:
         order_id = order["id"]
         await cb.message.answer(
-            f"✅ <b>MUA THÀNH CÔNG — {html.escape(order['cat_name'])}</b>\n"
-            f"🧾 Đơn hàng: <b>#{order_id}</b> | 💰 {vnd(order['price'])} \n"
+            f"🎉 <b>MUA THÀNH CÔNG!</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"{icon} <b>{html.escape(order['cat_name'])}</b>\n"
+            f"🧾 Đơn hàng: <b>#{order_id}</b>\n"
             f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
-            f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
+            f"💰 Đã thanh toán: <b>{vnd(order['price'])}</b>\n"
+            f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n"
+            f"━━━━━━━━━━━━━━\n\n"
             f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     # Báo admin: thông tin khách + acc đã mua
@@ -6030,9 +6145,10 @@ def _cart_render(tg_id: int):
     items = [it for it in db.cart_list(tg_id) if it["active"]]
     if not items:
         return None
-    lines = ["🛒 <b>GIỎ HÀNG CỦA BẠN</b>", "━━━━━━━━━━━━"]
+    lines = ["🛒 <b>GIỎ HÀNG CỦA BẠN</b>", "━━━━━━━━━━━━━━"]
     kb_rows = []
     grand = 0
+    saved = 0
     for i, it in enumerate(items, 1):
         cat = db.acc_category_get(it["cat_id"])
         if not cat:
@@ -6041,13 +6157,19 @@ def _cart_render(tg_id: int):
         grand += lp["final"]
         disc = []
         if lp["bulk_pct"]:
-            disc.append(f"-{lp['bulk_pct']}% mua nhiều")
+            disc.append(f"−{lp['bulk_pct']}% mua nhiều")
         if lp["tier_pct"]:
-            disc.append(f"-{lp['tier_pct']}% {lp['tier_name']}")
-        dtxt = f" ({', '.join(disc)})" if disc else ""
+            disc.append(f"−{lp['tier_pct']}% {lp['tier_name']}")
+        # tiền tiết kiệm so với giá gốc
+        try:
+            base_total = int(lp["unit"]) * int(it["qty"])
+            saved += max(0, base_total - int(lp["final"]))
+        except Exception:
+            pass
+        dtxt = f"\n   <i>🎉 {', '.join(disc)}</i>" if disc else ""
         lines.append(
-            f"{i}. {_cat_icon(it['name'])} <b>{html.escape(it['name'])}</b>\n"
-            f"   {it['qty']} acc × {vnd(lp['unit'])} = <b>{vnd(lp['final'])}</b>{dtxt}")
+            f"<b>{i}. {_cat_icon(it['name'])} {html.escape(it['name'])}</b>\n"
+            f"   {it['qty']} × {vnd(lp['unit'])} = <b>{vnd(lp['final'])}</b>{dtxt}")
         kb_rows.append([
             InlineKeyboardButton(text="➖", callback_data=f"cartdec:{it['cat_id']}"),
             InlineKeyboardButton(text=f"×{it['qty']}", callback_data="cartnoop"),
@@ -6056,9 +6178,12 @@ def _cart_render(tg_id: int):
         ])
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
-    lines += ["━━━━━━━━━━━━",
-              f"💰 <b>Tổng: {vnd(grand)}</b>",
-              f"💼 Ví shop: <b>{vnd(balance)}</b>"]
+    lines += ["━━━━━━━━━━━━━━",
+              f"🧾 <b>Tổng cộng: {vnd(grand)}</b>"]
+    if saved > 0:
+        lines.append(f"🎉 <i>Bạn tiết kiệm được {vnd(saved)}</i>")
+    lines.append(f"👛 Ví shop: <b>{vnd(balance)}</b>"
+                 + ("" if balance >= grand else f"  <i>(thiếu {vnd(grand - balance)})</i>"))
     kb_rows.append([InlineKeyboardButton(
         text=f"💳 Thanh toán — {vnd(grand)}", callback_data="cartcheckout")])
     kb_rows.append([
@@ -6231,12 +6356,13 @@ async def on_cart_checkout(cb: CallbackQuery):
         grand += lp["final"]
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
-    txt = ["🧾 <b>XÁC NHẬN THANH TOÁN</b>", "━━━━━━━━━━━━"]
+    txt = ["🧾 <b>XÁC NHẬN THANH TOÁN</b>", "━━━━━━━━━━━━━━"]
     for c, qty, lp in priced:
-        txt.append(f"{_cat_icon(c['name'])} <b>{html.escape(c['name'])}</b> × {qty} = <b>{vnd(lp['final'])}</b>")
-    txt += ["━━━━━━━━━━━━",
-            f"💰 <b>Tổng cộng: {vnd(grand)}</b>",
-            f"💼 Ví shop: <b>{vnd(balance)}</b>"]
+        txt.append(f"{_cat_icon(c['name'])} <b>{html.escape(c['name'])}</b>\n"
+                   f"   {qty} × {vnd(lp['unit'])} = <b>{vnd(lp['final'])}</b>")
+    txt += ["━━━━━━━━━━━━━━",
+            f"🧾 <b>Tổng cộng: {vnd(grand)}</b>",
+            f"👛 Ví shop: <b>{vnd(balance)}</b>"]
     if notes:
         txt.append("")
         txt += [f"<i>{html.escape(n)}</i>" for n in notes]
@@ -6310,10 +6436,14 @@ async def on_cart_confirm(cb: CallbackQuery):
     for order in delivered:
         order_id = order["id"]
         await cb.message.answer(
-            f"✅ <b>MUA THÀNH CÔNG — {html.escape(order['cat_name'])}</b>\n"
-            f"🧾 Đơn hàng: <b>#{order_id}</b> | 💰 {vnd(order['price'])} \n"
+            f"🎉 <b>MUA THÀNH CÔNG!</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"{_cat_icon(order['cat_name'])} <b>{html.escape(order['cat_name'])}</b>\n"
+            f"🧾 Đơn hàng: <b>#{order_id}</b>\n"
             f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
-            f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n\n"
+            f"💰 Đã thanh toán: <b>{vnd(order['price'])}</b>\n"
+            f"🟢 <i>Đã kiểm tra LIVE trước khi giao</i>\n"
+            f"━━━━━━━━━━━━━━\n\n"
             f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
     by_cat = {}
