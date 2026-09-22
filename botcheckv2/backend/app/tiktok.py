@@ -128,12 +128,15 @@ async def _call_user_detail_api(username: str) -> Optional[dict]:
     return None
 
 
-async def _get_html(url: str) -> str:
+async def _get_html(url: str, internal: bool = False) -> str:
     from . import db
     from .safeurl import is_safe_url, TIKTOK_HOSTS
 
     # Chống SSRF: chỉ fetch URL thuộc tiktok.com, chặn IP nội bộ
     if not await is_safe_url(url, TIKTOK_HOSTS):
+        if internal:
+            # URL do bot tự dựng (luôn hợp lệ) -> lỗi là do mạng máy chủ
+            raise ValueError("TikTok không truy cập được từ máy chủ hiện tại, thử lại sau.")
         raise ValueError("URL không thuộc TikTok hoặc không an toàn")
     proxy = db.get_random_proxy()
     ua = _random.choice(USER_AGENTS)
@@ -205,7 +208,7 @@ async def fetch_tiktok_info(username: str) -> dict:
             return info
 
     # Fallback: Cào HTML nếu API thất bại
-    html = await _get_html(f"https://www.tiktok.com/@{username}")
+    html = await _get_html(f"https://www.tiktok.com/@{username}", internal=True)
     data = _extract_page_data(html)
 
     ud = (

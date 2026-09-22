@@ -144,7 +144,7 @@ class AntiSpamMiddleware(BaseMiddleware):
                     
                 # Check daily limit for all tracking and checking cmds
                 if cmd in ("/check", "/tiktok", "/ig", "/track", "/trackv", "/trackig", "/trackvig", "/trackfb"):
-                    can_check, err_msg = db.check_daily_limit(tg_id)
+                    can_check, err_msg = db.check_daily_limit(event.chat.id)
                     if not can_check:
                         await event.answer(f"❌ {err_msg}")
                         return
@@ -404,9 +404,18 @@ COMMANDS = [
 @router.message(Command("web"))
 async def cmd_web(msg: Message):
     tg_id = msg.chat.id
+    web_domain = (db.get_setting("web_domain", "") or "").strip().rstrip("/")
+    if not web_domain:
+        await msg.answer(
+            "🌐 <b>WEB DASHBOARD</b>\n\n"
+            "Web chưa được cấu hình public URL.\n"
+            "<i>Admin: set setting <code>web_domain</code> thành địa chỉ public của backend "
+            "(VD: https://bot.ban.com) rồi thử lại.</i>",
+            parse_mode="HTML",
+        )
+        return
     token = db.create_magic_link(tg_id)
-    web_domain = db.get_setting("web_domain", "http://127.0.0.1:8000")
-    url = f"{web_domain.rstrip('/')}/auth?token={token}"
+    url = f"{web_domain}/auth?token={token}"
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🌐 Đăng nhập Web", url=url)
     ]])
@@ -2805,7 +2814,7 @@ from app.zalo_checker import check_zalo_phone
 async def on_zalo(msg: Message, command: CommandObject):
     phone = command.args
     if not phone:
-        await msg.answer("💡 Gõ /zalo <sđt> để kiểm tra nhanh SĐT Zalo.")
+        await msg.answer("💡 Gõ /zalo &lt;sđt&gt; để kiểm tra nhanh SĐT Zalo.")
         return
         
     wait = await msg.answer("⏳ Đang kiểm tra Zalo...")
@@ -2824,7 +2833,7 @@ async def on_zalo(msg: Message, command: CommandObject):
 async def on_trackzalo(msg: Message, command: CommandObject):
     phone = command.args
     if not phone:
-        await msg.answer("💡 Gõ /trackzalo <sđt> để theo dõi biến động SĐT Zalo.")
+        await msg.answer("💡 Gõ /trackzalo &lt;sđt&gt; để theo dõi biến động SĐT Zalo.")
         return
         
     user = db.get_user(msg.chat.id)
@@ -2876,6 +2885,111 @@ async def on_alert_cmd(msg: Message):
     rule_id = db.create_alert_rule(str(msg.chat.id), platform, target)
     await msg.answer(f"✅ Đã thêm cảnh báo cho {platform} mục {target} (ID: {rule_id})")
 
+
+# ─── 📁 DANH SÁCH NGƯỜI DÙNG (/newlist, /lists, /addtolist, /scanlist, /deletelist) ───
+
+def _esc_list_name(s: str) -> str:
+    return html.escape(s or "", quote=False)
+
+
+@router.message(Command("newlist"))
+async def on_newlist_cmd(msg: Message):
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await msg.answer("⚠️ Cú pháp: /newlist &lt;tên danh sách&gt;")
+        return
+    name = parts[1].strip()
+    ok, reason = db.create_user_list(msg.chat.id, name)
+    if ok:
+        await msg.answer(f"✅ Đã tạo danh sách <b>{_esc_list_name(name)}</b>.", parse_mode="HTML")
+    else:
+        await msg.answer(f"❌ {html.escape(reason, quote=False)}")
+
+
+@router.message(Command("lists"))
+async def on_lists_cmd(msg: Message):
+    lists = db.get_user_lists(msg.chat.id)
+    if not lists:
+        await msg.answer("📁 Bạn chưa có danh sách nào.\nGõ <code>/newlist tên</code> để tạo.", parse_mode="HTML")
+        return
+    lines = ["📁 <b>Danh sách của bạn:</b>\n"]
+    for l in lists:
+        l = dict(l)
+        d = time.strftime("%d/%m/%Y", time.localtime(l.get("created_at") or 0))
+        lines.append(f"• <b>{_esc_list_name(l.get('name'))}</b> — {l.get('item_count', 0)} UID ({d})")
+    lines.append("\nGõ <code>/addtolist tên uid</code> để thêm UID.")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("addtolist"))
+async def on_addtolist_cmd(msg: Message):
+    parts = (msg.text or "").rsplit(maxsplit=2)
+    if len(parts) < 3 or not parts[1].strip():
+        await msg.answer("⚠️ Cú pháp: /addtolist &lt;tên danh sách&gt; &lt;uid&gt;")
+        return
+    name = parts[1].strip()
+    raw_val = parts[2].strip()
+    try:
+        from .fb import extract_uid
+        uid = extract_uid(raw_val) or raw_val
+    except Exception:
+        uid = raw_val
+    ok, reason = db.add_to_user_list(msg.chat.id, name, uid)
+    if ok:
+        await msg.answer(f"✅ Đã thêm <code>{_esc_list_name(uid)}</code> vào <b>{_esc_list_name(name)}</b>.", parse_mode="HTML")
+    else:
+        await msg.answer(f"❌ {html.escape(reason, quote=False)}")
+
+
+@router.message(Command("scanlist"))
+async def on_scanlist_cmd(msg: Message):
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await msg.answer("⚠️ Cú pháp: /scanlist &lt;tên danh sách&gt;")
+        return
+    name = parts[1].strip()
+    items = db.get_list_items(msg.chat.id, name)
+    if not items:
+        await msg.answer(f"❌ Danh sách <b>{_esc_list_name(name)}</b> trống hoặc không tồn tại.", parse_mode="HTML")
+        return
+    uids = [str(dict(i).get("value", "")) for i in items if dict(i).get("value")]
+    if not uids:
+        await msg.answer(f"❌ Danh sách <b>{_esc_list_name(name)}</b> trống.", parse_mode="HTML")
+        return
+    wait = await msg.answer(f"⏳ Đang check {len(uids)} UID trong <b>{_esc_list_name(name)}</b>...", parse_mode="HTML")
+    if not await _ensure_bulk_credits(msg, wait, len(uids)):
+        return
+    live, die, err = await check_uids_batch(uids, user_id=msg.from_user.id)
+    lines = [f"⚡ <b>KẾT QUẢ SCAN — {len(uids)} UID:</b>\n",
+             f"🟢 Live: <b>{len(live)}</b>  |  🔴 Die: <b>{len(die)}</b>  |  ❓ Lỗi: <b>{len(err)}</b>\n"]
+    if live:
+        lines.append("🟢 <b>Live:</b>")
+        lines += [f"• <code>{_esc_list_name(u)}</code>" for u in live[:30]]
+        if len(live) > 30:
+            lines.append(f"  …và {len(live) - 30} UID live nữa")
+    if die:
+        lines.append("\n🔴 <b>Die:</b>")
+        lines += [f"• <code>{_esc_list_name(u)}</code>" for u in die[:30]]
+        if len(die) > 30:
+            lines.append(f"  …và {len(die) - 30} UID die nữa")
+    if err:
+        lines.append(f"\n❓ <b>Lỗi kiểm tra:</b> {len(err)} UID (thử lại sau)")
+    await wait.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("deletelist"))
+async def on_deletelist_cmd(msg: Message):
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await msg.answer("⚠️ Cú pháp: /deletelist &lt;tên danh sách&gt;")
+        return
+    name = parts[1].strip()
+    if db.delete_user_list(msg.chat.id, name):
+        await msg.answer(f"🗑 Đã xóa danh sách <b>{_esc_list_name(name)}</b>.", parse_mode="HTML")
+    else:
+        await msg.answer(f"❌ Không tìm thấy danh sách <b>{_esc_list_name(name)}</b>.", parse_mode="HTML")
+
+
 @router.message(Command("alertlist"))
 async def on_alertlist_cmd(msg: Message):
     rules = db.get_alert_rules(tg_id=str(msg.chat.id))
@@ -2891,7 +3005,7 @@ async def on_alertlist_cmd(msg: Message):
 async def on_alertoff_cmd(msg: Message):
     parts = msg.text.split(maxsplit=1)
     if len(parts) < 2:
-        await msg.answer("⚠️ Cú pháp: /alertoff <target_hoặc_id>")
+        await msg.answer("⚠️ Cú pháp: /alertoff &lt;target_hoặc_id&gt;")
         return
     target = parts[1]
     rules = db.get_alert_rules(tg_id=str(msg.chat.id))
@@ -6212,7 +6326,8 @@ async def on_cart_confirm(cb: CallbackQuery):
         summary.append(f"⚠️ {fnames}: không đủ acc LIVE → đã hoàn tiền dòng này.")
     extras = []
     for cid, olist in by_cat.items():
-        c = db.acc_category_get(cid)
+        crow = db.acc_category_get(cid)
+        c = dict(crow) if crow else None
         bonus_per = int((c.get("credit_bonus") or 0)) if c else 0
         if bonus_per > 0:
             db.add_credits(tg_id, bonus_per * len(olist), f"combo_mua_giohang:{cid}")
