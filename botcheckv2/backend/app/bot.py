@@ -4838,23 +4838,6 @@ async def _show_history(msg, tg_id: int, kind):
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
-async def _show_top(msg, kind: str):
-    kind = "ref" if kind == "ref" else "topup"
-    rows = db.get_leaderboard(kind=kind, limit=10)
-    title = "🤝 <b>TOP GIỚI THIỆU</b>" if kind == "ref" else "🏆 <b>TOP NẠP TIỀN THÁNG</b>"
-    if not rows:
-        await msg.answer("📭 Chưa có dữ liệu xếp hạng.")
-        return
-    medals = ["🥇", "🥈", "🥉"]
-    lines = [title, "━━━━━━━━━━━━━━━"]
-    for i, r in enumerate(rows):
-        medal = medals[i] if i < 3 else f"{i + 1}."
-        name = html.escape(r["name"] or r["username"] or str(r["tg_id"]))
-        val = r["ref_earnings"] if kind == "ref" else r["monthly_topup"]
-        lines.append(f"{medal} {name} — <b>{vnd(val or 0)}</b>")
-    await msg.answer("\n".join(lines), parse_mode="HTML")
-
-
 # ─── 6. /adm — LỆNH ADMIN TÍCH HỢP VÀO BOT CHÍNH ──────────────────────────────
 
 @router.message(Command("adm"))
@@ -5847,8 +5830,7 @@ def _tienich_main_kb():
          InlineKeyboardButton(text="💸 Rút hoa hồng", callback_data="tienich:withdraw")],
         [InlineKeyboardButton(text="↔️ Chuyển tiền", callback_data="tienich:transfer"),
          InlineKeyboardButton(text="💱 Đổi hoa hồng → số dư", callback_data="tienich:doitien")],
-        [InlineKeyboardButton(text="📜 Lịch sử check", callback_data="tienich:history"),
-         InlineKeyboardButton(text="🏆 Bảng xếp hạng", callback_data="tienich:top")],
+        [InlineKeyboardButton(text="📜 Lịch sử check", callback_data="tienich:history")],
         [InlineKeyboardButton(text="💰 Đặt cọc giữ hàng", callback_data="tienich:coc"),
          InlineKeyboardButton(text="❌ Hủy đặt cọc", callback_data="tienich:huycoc")],
     ])
@@ -5982,23 +5964,6 @@ async def on_tienich_cb(cb: CallbackQuery, state: FSMContext):
             kind = None if kind == "all" else kind
             await cb.answer()
             await _show_history(cb.message, tg_id, kind)
-            return
-
-        # ── Top: 2 nút ──
-        if action == "top":
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🏆 Top nạp tiền tháng", callback_data="tienich:top_topup"),
-                 InlineKeyboardButton(text="🤝 Top giới thiệu", callback_data="tienich:top_ref")],
-                [InlineKeyboardButton(text="◀️ Quay lại Tiện ích", callback_data="tienich:main")],
-            ])
-            await cb.message.edit_text("🏆 <b>BẢNG XẾP HẠNG</b>\n\nChọn bảng muốn xem:", parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
-            return
-
-        if action.startswith("top_"):
-            kind = action[4:]
-            await cb.answer()
-            await _show_top(cb.message, kind)
             return
 
         # ── Coc: chọn loại acc ──
