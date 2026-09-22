@@ -35,6 +35,25 @@ class FBNoteState(StatesGroup):
     waiting_for_note = State()
     uid = None
 
+
+class TienIchState(StatesGroup):
+    """States cho menu tiện ích /tienich — nhập liệu từng bước thay vì gõ lệnh tay."""
+    waiting_for_giftcode = State()
+    waiting_for_promo = State()
+    waiting_for_birthday = State()
+    waiting_for_refcode = State()
+    waiting_for_tiktok = State()
+    waiting_for_ig = State()
+    waiting_for_fb = State()
+    waiting_for_getuid = State()
+    # /ruttien 3 bước
+    waiting_withdraw_amount = State()
+    waiting_withdraw_bank = State()
+    waiting_withdraw_stk = State()
+    # /chuyentien 2 bước
+    waiting_transfer_uid = State()
+    waiting_transfer_amount = State()
+
 from . import db
 from . import notify_bot as _notify_bot
 from . import config as _config
@@ -165,7 +184,8 @@ MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="/theodoi"), KeyboardButton(text="/tiktok"), KeyboardButton(text="/ig")],
         [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
-        [KeyboardButton(text="/web"), KeyboardButton(text="/help")],
+        [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
+        [KeyboardButton(text="/web")],
     ],
     resize_keyboard=True,
 )
@@ -177,7 +197,8 @@ ADMIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="/theodoi"), KeyboardButton(text="/tiktok"), KeyboardButton(text="/ig")],
         [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
-        [KeyboardButton(text="/web"), KeyboardButton(text="/help")],
+        [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
+        [KeyboardButton(text="/web")],
         [KeyboardButton(text="\U0001f4ca Nhập kho Sheet")],
     ],
     resize_keyboard=True,
@@ -358,6 +379,7 @@ COMMANDS = [
     BotCommand(command="app",         description="Mở Mini App check UID"),
     BotCommand(command="accuracy",    description="Thống kê độ chính xác check"),
     BotCommand(command="theodoi",     description="👁️ Trung tâm theo dõi (menu nút gọn)"),
+    BotCommand(command="tienich",      description="🧰 Tiện ích: giftcode, rút/chuyển tiền, lịch sử... (menu nút)"),
     BotCommand(command="dailyreport", description="Cài đặt báo cáo tự động hằng ngày"),
     BotCommand(command="sinhnhat", description="Nhập ngày sinh nhận quà sinh nhật"),
     BotCommand(command="stats",       description="Thống kê cá nhân của bạn"),
@@ -2692,6 +2714,265 @@ async def on_trackmenu_alert_input(msg: Message, state: FSMContext):
     await state.clear()
     await msg.answer(f"✅ Đã thêm cảnh báo [{html.escape(parts[0])}] {html.escape(parts[1])} (ID: {rule_id}).",
                      parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+# ─── FSM handlers: nhập liệu từng bước cho /tienich ──────────────────────────
+
+@router.message(TienIchState.waiting_for_giftcode)
+async def on_tienich_giftcode(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy nhập giftcode.")
+        return
+    code = (msg.text or "").strip()
+    await state.clear()
+    if not code:
+        await msg.answer("❌ Mã trống, thử lại nhé.")
+        return
+    success, amount, msg_text = db.use_code(code, msg.from_user.id)
+    if success:
+        db.adjust_balance(msg.from_user.id, amount, f"Sử dụng Giftcode: {code}")
+        db.check_vip_upgrade(msg.from_user.id)
+        await msg.answer(
+            f"✅ <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n"
+            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{vnd(amount)}</b> vào tài khoản.",
+            parse_mode="HTML")
+    else:
+        await msg.answer(f"❌ {html.escape(msg_text)}", parse_mode="HTML")
+
+
+@router.message(TienIchState.waiting_for_promo)
+async def on_tienich_promo(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy áp mã giảm giá.")
+        return
+    code = (msg.text or "").strip().upper()
+    await state.clear()
+    if not code:
+        await msg.answer("❌ Mã trống, thử lại nhé.")
+        return
+    ok, why, row = db.promo_valid(code)
+    if not ok:
+        await msg.answer(f"❌ {why}")
+        return
+    db.set_user_promo(msg.from_user.id, code)
+    exp_txt = f"\n⏳ Hết hạn: {time.strftime('%d/%m/%Y %H:%M', time.localtime(row['expires_at']))}" if row["expires_at"] else ""
+    left_txt = f"\n🎫 Còn lại: <b>{int(row['max_uses']) - int(row['used_count'])}</b> lượt" if row["max_uses"] else ""
+    await msg.answer(
+        f"✅ <b>Áp mã thành công!</b>\n\n"
+        f"🎟️ Mã: <b>{code}</b>\n"
+        f"💸 Giảm: <b>{int(row['pct'])}%</b> cho lần mua gói credit tiếp theo{exp_txt}{left_txt}\n\n"
+        f"<i>Mở /muacredit để mua ngay.</i>",
+        parse_mode="HTML")
+
+
+@router.message(TienIchState.waiting_for_birthday)
+async def on_tienich_birthday(msg: Message, state: FSMContext):
+    import datetime as _dt
+    import re as _re
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy nhập ngày sinh.")
+        return
+    arg = (msg.text or "").strip()
+    await state.clear()
+    m = _re.match(r"^\s*(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})\s*$", arg)
+    if not m:
+        await msg.answer("❌ Sai định dạng. Ví dụ: <code>25/12/2000</code>", parse_mode="HTML")
+        return
+    try:
+        d = _dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        await msg.answer("❌ Ngày không hợp lệ. Ví dụ: <code>25/12/2000</code>", parse_mode="HTML")
+        return
+    today = _dt.date.today()
+    if d > today or d.year < 1920:
+        await msg.answer("❌ Ngày sinh không hợp lệ.")
+        return
+    db.set_dob(msg.from_user.id, d.isoformat())
+    await msg.answer(f"✅ Đã lưu ngày sinh <b>{d.strftime('%d/%m/%Y')}</b>!\n🎁 Bot sẽ tự tặng quà vào đúng ngày sinh nhật hằng năm.", parse_mode="HTML")
+
+
+@router.message(TienIchState.waiting_for_refcode)
+async def on_tienich_refcode(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy đổi mã giới thiệu.")
+        return
+    code = (msg.text or "").strip()
+    await state.clear()
+    if not code.isalnum():
+        await msg.answer("❌ Mã giới thiệu chỉ được chứa chữ cái và số!")
+        return
+    c = db.get_conn()
+    exists = c.execute("SELECT tg_id FROM tg_users WHERE ref_code=?", (code,)).fetchone()
+    if exists and exists["tg_id"] != msg.chat.id:
+        await msg.answer("❌ Mã này đã có người sử dụng. Vui lòng chọn mã khác.")
+        return
+    with db._lock:
+        c.execute("UPDATE tg_users SET ref_code=? WHERE tg_id=?", (code, msg.chat.id))
+        c.commit()
+    await msg.answer(f"✅ Đã đổi mã giới thiệu thành công: <code>{html.escape(code)}</code>", parse_mode="HTML")
+
+
+@router.message(TienIchState.waiting_for_getuid)
+async def on_tienich_getuid(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy lấy UID.")
+        return
+    link = (msg.text or "").strip()
+    await state.clear()
+    if not link:
+        await msg.answer("❌ Link trống, thử lại nhé.")
+        return
+    wait = await msg.answer("⏳ Đang lấy UID từ link...")
+    try:
+        from .fb import resolve_fb_uid
+        uid, fb_name, method = await resolve_fb_uid(link)
+        if uid:
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="🔍 Check Live/Die ngay", callback_data=f"fb_quickcheck_{uid}")
+            ]])
+            name_line = f"👤 Tên: <b>{html.escape(fb_name)}</b>\n" if fb_name else ""
+            await wait.edit_text(
+                f"✅ <b>Lấy UID thành công!</b>\n\n"
+                f"🆔 UID: <code>{uid}</code>\n"
+                f"{name_line}"
+                f"🔎 Lấy bằng: {method}\n\n"
+                f"👆 Bấm vào UID để copy, hoặc bấm nút bên dưới để check luôn.",
+                parse_mode="HTML", reply_markup=kb)
+        else:
+            await wait.edit_text("❌ Không lấy được UID từ link này.\nHãy kiểm tra lại link (cần là link trang cá nhân hoặc page công khai).")
+    except Exception as e:
+        log.exception("tienich getuid %s", link)
+        await wait.edit_text(f"❌ Lỗi: {e}")
+
+
+# ── /ruttien 3 bước ──
+@router.message(TienIchState.waiting_withdraw_amount)
+async def on_tienich_wd_amount(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy rút tiền.")
+        return
+    try:
+        amount = int((msg.text or "").replace(",", "").replace(".", "").replace("k", "000").replace("K", "000").strip())
+    except Exception:
+        await msg.answer("❌ Số tiền không hợp lệ! Gửi lại số tiền (VD: 50000).")
+        return
+    if amount < 50000:
+        await msg.answer("❌ Số tiền rút tối thiểu là 50,000 VNĐ.")
+        return
+    await state.update_data(wd_amount=amount)
+    await state.set_state(TienIchState.waiting_withdraw_bank)
+    await msg.answer("💸 <b>RÚT HOA HỒNG</b> (bước 2/3)\n\nGửi <b>tên ngân hàng</b> (VD: MBBank, Vietcombank).\nGõ /huy để hủy.", parse_mode="HTML")
+
+
+@router.message(TienIchState.waiting_withdraw_bank)
+async def on_tienich_wd_bank(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy rút tiền.")
+        return
+    bank = (msg.text or "").strip()
+    if not bank:
+        await msg.answer("❌ Tên ngân hàng trống, gửi lại nhé.")
+        return
+    await state.update_data(wd_bank=bank)
+    await state.set_state(TienIchState.waiting_withdraw_stk)
+    await msg.answer("💸 <b>RÚT HOA HỒNG</b> (bước 3/3)\n\nGửi <b>số tài khoản</b> ngân hàng.\nGõ /huy để hủy.", parse_mode="HTML")
+
+
+@router.message(TienIchState.waiting_withdraw_stk)
+async def on_tienich_wd_stk(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy rút tiền.")
+        return
+    stk = (msg.text or "").strip()
+    if not stk:
+        await msg.answer("❌ STK trống, gửi lại nhé.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    amount = data.get("wd_amount")
+    bank_info = f"{data.get('wd_bank')} - {stk}"
+    # tái sử dụng logic kiểm tra của on_ruttien
+    c = db.get_conn()
+    user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (msg.chat.id,)).fetchone()
+    d = dict(user) if user else {}
+    available = (d.get("ref_earnings") or 0) - (d.get("ref_withdrawn") or 0)
+    import datetime as _dt
+    month_start = int(_dt.datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+    cnt = c.execute("SELECT COUNT(*) as c FROM withdrawal_requests WHERE tg_id=? AND created_at >= ?", (msg.chat.id, month_start)).fetchone()["c"]
+    fee = 10000 if cnt >= 2 else 0
+    if available < amount + fee:
+        await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)}, Cần: {vnd(amount + fee)} bao gồm phí {vnd(fee)} nếu có)")
+        return
+    req_id = db.create_withdrawal_request(msg.chat.id, amount, bank_info, fee)
+    await notify_admin_withdrawal_request(req_id, msg.chat.id, amount, bank_info, fee)
+    await msg.answer(f"✅ Đã gửi yêu cầu rút <b>{vnd(amount)}</b>.\n🏦 {html.escape(bank_info)}\nVui lòng chờ Admin kiểm tra và duyệt chuyển khoản!", parse_mode="HTML")
+
+
+# ── /chuyentien 2 bước ──
+@router.message(TienIchState.waiting_transfer_uid)
+async def on_tienich_tf_uid(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy chuyển tiền.")
+        return
+    try:
+        to_id = int((msg.text or "").strip())
+    except ValueError:
+        await msg.answer("❌ User ID phải là số. Gửi lại nhé.")
+        return
+    if to_id == msg.from_user.id:
+        await msg.answer("❌ Không thể chuyển tiền cho chính mình.")
+        return
+    recv = db.get_user(to_id)
+    if not recv:
+        await msg.answer("❌ Không tìm thấy người nhận (user chưa từng dùng bot).")
+        return
+    await state.update_data(tf_to_id=to_id)
+    await state.set_state(TienIchState.waiting_transfer_amount)
+    await msg.answer(
+        f"↔️ <b>CHUYỂN TIỀN</b> (bước 2/2)\n\nNgười nhận: <b>{html.escape(recv['name'] or '')}</b> (<code>{to_id}</code>)\n"
+        f"Gửi <b>số tiền</b> muốn chuyển.\nGõ /huy để hủy.",
+        parse_mode="HTML")
+
+
+@router.message(TienIchState.waiting_transfer_amount)
+async def on_tienich_tf_amount(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy chuyển tiền.")
+        return
+    try:
+        amount = int((msg.text or "").replace(".", "").replace(",", "").replace("đ", "").strip())
+    except ValueError:
+        await msg.answer("❌ Số tiền phải là số. Gửi lại nhé.")
+        return
+    if amount <= 0:
+        await msg.answer("❌ Số tiền phải lớn hơn 0.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    to_id = data.get("tf_to_id")
+    recv = db.get_user(to_id)
+    if not recv:
+        await msg.answer("❌ Không tìm thấy người nhận.")
+        return
+    _pending_transfer[(msg.chat.id, msg.from_user.id)] = (to_id, amount)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Xác nhận chuyển", callback_data="tf_yes"),
+        InlineKeyboardButton(text="❌ Hủy", callback_data="tf_no"),
+    ]])
+    await msg.answer(
+        f"💸 Xác nhận chuyển <b>{vnd(amount)}</b> cho "
+        f"{html.escape(recv['name'] or '')} (<code>{to_id}</code>)?",
+        reply_markup=kb, parse_mode="HTML")
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_other(msg: Message):
     username = parse_username(msg.text or "")
@@ -4525,6 +4806,67 @@ async def on_help(msg: Message):
     await msg.answer(help_text, parse_mode="HTML")
 
 
+# ─── Helpers cho /tienich ────────────────────────────────────────────────────
+
+async def _do_doitien(msg, tg_id: int):
+    """Đổi hoa hồng sang số dư — tái sử dụng logic on_doitien."""
+    c = db.get_conn()
+    user = c.execute("SELECT ref_earnings, ref_withdrawn FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+    if not user:
+        await msg.answer("❌ Bạn chưa có tài khoản.")
+        return
+    d = dict(user)
+    available = (d.get("ref_earnings") or 0) - (d.get("ref_withdrawn") or 0)
+    if available <= 0:
+        await msg.answer("❌ Bạn chưa có hoa hồng khả dụng để đổi.")
+        return
+    bonus = int(available * 0.10)
+    total = available + bonus
+    with db._lock:
+        c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ?, balance = balance + ? WHERE tg_id=?",
+                  (available, total, tg_id))
+        c.commit()
+    db.add_log("doitien", f"Đổi {vnd(available)} hoa hồng + bonus {vnd(bonus)}", tg_id)
+    await msg.answer(
+        f"✅ <b>ĐỔI HOA HỒNG THÀNH CÔNG!</b>\n\n"
+        f"💰 Hoa hồng đổi: <b>{vnd(available)}</b>\n"
+        f"🎁 Bonus +10%: <b>{vnd(bonus)}</b>\n"
+        f"💵 <b>Đã cộng {vnd(total)} vào số dư.</b>",
+        parse_mode="HTML")
+
+
+async def _show_history(msg, tg_id: int, kind):
+    rows = db.get_user_logs(tg_id, kind=kind, limit=15)
+    if not rows:
+        await msg.answer("📭 Bạn chưa có lịch sử check nào.")
+        return
+    label = {"fb": "FB", "tiktok": "TikTok", "ig": "IG", "zalo": "Zalo"}.get(kind or "", "tất cả")
+    lines = [f"📜 <b>LỊCH SỬ CHECK — {label.upper()}</b>", "━━━━━━━━━━━━━━━"]
+    for r in rows:
+        ts = vn_time_str("%d/%m %H:%M", r["ts"])
+        uid = html.escape(str(r["uid"] or ""))
+        info = html.escape(str(r["message"] or ""))[:50]
+        lines.append(f"• <code>{uid}</code> [{r['kind']}] {info} <i>({ts})</i>")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+async def _show_top(msg, kind: str):
+    kind = "ref" if kind == "ref" else "topup"
+    rows = db.get_leaderboard(kind=kind, limit=10)
+    title = "🤝 <b>TOP GIỚI THIỆU</b>" if kind == "ref" else "🏆 <b>TOP NẠP TIỀN THÁNG</b>"
+    if not rows:
+        await msg.answer("📭 Chưa có dữ liệu xếp hạng.")
+        return
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [title, "━━━━━━━━━━━━━━━"]
+    for i, r in enumerate(rows):
+        medal = medals[i] if i < 3 else f"{i + 1}."
+        name = html.escape(r["name"] or r["username"] or str(r["tg_id"]))
+        val = r["ref_earnings"] if kind == "ref" else r["monthly_topup"]
+        lines.append(f"{medal} {name} — <b>{vnd(val or 0)}</b>")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
 # ─── 6. /adm — LỆNH ADMIN TÍCH HỢP VÀO BOT CHÍNH ──────────────────────────────
 
 @router.message(Command("adm"))
@@ -5503,6 +5845,234 @@ def _trackmenu_text_main() -> str:
         "📁 <b>Danh sách UID</b> — gom UID để quét hàng loạt\n"
         "🔔 <b>Cảnh báo</b> — báo biến động tự động"
     )
+
+
+# ─── TIỆN ÍCH /tienich — menu nút cho các lệnh còn gõ tay ────────────────────
+
+def _tienich_main_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 Nhập giftcode", callback_data="tienich:code"),
+         InlineKeyboardButton(text="🎟️ Áp mã giảm giá", callback_data="tienich:promo")],
+        [InlineKeyboardButton(text="🎂 Ngày sinh", callback_data="tienich:birthday"),
+         InlineKeyboardButton(text="✏️ Đổi mã giới thiệu", callback_data="tienich:refcode")],
+        [InlineKeyboardButton(text="🔗 Lấy UID từ link FB", callback_data="tienich:getuid"),
+         InlineKeyboardButton(text="💸 Rút hoa hồng", callback_data="tienich:withdraw")],
+        [InlineKeyboardButton(text="↔️ Chuyển tiền", callback_data="tienich:transfer"),
+         InlineKeyboardButton(text="💱 Đổi hoa hồng → số dư", callback_data="tienich:doitien")],
+        [InlineKeyboardButton(text="📜 Lịch sử check", callback_data="tienich:history"),
+         InlineKeyboardButton(text="🏆 Bảng xếp hạng", callback_data="tienich:top")],
+        [InlineKeyboardButton(text="💰 Đặt cọc giữ hàng", callback_data="tienich:coc"),
+         InlineKeyboardButton(text="❌ Hủy đặt cọc", callback_data="tienich:huycoc")],
+    ])
+
+
+def _tienich_text_main() -> str:
+    return (
+        "🧰 <b>TIỆN ÍCH</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Các thao tác hay dùng — bấm nút, khỏi gõ lệnh tay:\n\n"
+        "🎁 <b>Giftcode / Mã giảm giá</b> — nhập mã nhận thưởng\n"
+        "🎂 <b>Ngày sinh</b> — nhận quà sinh nhật hằng năm\n"
+        "🔗 <b>Lấy UID</b> — từ link Facebook\n"
+        "💸 <b>Rút / Chuyển tiền</b> — hoa hồng & số dư\n"
+        "📜 <b>Lịch sử / BXH</b> — xem nhanh có nút lọc\n"
+        "💰 <b>Đặt cọc</b> — giữ hàng hot, hủy cọc"
+    )
+
+
+def _tienich_back_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Quay lại Tiện ích", callback_data="tienich:main")]
+    ])
+
+
+@router.message(Command("tienich"))
+async def on_tienich(msg: Message, state: FSMContext):
+    await state.clear()
+    await msg.answer(_tienich_text_main(), parse_mode="HTML", reply_markup=_tienich_main_kb())
+
+
+@router.callback_query(F.data.startswith("tienich:"))
+async def on_tienich_cb(cb: CallbackQuery, state: FSMContext):
+    data = cb.data or ""
+    action = data.split(":", 1)[1] if ":" in data else "main"
+    tg_id = cb.from_user.id
+
+    try:
+        if action == "main":
+            await state.clear()
+            await cb.message.edit_text(_tienich_text_main(), parse_mode="HTML", reply_markup=_tienich_main_kb())
+            await cb.answer()
+            return
+
+        # ── Giftcode ──
+        if action == "code":
+            await state.set_state(TienIchState.waiting_for_giftcode)
+            await cb.message.edit_text(
+                "🎁 <b>NHẬP GIFTCODE</b>\n\nGửi mã giftcode của bạn ngay tin nhắn tiếp theo.\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_tienich_back_kb())
+            await cb.answer()
+            return
+
+        # ── Promo ──
+        if action == "promo":
+            await state.set_state(TienIchState.waiting_for_promo)
+            await cb.message.edit_text(
+                "🎟️ <b>ÁP MÃ GIẢM GIÁ</b>\n\nGửi mã giảm giá (VD: SALE20) ngay tin nhắn tiếp theo.\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_tienich_back_kb())
+            await cb.answer()
+            return
+
+        # ── Birthday ──
+        if action == "birthday":
+            await state.set_state(TienIchState.waiting_for_birthday)
+            await cb.message.edit_text(
+                "🎂 <b>NGÀY SINH NHẬN QUÀ</b>\n\nGửi ngày sinh theo định dạng <b>ngày/tháng/năm</b>.\nVD: <code>25/12/2000</code>\n\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_tienich_back_kb())
+            await cb.answer()
+            return
+
+        # ── Refcode ──
+        if action == "refcode":
+            await state.set_state(TienIchState.waiting_for_refcode)
+            await cb.message.edit_text(
+                "✏️ <b>ĐỔI MÃ GIỚI THIỆU</b>\n\nGửi mã mới (chỉ chữ và số, không dấu cách).\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_tienich_back_kb())
+            await cb.answer()
+            return
+
+        # ── GetUID ──
+        if action == "getuid":
+            await state.set_state(TienIchState.waiting_for_getuid)
+            await cb.message.edit_text(
+                "🔗 <b>LẤY UID TỪ LINK FB</b>\n\nGửi link Facebook ngay tin nhắn tiếp theo.\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_tienich_back_kb())
+            await cb.answer()
+            return
+
+        # ── Withdraw (ruttien) bước 1: số tiền ──
+        if action == "withdraw":
+            await state.set_state(TienIchState.waiting_withdraw_amount)
+            await cb.message.edit_text(
+                "💸 <b>RÚT HOA HỒNG</b> (bước 1/3)\n\nGửi <b>số tiền</b> muốn rút (tối thiểu 50.000đ).\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_tienich_back_kb())
+            await cb.answer()
+            return
+
+        # ── Transfer (chuyentien) bước 1: user_id ──
+        if action == "transfer":
+            await state.set_state(TienIchState.waiting_transfer_uid)
+            await cb.message.edit_text(
+                "↔️ <b>CHUYỂN TIỀN</b> (bước 1/2)\n\nGửi <b>User ID</b> người nhận.\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_tienich_back_kb())
+            await cb.answer()
+            return
+
+        # ── Doitien: không cần nhập, chạy luôn ──
+        if action == "doitien":
+            await cb.answer()
+            # tái sử dụng logic on_doitien bằng cách giả lập msg
+            await _do_doitien(cb.message, tg_id)
+            return
+
+        # ── History: nút lọc ──
+        if action == "history":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📜 Tất cả", callback_data="tienich:hist_all"),
+                 InlineKeyboardButton(text="📘 FB", callback_data="tienich:hist_fb")],
+                [InlineKeyboardButton(text="🎵 TikTok", callback_data="tienich:hist_tiktok"),
+                 InlineKeyboardButton(text="📸 IG", callback_data="tienich:hist_ig")],
+                [InlineKeyboardButton(text="💬 Zalo", callback_data="tienich:hist_zalo")],
+                [InlineKeyboardButton(text="◀️ Quay lại Tiện ích", callback_data="tienich:main")],
+            ])
+            await cb.message.edit_text("📜 <b>LỊCH SỬ CHECK</b>\n\nChọn nền tảng muốn xem:", parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        if action.startswith("hist_"):
+            kind = action[5:]
+            kind = None if kind == "all" else kind
+            await cb.answer()
+            await _show_history(cb.message, tg_id, kind)
+            return
+
+        # ── Top: 2 nút ──
+        if action == "top":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏆 Top nạp tiền tháng", callback_data="tienich:top_topup"),
+                 InlineKeyboardButton(text="🤝 Top giới thiệu", callback_data="tienich:top_ref")],
+                [InlineKeyboardButton(text="◀️ Quay lại Tiện ích", callback_data="tienich:main")],
+            ])
+            await cb.message.edit_text("🏆 <b>BẢNG XẾP HẠNG</b>\n\nChọn bảng muốn xem:", parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        if action.startswith("top_"):
+            kind = action[4:]
+            await cb.answer()
+            await _show_top(cb.message, kind)
+            return
+
+        # ── Coc: chọn loại acc ──
+        if action == "coc":
+            cats = [dict(x) for x in db.acc_category_list() if x.get("active", 1)]
+            if not cats:
+                await cb.message.edit_text("⛔ Hiện chưa có loại acc nào để đặt cọc.", reply_markup=_tienich_back_kb())
+                await cb.answer()
+                return
+            rows = []
+            for c in cats[:10]:
+                rows.append([InlineKeyboardButton(
+                    text=f"💰 {c['name']} (#{c['id']})",
+                    callback_data=f"tienich:coc_go_{c['id']}")])
+            rows.append([InlineKeyboardButton(text="◀️ Quay lại Tiện ích", callback_data="tienich:main")])
+            await cb.message.edit_text("💰 <b>ĐẶT CỌC GIỮ HÀNG</b>\n\nChọn loại acc muốn đặt cọc:", parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            await cb.answer()
+            return
+
+        if action.startswith("coc_go_"):
+            cat_id = int(action[7:])
+            await cb.answer()
+            await _do_deposit(tg_id, cat_id, cb.message, cb.message.bot)
+            return
+
+        # ── Huycoc: chọn khoản cọc ──
+        if action == "huycoc":
+            deps = [dict(d) for d in db.acc_deposit_list(tg_id) if d.get("status") == "WAITING"]
+            if not deps:
+                await cb.message.edit_text("💰 Bạn chưa có khoản đặt cọc chờ hàng nào.", reply_markup=_tienich_back_kb())
+                await cb.answer()
+                return
+            rows = []
+            for d in deps[:10]:
+                rows.append([InlineKeyboardButton(
+                    text=f"❌ Hủy #{d['id']} — {d.get('cat_name') or ''} ({vnd(d['amount'])})",
+                    callback_data=f"tienich:huycoc_go_{d['id']}")])
+            rows.append([InlineKeyboardButton(text="◀️ Quay lại Tiện ích", callback_data="tienich:main")])
+            await cb.message.edit_text("❌ <b>HỦY ĐẶT CỌC</b>\n\nChọn khoản cọc muốn hủy (hoàn tiền vào ví shop):", parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            await cb.answer()
+            return
+
+        if action.startswith("huycoc_go_"):
+            dep_id = int(action[11:])
+            await cb.answer()
+            amt = db.acc_deposit_cancel(dep_id, tg_id)
+            if amt is None:
+                await cb.message.answer("❌ Không tìm thấy khoản cọc chờ hàng này của bạn.")
+                return
+            db.add_shop_balance_only(tg_id, amt, f"huy_coc:{dep_id}")
+            await cb.message.answer(f"✅ Đã hủy cọc <b>#{dep_id}</b>, hoàn <b>{vnd(amt)}</b> vào ví shop.", parse_mode="HTML")
+            return
+
+        await cb.answer("⏳ Đang phát triển.")
+    except Exception as e:
+        log.exception("tienich cb %s: %s", action, e)
+        try:
+            await cb.answer("❌ Có lỗi xảy ra.", show_alert=True)
+        except Exception:
+            pass
 
 
 def _vip_limit_for(user) -> int:
