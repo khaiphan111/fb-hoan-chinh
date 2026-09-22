@@ -77,8 +77,6 @@ export default function Alerts() {
               >
                 <option value="fb_watch">FB Live/Die</option>
                 <option value="fb_track">Bài viết FB</option>
-                <option value="yt_track">YouTube Kênh</option>
-                <option value="yt_video">YouTube Video</option>
                 <option value="tk_track">TikTok Kênh</option>
                 <option value="tk_video">TikTok Video</option>
                 <option value="ig_track">Instagram Kênh</option>

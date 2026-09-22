@@ -212,40 +212,6 @@ def init_db() -> None:
                 reason    TEXT
             );
             
-            -- YOUTUBE TABLES --
-
-            CREATE TABLE IF NOT EXISTS yt_tracks (
-                id              BIGINT PRIMARY KEY AUTOINCREMENT,
-                tg_user_id      BIGINT DEFAULT 0,
-                tg_username     TEXT    DEFAULT '',
-                zalo_user_id    TEXT    DEFAULT '',
-                yt_username     TEXT    NOT NULL,
-                last_subscribers BIGINT DEFAULT 0,
-                last_videos     BIGINT DEFAULT 0,
-                last_checked    BIGINT DEFAULT 0,
-                created_at      BIGINT NOT NULL,
-                active          BIGINT DEFAULT 1,
-                avatar_url      TEXT DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS yt_video_tracks (
-                id              BIGINT PRIMARY KEY AUTOINCREMENT,
-                tg_user_id      BIGINT DEFAULT 0,
-                tg_username     TEXT    DEFAULT '',
-                zalo_user_id    TEXT    DEFAULT '',
-                video_url       TEXT    NOT NULL,
-                video_id        TEXT    NOT NULL,
-                yt_username     TEXT    DEFAULT '',
-                video_desc      TEXT    DEFAULT '',
-                cover_url       TEXT    DEFAULT '',
-                check_interval  BIGINT DEFAULT 3600,
-                last_views      BIGINT DEFAULT 0,
-                last_likes      BIGINT DEFAULT 0,
-                last_comments   BIGINT DEFAULT 0,
-                last_checked    BIGINT DEFAULT 0,
-                created_at      BIGINT NOT NULL,
-                active          BIGINT DEFAULT 1
-            );
-
             -- TIKTOK & IG TABLES --
             CREATE TABLE IF NOT EXISTS tracks (
                 id              BIGINT PRIMARY KEY AUTOINCREMENT,
@@ -481,8 +447,6 @@ def migrate_db():
             "ALTER TABLE video_tracks ADD COLUMN zalo_user_id TEXT DEFAULT ''",
             "ALTER TABLE ig_video_tracks ADD COLUMN last_spike_alert_at BIGINT DEFAULT 0",
             "ALTER TABLE fb_post_tracks ADD COLUMN last_spike_alert_at BIGINT DEFAULT 0",
-            "CREATE TABLE IF NOT EXISTS yt_tracks (id BIGSERIAL PRIMARY KEY, tg_user_id BIGINT DEFAULT 0, tg_username TEXT DEFAULT '', zalo_user_id TEXT DEFAULT '', yt_username TEXT NOT NULL, last_subscribers BIGINT DEFAULT 0, last_videos BIGINT DEFAULT 0, last_checked BIGINT DEFAULT 0, created_at BIGINT NOT NULL, active BIGINT DEFAULT 1, avatar_url TEXT DEFAULT '')",
-            "CREATE TABLE IF NOT EXISTS yt_video_tracks (id BIGSERIAL PRIMARY KEY, tg_user_id BIGINT DEFAULT 0, tg_username TEXT DEFAULT '', zalo_user_id TEXT DEFAULT '', video_url TEXT NOT NULL, video_id TEXT NOT NULL, yt_username TEXT DEFAULT '', video_desc TEXT DEFAULT '', cover_url TEXT DEFAULT '', check_interval BIGINT DEFAULT 3600, last_views BIGINT DEFAULT 0, last_likes BIGINT DEFAULT 0, last_comments BIGINT DEFAULT 0, last_checked BIGINT DEFAULT 0, created_at BIGINT NOT NULL, active BIGINT DEFAULT 1)",
             "CREATE TABLE IF NOT EXISTS zalo_tracks (id BIGSERIAL PRIMARY KEY, tg_user_id BIGINT DEFAULT 0, tg_username TEXT DEFAULT '', zalo_user_id TEXT DEFAULT '', phone TEXT NOT NULL, name TEXT DEFAULT '', avatar TEXT DEFAULT '', status TEXT DEFAULT 'LIVE', last_checked BIGINT DEFAULT 0, created_at BIGINT NOT NULL, active BIGINT DEFAULT 1)",
             "CREATE TABLE IF NOT EXISTS proxies (id BIGINT PRIMARY KEY AUTOINCREMENT, proxy_url TEXT UNIQUE NOT NULL, fail_count BIGINT DEFAULT 0, is_active BIGINT DEFAULT 1, created_at BIGINT)",
             "CREATE TABLE IF NOT EXISTS track_history (id BIGINT PRIMARY KEY AUTOINCREMENT, track_id BIGINT NOT NULL, platform TEXT NOT NULL, track_type TEXT NOT NULL, stat_value BIGINT DEFAULT 0, created_at BIGINT)",
@@ -502,8 +466,6 @@ def migrate_db():
             "ALTER TABLE ig_tracks ADD COLUMN tags TEXT",
             "ALTER TABLE fb_tracks ADD COLUMN campaign_id BIGINT",
             "ALTER TABLE fb_tracks ADD COLUMN tags TEXT",
-            "ALTER TABLE yt_tracks ADD COLUMN campaign_id BIGINT",
-            "ALTER TABLE yt_tracks ADD COLUMN tags TEXT",
             "ALTER TABLE zalo_tracks ADD COLUMN campaign_id BIGINT",
             "ALTER TABLE zalo_tracks ADD COLUMN tags TEXT",
             "CREATE TABLE IF NOT EXISTS daily_checkins (tg_id BIGINT PRIMARY KEY, last_checkin BIGINT, streak BIGINT DEFAULT 1, total_checkins BIGINT DEFAULT 1)",
@@ -1520,72 +1482,6 @@ def toggle_proxy(proxy_id: int) -> bool:
         c.commit()
         return True
 
-
-# --- YOUTUBE CRUD ---
-def add_yt_track(tg_user_id, tg_username, yt_username, subs=0, videos=0, zalo_user_id="", avatar=""):
-    with _lock:
-        c = get_conn()
-        res = c.execute(
-            '''INSERT INTO yt_tracks(tg_user_id, tg_username, yt_username, last_subscribers, last_videos, created_at, zalo_user_id, avatar_url)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id''',
-            (tg_user_id, tg_username, yt_username, subs, videos, now(), zalo_user_id, avatar)
-        )
-        c.commit()
-        return res.lastrowid
-
-def get_yt_tracks(tg_id: int):
-    with _lock:
-        return get_conn().execute("SELECT * FROM yt_tracks WHERE tg_user_id=? ORDER BY id DESC", (tg_id,)).fetchall()
-
-def remove_yt_track(track_id: int, tg_id: int):
-    with _lock:
-        c = get_conn()
-        c.execute("DELETE FROM yt_tracks WHERE id=? AND tg_user_id=?", (track_id, tg_id))
-        c.commit()
-
-def all_active_yt_tracks():
-    with _lock:
-        return get_conn().execute("SELECT * FROM yt_tracks WHERE active=1").fetchall()
-
-def update_yt_track_status(track_id: int, subs: int, videos: int):
-    with _lock:
-        c = get_conn()
-        c.execute("UPDATE yt_tracks SET last_subscribers=?, last_videos=?, last_checked=? WHERE id=?", 
-                  (subs, videos, now(), track_id))
-        c.commit()
-
-def add_yt_video_track(tg_user_id, tg_username, video_url, video_id, yt_username="", video_desc="", cover_url="", check_interval=3600, zalo_user_id="", views=0, likes=0, comments=0):
-    with _lock:
-        c = get_conn()
-        res = c.execute(
-            '''INSERT INTO yt_video_tracks(tg_user_id, tg_username, video_url, video_id, yt_username, video_desc, cover_url, check_interval, zalo_user_id, created_at, last_views, last_likes, last_comments)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id''',
-            (tg_user_id, tg_username, video_url, video_id, yt_username, video_desc, cover_url, check_interval, zalo_user_id, now(), views, likes, comments)
-        )
-        c.commit()
-        return res.lastrowid
-
-def get_yt_video_tracks(tg_id: int):
-    with _lock:
-        return get_conn().execute("SELECT * FROM yt_video_tracks WHERE tg_user_id=? ORDER BY id DESC", (tg_id,)).fetchall()
-
-def remove_yt_video_track(track_id: int, tg_id: int):
-    with _lock:
-        c = get_conn()
-        c.execute("DELETE FROM yt_video_tracks WHERE id=? AND tg_user_id=?", (track_id, tg_id))
-        c.commit()
-
-def all_active_yt_video_tracks():
-    with _lock:
-        return get_conn().execute("SELECT * FROM yt_video_tracks WHERE active=1").fetchall()
-
-def update_yt_video_track(track_id: int, views: int, likes: int, comments: int):
-    with _lock:
-        c = get_conn()
-        c.execute("UPDATE yt_video_tracks SET last_views=?, last_likes=?, last_comments=?, last_checked=? WHERE id=?", 
-                  (views, likes, comments, now(), track_id))
-        c.commit()
-
 # --- ZALO TRACKS ---
 def add_zalo_track(tg_user_id: int, tg_username: str, phone: str, name: str, avatar: str, status: str = "LIVE") -> None:
     with _lock:
@@ -2271,7 +2167,6 @@ def get_user_stats(tg_id: int) -> dict:
     fb_tracks = c.execute("SELECT COUNT(*) as c FROM fb_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
     tk_tracks = c.execute("SELECT COUNT(*) as c FROM tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
     ig_tracks = c.execute("SELECT COUNT(*) as c FROM ig_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
-    yt_tracks = c.execute("SELECT COUNT(*) as c FROM yt_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
     try:
         zalo_tracks = c.execute("SELECT COUNT(*) as c FROM zalo_tracks WHERE tg_user_id=? AND active=1", (tg_id,)).fetchone()["c"]
     except Exception:
@@ -2284,7 +2179,6 @@ def get_user_stats(tg_id: int) -> dict:
         "fb_tracks": fb_tracks,
         "tk_tracks": tk_tracks,
         "ig_tracks": ig_tracks,
-        "yt_tracks": yt_tracks,
         "zalo_tracks": zalo_tracks,
         "user_lists": user_lists,
         "created_at": user["created_at"] if user else 0,

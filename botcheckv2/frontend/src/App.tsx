@@ -29,7 +29,6 @@ import Settings from "./pages/Settings";
 import Users from "./pages/Users";
 import Watches from "./pages/Watches";
 import Tiktok from "./pages/Tiktok";
-import Youtube from "./pages/Youtube";
 import Zalo from "./pages/Zalo";
 import Instagram from "./pages/Instagram";
 import Codes from "./pages/Codes";
@@ -44,7 +43,6 @@ const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "campaigns", label: "Chiến dịch", icon: IconUsers },
   { key: "watches", label: "Theo dõi FB", icon: IconListCheck },
   { key: "tiktok", label: "Tiktok", icon: IconListCheck },
-  { key: "youtube", label: "Youtube", icon: IconListCheck },
   { key: "zalo", label: "Zalo", icon: IconListCheck },
   { key: "instagram", label: "Instagram", icon: IconListCheck },
   { key: "users", label: "Người dùng", icon: IconUsers },
@@ -198,7 +196,6 @@ export default function App() {
         {tab === "dashboard" && <Dashboard status={status} onRefresh={refreshStatus} />}
         {tab === "watches" && <Watches />}
         {tab === "tiktok" && <Tiktok />}
-        {tab === "youtube" && <Youtube />}
         {tab === "zalo" && <Zalo />}
         {tab === "instagram" && <Instagram />}
         {tab === "users" && <Users />}

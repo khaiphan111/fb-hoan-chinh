@@ -69,7 +69,6 @@ class SettingsIn(BaseModel):
     vip1_daily_check: str | None = None
     vip2_daily_check: str | None = None
     vip3_daily_check: str | None = None
-    yt_api_key: str | None = None
     fb_cookie: str | None = None
     zalo_cookie: str | None = None
     zalo_imei: str | None = None
@@ -354,8 +353,6 @@ def user_analytics(tg_id: int = Depends(user_auth)):
     ig_videos = [dict(r) for r in c.execute("SELECT * FROM ig_video_tracks WHERE tg_user_id=?", (tg_id,)).fetchall()]
     tk_tracks = [dict(r) for r in c.execute("SELECT * FROM tracks WHERE tg_user_id=?", (tg_id,)).fetchall()]
     tk_videos = [dict(r) for r in c.execute("SELECT * FROM video_tracks WHERE tg_user_id=?", (tg_id,)).fetchall()]
-    yt_tracks = [dict(r) for r in c.execute("SELECT * FROM yt_tracks WHERE tg_user_id=?", (tg_id,)).fetchall()]
-    yt_videos = [dict(r) for r in c.execute("SELECT * FROM yt_video_tracks WHERE tg_user_id=?", (tg_id,)).fetchall()]
     zalo_tracks = [dict(r) for r in c.execute("SELECT * FROM zalo_tracks WHERE tg_user_id=?", (tg_id,)).fetchall()]
     
     return {
@@ -368,8 +365,6 @@ def user_analytics(tg_id: int = Depends(user_auth)):
         "ig_videos": ig_videos,
         "tk_tracks": tk_tracks,
         "tk_videos": tk_videos,
-        "yt_tracks": yt_tracks,
-        "yt_videos": yt_videos,
         "zalo_tracks": zalo_tracks,
     }
 
@@ -399,8 +394,6 @@ def status(_=Depends(auth)):
         "watches_die": die,
         "tracks_total": len(db.all_active_tracks()),
         "video_tracks_total": len(db.all_active_video_tracks()),
-        "yt_tracks_total": len(db.all_active_yt_tracks()),
-        "yt_video_tracks_total": len(db.all_active_yt_video_tracks()),
         "notifs_today": len(logs_today),
     }
 
@@ -983,51 +976,6 @@ def update_ig_video_track(post_id: str, body: IGVideoTrackUpdateIn, _=Depends(au
         c.commit()
     return {"ok": True}
 
-
-# --- YOUTUBE ENDPOINTS ---
-@router.get("/yt-tracks")
-def api_get_yt_tracks(tg_id: int):
-    return db.get_yt_tracks(tg_id)
-
-@router.delete("/yt-tracks/{track_id}")
-def api_delete_yt_track(track_id: int, tg_id: int):
-    db.remove_yt_track(track_id, tg_id)
-    return {"ok": True}
-
-@router.get("/yt-video-tracks")
-def api_get_yt_video_tracks(tg_id: int):
-    return db.get_yt_video_tracks(tg_id)
-
-@router.delete("/yt-video-tracks/{track_id}")
-def api_delete_yt_video_track(track_id: int, tg_id: int):
-    db.remove_yt_video_track(track_id, tg_id)
-    return {"ok": True}
-
-@router.get("/admin/yt-tracks")
-def api_admin_yt_tracks(_=Depends(auth)):
-    with db._lock:
-        return db.get_conn().execute("SELECT * FROM yt_tracks ORDER BY id DESC LIMIT 500").fetchall()
-
-@router.delete("/admin/yt-tracks/{track_id}")
-def api_admin_delete_yt_track(track_id: int, _=Depends(auth)):
-    with db._lock:
-        c = db.get_conn()
-        c.execute("DELETE FROM yt_tracks WHERE id=?", (track_id,))
-        c.commit()
-    return {"ok": True}
-
-@router.get("/admin/yt-video-tracks")
-def api_admin_yt_video_tracks(_=Depends(auth)):
-    with db._lock:
-        return db.get_conn().execute("SELECT * FROM yt_video_tracks ORDER BY id DESC LIMIT 500").fetchall()
-
-@router.delete("/admin/yt-video-tracks/{track_id}")
-def api_admin_delete_yt_video_track(track_id: int, _=Depends(auth)):
-    with db._lock:
-        c = db.get_conn()
-        c.execute("DELETE FROM yt_video_tracks WHERE id=?", (track_id,))
-        c.commit()
-    return {"ok": True}
 
 # --- ZALO ENDPOINTS ---
 @router.get("/zalo-tracks")

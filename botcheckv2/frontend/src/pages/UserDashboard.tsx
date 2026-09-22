@@ -118,18 +118,18 @@ export default function UserDashboard({ onLogout }: { onLogout: () => void }) {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground font-normal">TK/IG/YT đang theo dõi</CardTitle>
+              <CardTitle className="text-sm text-muted-foreground font-normal">TK/IG đang theo dõi</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{(data?.tk_tracks?.length || 0) + (data?.ig_tracks?.length || 0) + (data?.yt_tracks?.length || 0)}</div>
+              <div className="text-2xl font-bold">{(data?.tk_tracks?.length || 0) + (data?.ig_tracks?.length || 0)}</div>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-muted-foreground font-normal">TK/IG/YT Video đang theo dõi</CardTitle>
+              <CardTitle className="text-sm text-muted-foreground font-normal">TK/IG Video đang theo dõi</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{(data?.tk_videos?.length || 0) + (data?.ig_videos?.length || 0) + (data?.yt_videos?.length || 0)}</div>
+              <div className="text-2xl font-bold">{(data?.tk_videos?.length || 0) + (data?.ig_videos?.length || 0)}</div>
             </CardContent>
           </Card>
           <Card>
@@ -438,100 +438,6 @@ export default function UserDashboard({ onLogout }: { onLogout: () => void }) {
             )}
           </CardContent>
         </Card>
-      
-        <Card className="flex-1 mt-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <IconListCheck size={20} /> Danh sách YouTube đang theo dõi
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {data?.yt_tracks?.length > 0 ? (
-              <div className="border border-border rounded overflow-hidden">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-muted">
-                    <tr>
-                      <th className="p-2 border-b border-border">Kênh</th>
-                      <th className="p-2 border-b border-border">Đăng ký</th>
-                      <th className="p-2 border-b border-border">Video</th>
-                      <th className="p-2 border-b border-border">Trạng thái</th>
-                      <th className="p-2 border-b border-border text-right">Hành động</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.yt_tracks.map((t: any) => (
-                      <tr key={t.id} className="border-b border-border last:border-0 hover:bg-muted/50">
-                        <td className="p-2 font-medium">{t.yt_username}</td>
-                        <td className="p-2">{new Intl.NumberFormat().format(t.last_subscribers || 0)}</td>
-                        <td className="p-2">{new Intl.NumberFormat().format(t.last_videos || 0)}</td>
-                        <td className="p-2">
-                          <span className={`px-2 py-0.5 rounded text-xs ${t.active ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'}`}>
-                            {t.active ? "Đang chạy" : "Tạm dừng"}
-                          </span>
-                        </td>
-                        <td className="p-2 text-right">
-                          <button onClick={() => handleDelete('yt', t.id)} className="text-red-500 hover:text-red-400 p-1 rounded hover:bg-red-500/10">
-                            <IconTrash size={16} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center text-muted-foreground p-4">Chưa có mục nào</div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="flex-1 mt-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <IconListCheck size={20} /> Danh sách Video YouTube
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {data?.yt_videos?.length > 0 ? (
-              <div className="border border-border rounded overflow-hidden overflow-x-auto">
-                <table className="w-full text-left text-sm whitespace-nowrap">
-                  <thead className="bg-muted">
-                    <tr>
-                      <th className="p-2 border-b border-border">Video ID</th>
-                      <th className="p-2 border-b border-border">Kênh</th>
-                      <th className="p-2 border-b border-border">Lượt xem</th>
-                      <th className="p-2 border-b border-border">Lượt thích</th>
-                      <th className="p-2 border-b border-border text-right">Hành động</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.yt_videos.map((t: any) => (
-                      <tr key={t.id} className="border-b border-border last:border-0 hover:bg-muted/50">
-                        <td className="p-2 font-medium max-w-[150px] truncate" title={t.video_desc || t.video_id}>
-                          <a href={t.video_url} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">
-                            {t.video_id}
-                          </a>
-                        </td>
-                        <td className="p-2">{t.yt_username}</td>
-                        <td className="p-2">{new Intl.NumberFormat().format(t.last_views || 0)}</td>
-                        <td className="p-2">{new Intl.NumberFormat().format(t.last_likes || 0)}</td>
-                        <td className="p-2 text-right">
-                          <button onClick={() => handleDelete('yt-video', t.id)} className="text-red-500 hover:text-red-400 p-1 rounded hover:bg-red-500/10">
-                            <IconTrash size={16} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center text-muted-foreground p-4">Chưa có mục nào</div>
-            )}
-          </CardContent>
-        </Card>
-
-      
         {data?.zalo_tracks?.length > 0 && (
           <Card>
             <CardHeader>

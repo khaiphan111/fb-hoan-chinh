@@ -335,7 +335,7 @@ async def on_sheet_go(cb: CallbackQuery, state: FSMContext):
         return
     await state.clear()
     try:
-        _, _, cat_id, ncc_id, cost = cb.data.split("_")
+        _, cat_id, ncc_id, cost = cb.data.split("_")
     except Exception:
         await cb.answer("❌")
         return
@@ -364,7 +364,7 @@ COMMANDS = [
     BotCommand(command="dailyreport", description="Cài đặt báo cáo tự động hằng ngày"),
     BotCommand(command="sinhnhat", description="Nhập ngày sinh nhận quà sinh nhật"),
     BotCommand(command="stats",       description="Thống kê cá nhân của bạn"),
-    BotCommand(command="history",     description="Lịch sử check: /history [fb|tiktok|ig|yt|zalo]"),
+    BotCommand(command="history",     description="Lịch sử check: /history [fb|tiktok|ig|zalo]"),
     BotCommand(command="top",         description="Bảng xếp hạng: /top hoặc /top ref"),
     BotCommand(command="daily",       description="Điểm danh nhận credits mỗi ngày"),
     BotCommand(command="code",        description="Nhập mã giftcode: /code <mã>"),
@@ -2798,93 +2798,6 @@ class ZaloBotManager:
 zalo_manager = ZaloBotManager()
 
 
-# --- YOUTUBE COMMANDS ---
-from app.yt import parse_yt_username, fetch_yt_info, build_yt_caption, parse_yt_video_id, fetch_yt_video_info, build_yt_video_caption
-
-@router.message(Command("yt"))
-async def on_yt(msg: Message, command: CommandObject):
-    username = command.args
-    if not username:
-        await msg.answer("💡 Gõ /yt <link_kenh_hoac_username> để xem thông tin kênh YouTube.")
-        return
-        
-    wait = await msg.answer("⏳ Đang lấy thông tin kênh YouTube...")
-    try:
-        username = parse_yt_username(username)
-        res = await fetch_yt_info(username)
-        cap = build_yt_caption(res)
-        await wait.edit_text(cap, disable_web_page_preview=True)
-    except Exception as e:
-        await wait.edit_text(f"❌ Lỗi: {str(e)}")
-
-@router.message(Command("trackyt"))
-async def on_trackyt(msg: Message, command: CommandObject):
-    username = command.args
-    if not username:
-        await msg.answer("💡 Gõ /trackyt <link_kenh> để theo dõi kênh YouTube.")
-        return
-        
-    user = db.get_user(msg.chat.id)
-    vip_level = dict(user).get("vip_level", 0) if user else 0
-    try: max_limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
-    except: max_limit = [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]
-    with db._lock: count = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
-    with db._lock: yt_count = db.get_conn().execute("SELECT COUNT(*) FROM yt_tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
-    if count + yt_count >= max_limit:
-        await msg.answer(f"❌ <b>Giới hạn hạng VIP!</b>\nHạng của bạn chỉ cho phép theo dõi tối đa <b>{max_limit}</b> mục.")
-        return
-        
-    wait = await msg.answer("⏳ Đang xử lý theo dõi YouTube...")
-    try:
-        username = parse_yt_username(username)
-        
-        # Check limit daily
-        ok, err = db.check_daily_limit(msg.chat.id)
-        if not ok:
-            await wait.edit_text(f"❌ {err}")
-            return
-            
-        res = await fetch_yt_info(username)
-        db.add_yt_track(msg.chat.id, msg.from_user.username or msg.from_user.full_name, res["username"], res["subscribers"], res["videos"], avatar=res["avatar"])
-        db.add_log("track_add", f"Thêm theo dõi YT @{res['username']}", msg.chat.id, res["username"])
-        await wait.edit_text(f"✅ Đã thêm kênh <b>{res['username']}</b> vào danh sách theo dõi YouTube!")
-    except Exception as e:
-        await wait.edit_text(f"❌ Lỗi: {str(e)}")
-
-@router.message(Command("trackvyt"))
-async def on_trackvyt(msg: Message, command: CommandObject):
-    url = command.args
-    if not url:
-        await msg.answer("💡 Gõ /trackvyt <link_video_youtube> để theo dõi video.")
-        return
-        
-    user = db.get_user(msg.chat.id)
-    vip_level = dict(user).get("vip_level", 0) if user else 0
-    try: max_limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
-    except: max_limit = [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]
-    with db._lock: count = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
-    with db._lock: yt_count = db.get_conn().execute("SELECT COUNT(*) FROM yt_video_tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
-    if count + yt_count >= max_limit:
-        await msg.answer(f"❌ <b>Giới hạn hạng VIP!</b>\nHạng của bạn chỉ cho phép theo dõi tối đa <b>{max_limit}</b> mục.")
-        return
-        
-    wait = await msg.answer("⏳ Đang xử lý theo dõi video YouTube...")
-    try:
-        video_id = parse_yt_video_id(url)
-        
-        # Check limit daily
-        ok, err = db.check_daily_limit(msg.chat.id)
-        if not ok:
-            await wait.edit_text(f"❌ {err}")
-            return
-            
-        res = await fetch_yt_video_info(url)
-        db.add_yt_video_track(msg.chat.id, msg.from_user.username or msg.from_user.full_name, url, res["id"], res["username"], res["desc"], res["cover"], views=res["views"], likes=res["likes"], comments=res["comments"])
-        db.add_log("video_track_add", f"Thêm video YT {res['id']}", msg.chat.id, res.get("username",""))
-        await wait.edit_text(f"✅ Đã thêm video YouTube <b>{res['id']}</b> vào danh sách theo dõi!")
-    except Exception as e:
-        await wait.edit_text(f"❌ Lỗi: {str(e)}")
-
 # --- ZALO TRACKING COMMANDS ---
 from app.zalo_checker import check_zalo_phone
 
@@ -4048,7 +3961,7 @@ async def on_help(msg: Message):
         "• /daily — Điểm danh nhận thưởng mỗi ngày\n"
         "• /stats — Dashboard thống kê cá nhân\n"
         "• /history — Lịch sử check 7 ngày gần nhất\n"
-        "• /history &lt;platform&gt; — Lọc lịch sử (fb/tiktok/ig/yt/zalo)\n"
+        "• /history &lt;platform&gt; — Lọc lịch sử (fb/tiktok/ig/zalo)\n"
         "• /top — Bảng xếp hạng nạp tiền tháng\n"
         "• /top ref — Bảng xếp hạng giới thiệu\n"
         "• /dailyreport &lt;giờ|off&gt; — Hẹn giờ nhận báo cáo dàn nick hằng ngày\n"
@@ -4099,9 +4012,7 @@ async def on_help(msg: Message):
         "• /untrackvig &lt;link&gt; — Huỷ bài viết\n"
         "• /trackviglist — Danh sách bài viết IG\n\n"
 
-        "<b>▶️ YOUTUBE &amp; 💬 ZALO</b>\n"
-        "• /yt &lt;link/user&gt; — Check kênh YouTube\n"
-        "• /trackyt &lt;link/user&gt; — Theo dõi sub YouTube\n"
+        "<b>💬 ZALO</b>\n"
         "• /zalo &lt;sđt&gt; — Check SĐT Zalo Live/Die\n"
         "• /trackzalo &lt;sđt&gt; — Theo dõi SĐT Zalo\n\n"
 
@@ -4158,11 +4069,11 @@ async def on_stats(msg: Message):
 
 @router.message(Command("history"))
 async def on_history(msg: Message, command: CommandObject):
-    """Lịch sử check: /history [fb|tiktok|ig|yt|zalo]"""
+    """Lịch sử check: /history [fb|tiktok|ig|zalo]"""
     arg = (command.args or "").strip().lower()
-    valid = {"fb", "tiktok", "ig", "yt", "zalo"}
+    valid = {"fb", "tiktok", "ig", "zalo"}
     if arg and arg not in valid:
-        await msg.answer("❌ Nền tảng không hợp lệ. Dùng: <code>/history [fb|tiktok|ig|yt|zalo]</code>", parse_mode="HTML")
+        await msg.answer("❌ Nền tảng không hợp lệ. Dùng: <code>/history [fb|tiktok|ig|zalo]</code>", parse_mode="HTML")
         return
     rows = db.get_user_logs(msg.from_user.id, kind=(arg or None), limit=15)
     if not rows:

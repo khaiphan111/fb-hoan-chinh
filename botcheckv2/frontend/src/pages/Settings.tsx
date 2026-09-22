@@ -205,17 +205,6 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
               Link gửi cho khách khi họ gõ lệnh /web.
             </p>
           </div>
-          <div className="flex flex-col gap-1.5 mt-2">
-            <Label>YouTube API Key</Label>
-            <Input
-              value={s.yt_api_key || ""}
-              onChange={(e) => up("yt_api_key", e.target.value)}
-              placeholder="VD: AIzaSy..."
-            />
-            <p className="text-xs text-muted-foreground">
-              API Key từ Google Cloud Console để lấy dữ liệu YouTube.
-            </p>
-          </div>
           <div className="flex flex-col gap-1.5">
             <Label>Zalo Bot Token (Tùy chọn)</Label>
             <Input
