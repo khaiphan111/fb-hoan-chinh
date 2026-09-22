@@ -162,8 +162,7 @@ router.message.middleware(AntiSpamMiddleware())
 MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="/muagoi"), KeyboardButton(text="/checkfile"), KeyboardButton(text="/checkcookie")],
-        [KeyboardButton(text="/tiktok"), KeyboardButton(text="/track"), KeyboardButton(text="/untrack")],
-        [KeyboardButton(text="/ig"), KeyboardButton(text="/trackig"), KeyboardButton(text="/untrackig")],
+        [KeyboardButton(text="/theodoi"), KeyboardButton(text="/tiktok"), KeyboardButton(text="/ig")],
         [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/web"), KeyboardButton(text="/help")],
@@ -175,8 +174,7 @@ MENU = ReplyKeyboardMarkup(
 ADMIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="/muagoi"), KeyboardButton(text="/checkfile"), KeyboardButton(text="/checkcookie")],
-        [KeyboardButton(text="/tiktok"), KeyboardButton(text="/track"), KeyboardButton(text="/untrack")],
-        [KeyboardButton(text="/ig"), KeyboardButton(text="/trackig"), KeyboardButton(text="/untrackig")],
+        [KeyboardButton(text="/theodoi"), KeyboardButton(text="/tiktok"), KeyboardButton(text="/ig")],
         [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/web"), KeyboardButton(text="/help")],
@@ -359,8 +357,7 @@ COMMANDS = [
     BotCommand(command="lichsu",      description="Lịch sử check 7 ngày"),
     BotCommand(command="app",         description="Mở Mini App check UID"),
     BotCommand(command="accuracy",    description="Thống kê độ chính xác check"),
-    BotCommand(command="mywatches",   description="Danh sách UID đang theo dõi"),
-    BotCommand(command="trackmode",   description="Chế độ báo theo dõi (all/die)"),
+    BotCommand(command="theodoi",     description="👁️ Trung tâm theo dõi (menu nút gọn)"),
     BotCommand(command="dailyreport", description="Cài đặt báo cáo tự động hằng ngày"),
     BotCommand(command="sinhnhat", description="Nhập ngày sinh nhận quà sinh nhật"),
     BotCommand(command="stats",       description="Thống kê cá nhân của bạn"),
@@ -370,12 +367,7 @@ COMMANDS = [
     BotCommand(command="code",        description="Nhập mã giftcode: /code <mã>"),
     BotCommand(command="chuyentien",  description="Chuyển số dư: /chuyentien <user_id> <tiền>"),
     BotCommand(command="tiktok",      description="Check info TikTok: /tiktok <username>"),
-    BotCommand(command="track",       description="Theo dõi follower: /track <username>"),
-    BotCommand(command="untrack",     description="Huỷ theo dõi: /untrack <username>"),
-    BotCommand(command="tracklist",   description="Danh sách đang theo dõi"),
     BotCommand(command="ig",          description="Check info Instagram: /ig <username>"),
-    BotCommand(command="trackig",     description="Theo dõi IG: /trackig <username>"),
-    BotCommand(command="untrackig",   description="Huỷ theo dõi IG: /untrackig <username>"),
     BotCommand(command="fb",          description="Check Facebook Live/Die: /fb <uid>"),
     BotCommand(command="shop",        description="Shop tài khoản Facebook"),
     BotCommand(command="damua",       description="Acc FB đã mua + yêu cầu bảo hành"),
@@ -387,15 +379,10 @@ COMMANDS = [
     BotCommand(command="coclist",     description="Xem các khoản đặt cọc của bạn"),
     BotCommand(command="huycoc",       description="Hủy đặt cọc: /huycoc <id_cọc>"),
     BotCommand(command="getuid",      description="Lấy UID từ link FB: /getuid <link>"),
-    BotCommand(command="trackfb",     description="Theo dõi FB: /trackfb <uid>"),
-    BotCommand(command="untrackfb",   description="Huỷ theo dõi FB: /untrackfb <uid>"),
     BotCommand(command="ref",         description="Lấy link giới thiệu kiếm tiền"),
     BotCommand(command="refcode",     description="Đổi mã giới thiệu: /refcode <code>"),
     BotCommand(command="ruttien",     description="Rút tiền: /ruttien <số_tiền> <Tên_NH> <STK>"),
     BotCommand(command="doitien",     description="Đổi hoa hồng sang số dư (+10% Bonus)"),
-    BotCommand(command="alert",       description="Bật cảnh báo: /alert <platform> <target>"),
-    BotCommand(command="alertlist",   description="Danh sách cảnh báo"),
-    BotCommand(command="alertoff",    description="Tắt cảnh báo: /alertoff <id>"),
     BotCommand(command="help",        description="Hướng dẫn sử dụng"),
     BotCommand(command="web",         description="Đăng nhập Bảng điều khiển Web"),
 ]
@@ -2432,6 +2419,279 @@ async def on_fb_note_input(msg: Message, state: FSMContext):
                      else "✅ Đã lưu ghi chú (UID này đã được theo dõi từ trước).")
     await _send_card(msg.bot, msg.chat.id, res["uid"], status, note, 0, avatar, "Đã thêm theo dõi (Có ghi chú):")
 
+
+
+# ---- Nhập liệu cho TRUNG TÂM THEO DÕI /theodoi (đặt trước on_other để không bị nuốt) ----
+
+class TrackMenuState(StatesGroup):
+    waiting_fb_uid = State()
+    waiting_tiktok_username = State()
+    waiting_tiktok_video = State()
+    waiting_ig_username = State()
+    waiting_ig_post = State()
+    waiting_zalo_phone = State()
+    waiting_list_name = State()
+    waiting_list_add = State()
+    waiting_alert_add = State()
+
+
+
+@router.message(TrackMenuState.waiting_fb_uid)
+async def on_trackmenu_fb_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    uid = (msg.text or "").strip().split()[0]
+    if not uid:
+        await msg.answer("❌ UID không hợp lệ. Gửi lại hoặc /huy để hủy.")
+        return
+    user = db.get_user(msg.chat.id)
+    if not user or not _sub_active(user):
+        await state.clear()
+        await msg.answer("❌ Bạn cần có gói còn hạn để dùng tính năng theo dõi.")
+        return
+    wait = await msg.answer("⏳ Đang kiểm tra UID...")
+    try:
+        from .fb import check_uid, avatar_url
+        res = await check_uid(uid)
+        status = "live" if res.get("alive") else "die"
+        avatar = res.get("avatar_url") or avatar_url(uid)
+        wid, is_new = db.add_watch(msg.chat.id, res.get("uid") or uid, "", 0, 0)
+        db.update_watch_status(wid, status, avatar)
+        await state.clear()
+        await wait.edit_text(
+            f"{'✅ <b>Đã thêm theo dõi!</b>' if is_new else 'ℹ️ <b>UID này đã được theo dõi rồi.</b>'}\n"
+            f"🆔 UID: <code>{html.escape(res.get('uid') or uid)}</code> — <b>{status.upper()}</b>\n\n"
+            f"Mở /theodoi để quản lý.",
+            parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+    except Exception as e:
+        await state.clear()
+        await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
+
+@router.message(TrackMenuState.waiting_tiktok_username)
+async def on_trackmenu_tiktok_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    username = parse_username((msg.text or "").strip())
+    if not username:
+        await msg.answer("❌ Không nhận diện được username. Gửi lại hoặc /huy để hủy.")
+        return
+    user = db.get_user(msg.chat.id)
+    max_limit = _vip_limit_for(user)
+    with db._lock:
+        count = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
+    if count >= max_limit:
+        await state.clear()
+        await msg.answer(f"❌ Giới hạn VIP: tối đa <b>{max_limit}</b> mục.", parse_mode="HTML")
+        return
+    wait = await msg.answer(f"⏳ Đang thêm theo dõi <b>@{html.escape(username)}</b>...", parse_mode="HTML")
+    try:
+        info = await fetch_tiktok_info(username)
+        u = msg.from_user
+        result = db.add_track(u.id, u.username or u.full_name, info["username"],
+                              info["followers"], info["following"], info["videos"])
+        await state.clear()
+        if result == -1:
+            await wait.edit_text(f"⚠️ Bạn đã theo dõi <b>@{html.escape(info['username'])}</b> rồi!", parse_mode="HTML")
+        else:
+            await wait.edit_text(f"✅ Đã thêm theo dõi <b>@{html.escape(info['username'])}</b>!\nMở /theodoi để quản lý.",
+                                 parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+    except Exception as e:
+        await state.clear()
+        await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
+
+@router.message(TrackMenuState.waiting_tiktok_video)
+async def on_trackmenu_tiktokv_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    from .tiktok import fetch_video_info, parse_video_id
+    video_url = (msg.text or "").strip().split()[0]
+    if not parse_video_id(video_url):
+        await msg.answer("❌ Link video không hợp lệ. Gửi lại hoặc /huy để hủy.")
+        return
+    wait = await msg.answer("⏳ Đang lấy thông tin video...")
+    try:
+        info = await fetch_video_info(video_url)
+        u = msg.from_user
+        r = db.add_video_track(u.id, u.username or u.full_name, video_url, info["id"],
+                               info.get("username", ""), info.get("desc", ""), info.get("cover", ""),
+                               3600, info["plays"], info["likes"], info["comments"], info["shares"],
+                               info.get("favorites", 0))
+        await state.clear()
+        if r == -1:
+            await wait.edit_text("⚠️ Bạn đã theo dõi video này rồi!")
+        else:
+            await wait.edit_text("✅ Đã thêm theo dõi video!\nMở /theodoi để quản lý.",
+                                 reply_markup=_trackmenu_main_kb())
+    except Exception as e:
+        await state.clear()
+        await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
+
+@router.message(TrackMenuState.waiting_ig_username)
+async def on_trackmenu_ig_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    username = parse_ig_username((msg.text or "").strip())
+    if not username:
+        await msg.answer("❌ Không nhận diện được username IG. Gửi lại hoặc /huy để hủy.")
+        return
+    wait = await msg.answer(f"⏳ Đang thêm theo dõi IG <b>@{html.escape(username)}</b>...", parse_mode="HTML")
+    try:
+        info = await fetch_ig_info(username)
+        u = msg.from_user
+        result = db.add_ig_track(u.id, u.username or u.full_name, info["username"],
+                                 info["followers"], info["following"], info["posts"])
+        await state.clear()
+        if result == -1:
+            await wait.edit_text(f"⚠️ Bạn đã theo dõi IG <b>@{html.escape(info['username'])}</b> rồi!", parse_mode="HTML")
+        else:
+            await wait.edit_text(f"✅ Đã thêm theo dõi IG <b>@{html.escape(info['username'])}</b>!\nMở /theodoi để quản lý.",
+                                 parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+    except Exception as e:
+        await state.clear()
+        await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
+
+@router.message(TrackMenuState.waiting_ig_post)
+async def on_trackmenu_igp_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    post_url = (msg.text or "").strip().split()[0]
+    post_id = parse_ig_post_id(post_url)
+    if not post_id:
+        await msg.answer("❌ Link bài viết IG không hợp lệ. Gửi lại hoặc /huy để hủy.")
+        return
+    wait = await msg.answer("⏳ Đang lấy thông tin bài viết IG...")
+    try:
+        info = await fetch_ig_post_info(post_url)
+        u = msg.from_user
+        r = db.add_ig_video_track(u.id, u.username or u.full_name, post_url, info["id"],
+                                  info.get("username", ""), info.get("desc", ""), info.get("cover", ""),
+                                  3600, info["likes"], info["comments"], info.get("views", 0))
+        await state.clear()
+        if r == -1:
+            await wait.edit_text("⚠️ Bạn đã theo dõi bài viết này rồi!")
+        else:
+            await wait.edit_text("✅ Đã thêm theo dõi bài viết IG!\nMở /theodoi để quản lý.",
+                                 reply_markup=_trackmenu_main_kb())
+    except Exception as e:
+        await state.clear()
+        await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
+
+@router.message(TrackMenuState.waiting_zalo_phone)
+async def on_trackmenu_zalo_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    phone = "".join(ch for ch in (msg.text or "") if ch.isdigit() or ch == "+").strip()
+    if len(phone) < 9:
+        await msg.answer("❌ SĐT không hợp lệ. Gửi lại hoặc /huy để hủy.")
+        return
+    user = db.get_user(msg.chat.id)
+    max_limit = _vip_limit_for(user)
+    with db._lock:
+        c1 = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
+        c2 = db.get_conn().execute("SELECT COUNT(*) FROM zalo_tracks WHERE tg_user_id=?", (msg.chat.id,)).fetchone()[0]
+    if c1 + c2 >= max_limit:
+        await state.clear()
+        await msg.answer(f"❌ Giới hạn VIP: tối đa <b>{max_limit}</b> mục.", parse_mode="HTML")
+        return
+    wait = await msg.answer("⏳ Đang xử lý theo dõi SĐT Zalo...")
+    try:
+        ok, err = db.check_daily_limit(msg.chat.id)
+        if not ok:
+            await state.clear()
+            await wait.edit_text(f"❌ {html.escape(err)}")
+            return
+        from app.zalo_checker import check_zalo_phone
+        cookie = db.get_setting("zalo_cookie", "")
+        imei = db.get_setting("zalo_imei", "")
+        res = await check_zalo_phone(phone, cookie, imei)
+        status = "LIVE" if res.get("live") else "DIE"
+        db.add_zalo_track(msg.chat.id, msg.from_user.username or msg.from_user.full_name,
+                          phone, res.get("name", ""), res.get("avatar", ""), status)
+        await state.clear()
+        await wait.edit_text(f"✅ Đã thêm SĐT <b>{html.escape(phone)}</b> ({status})!\nMở /theodoi để quản lý.",
+                             parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+    except Exception as e:
+        await state.clear()
+        await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
+
+@router.message(TrackMenuState.waiting_list_name)
+async def on_trackmenu_listname_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    name = (msg.text or "").strip()
+    if not name:
+        await msg.answer("❌ Tên không hợp lệ. Gửi lại hoặc /huy để hủy.")
+        return
+    ok, reason = db.create_user_list(msg.chat.id, name)
+    await state.clear()
+    if ok:
+        await msg.answer(f"✅ Đã tạo danh sách <b>{html.escape(name)}</b>.", parse_mode="HTML",
+                         reply_markup=_trackmenu_main_kb())
+    else:
+        await msg.answer(f"❌ {html.escape(reason)}")
+
+
+@router.message(TrackMenuState.waiting_list_add)
+async def on_trackmenu_listadd_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    raw = (msg.text or "").strip()
+    if "|" not in raw:
+        await msg.answer("❌ Sai dạng. Gửi: <code>tên danh sách | uid</code>\nVD: <code>khach-vip | 1000123456789</code>\n\n/huy để hủy.",
+                         parse_mode="HTML")
+        return
+    name, uid_raw = [p.strip() for p in raw.split("|", 1)]
+    try:
+        from .fb import extract_uid
+        uid = extract_uid(uid_raw) or uid_raw
+    except Exception:
+        uid = uid_raw
+    ok, reason = db.add_to_user_list(msg.chat.id, name, uid)
+    await state.clear()
+    if ok:
+        await msg.answer(f"✅ Đã thêm <code>{html.escape(uid)}</code> vào <b>{html.escape(name)}</b>.",
+                         parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+    else:
+        await msg.answer(f"❌ {html.escape(reason)}")
+
+
+@router.message(TrackMenuState.waiting_alert_add)
+async def on_trackmenu_alert_input(msg: Message, state: FSMContext):
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("❌ Sai dạng. Gửi: <code>platform target</code>\nVD: <code>fb_watch 1000123456789</code>\n\n/huy để hủy.",
+                         parse_mode="HTML")
+        return
+    rule_id = db.create_alert_rule(str(msg.chat.id), parts[0], parts[1])
+    await state.clear()
+    await msg.answer(f"✅ Đã thêm cảnh báo [{html.escape(parts[0])}] {html.escape(parts[1])} (ID: {rule_id}).",
+                     parse_mode="HTML", reply_markup=_trackmenu_main_kb())
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_other(msg: Message):
     username = parse_username(msg.text or "")
@@ -3042,19 +3302,24 @@ async def on_scanlist_cmd(msg: Message):
     if len(parts) < 2 or not parts[1].strip():
         await msg.answer("⚠️ Cú pháp: /scanlist &lt;tên danh sách&gt;")
         return
-    name = parts[1].strip()
-    items = db.get_list_items(msg.chat.id, name)
+    await _run_scanlist(msg.chat.id, msg.from_user.id, parts[1].strip(),
+                        answer=msg.answer, bot=msg.bot)
+
+
+async def _run_scanlist(chat_id: int, user_id: int, name: str, answer, bot):
+    """Logic quét danh sách dùng chung cho /scanlist và nút trackmenu:lists_scan."""
+    items = db.get_list_items(chat_id, name)
     if not items:
-        await msg.answer(f"❌ Danh sách <b>{_esc_list_name(name)}</b> trống hoặc không tồn tại.", parse_mode="HTML")
+        await answer(f"❌ Danh sách <b>{_esc_list_name(name)}</b> trống hoặc không tồn tại.", parse_mode="HTML")
         return
     uids = [str(dict(i).get("value", "")) for i in items if dict(i).get("value")]
     if not uids:
-        await msg.answer(f"❌ Danh sách <b>{_esc_list_name(name)}</b> trống.", parse_mode="HTML")
+        await answer(f"❌ Danh sách <b>{_esc_list_name(name)}</b> trống.", parse_mode="HTML")
         return
-    wait = await msg.answer(f"⏳ Đang check {len(uids)} UID trong <b>{_esc_list_name(name)}</b>...", parse_mode="HTML")
-    if not await _ensure_bulk_credits(msg, wait, len(uids)):
+    wait = await answer(f"⏳ Đang check {len(uids)} UID trong <b>{_esc_list_name(name)}</b>...", parse_mode="HTML")
+    if not await _ensure_bulk_credits_simple(chat_id, user_id, wait, len(uids), bot):
         return
-    live, die, err = await check_uids_batch(uids, user_id=msg.from_user.id)
+    live, die, err = await check_uids_batch(uids, user_id=user_id)
     lines = [f"⚡ <b>KẾT QUẢ SCAN — {len(uids)} UID:</b>\n",
              f"🟢 Live: <b>{len(live)}</b>  |  🔴 Die: <b>{len(die)}</b>  |  ❓ Lỗi: <b>{len(err)}</b>\n"]
     if live:
@@ -3273,6 +3538,27 @@ async def _ensure_bulk_credits(msg: Message, wait: Message, n_uids: int) -> bool
             return False
         db.consume_credits(msg.from_user.id, need)
         await _maybe_low_credit_warn(msg.bot, msg.from_user.id, msg.chat.id)
+    return True
+
+
+async def _ensure_bulk_credits_simple(chat_id: int, user_id: int, wait: Message, n_uids: int, bot) -> bool:
+    """Bản gọn của _ensure_bulk_credits dùng cho nút bấm (không cần Message đầy đủ)."""
+    bulk_cost = int(db.get_setting("bulk_credit_cost", "0") or 0)
+    raw_u = db.get_user(user_id)
+    if bulk_cost > 0 and not _sub_active(dict(raw_u) if raw_u else None):
+        need = n_uids * bulk_cost
+        have = db.get_credits(user_id)
+        if have < need:
+            await wait.edit_text(
+                f"❌ <b>Không đủ credits!</b>\n\n"
+                f"Cần: <b>{need}</b> credits ({n_uids} UID × {bulk_cost})\n"
+                f"Bạn có: <b>{have}</b> credits\n\n"
+                f"Mua thêm bằng /muacredit",
+                parse_mode="HTML",
+            )
+            return False
+        db.consume_credits(user_id, need)
+        await _maybe_low_credit_warn(bot, user_id, chat_id)
     return True
 
 
@@ -5149,6 +5435,465 @@ async def on_trackmode(msg: Message):
         f"✅ UID <code>{html.escape(uid)}</code>: chế độ báo = <b>{'chỉ khi DIE' if mode == 'die' else 'mọi thay đổi'}</b>.",
         parse_mode="HTML",
     )
+
+
+# ============================ TRUNG TÂM THEO DÕI (MENU GỘP) ============================
+def _trackmenu_main_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📘 Facebook UID", callback_data="trackmenu:fb"),
+         InlineKeyboardButton(text="🎵 TikTok", callback_data="trackmenu:tiktok")],
+        [InlineKeyboardButton(text="📸 Instagram", callback_data="trackmenu:ig"),
+         InlineKeyboardButton(text="💬 Zalo", callback_data="trackmenu:zalo")],
+        [InlineKeyboardButton(text="📁 Danh sách UID", callback_data="trackmenu:lists"),
+         InlineKeyboardButton(text="🔔 Cảnh báo", callback_data="trackmenu:alerts")],
+    ])
+
+
+def _trackmenu_sub_kb(prefix: str):
+    """Submenu chung: Thêm mới + Danh sách + Quay lại."""
+    rows = []
+    if prefix == "fb":
+        rows = [
+            [InlineKeyboardButton(text="➕ Thêm UID FB", callback_data="trackmenu:fb_add")],
+            [InlineKeyboardButton(text="📋 Đang theo dõi", callback_data="trackmenu:fb_list")],
+        ]
+    elif prefix == "tiktok":
+        rows = [
+            [InlineKeyboardButton(text="➕ Theo dõi tài khoản", callback_data="trackmenu:tiktok_add"),
+             InlineKeyboardButton(text="🎬 Theo dõi video", callback_data="trackmenu:tiktok_video_add")],
+            [InlineKeyboardButton(text="📋 DS tài khoản", callback_data="trackmenu:tiktok_list"),
+             InlineKeyboardButton(text="📋 DS video", callback_data="trackmenu:tiktok_vlist")],
+        ]
+    elif prefix == "ig":
+        rows = [
+            [InlineKeyboardButton(text="➕ Theo dõi tài khoản", callback_data="trackmenu:ig_add"),
+             InlineKeyboardButton(text="🎞️ Theo dõi bài viết", callback_data="trackmenu:ig_post_add")],
+            [InlineKeyboardButton(text="📋 DS tài khoản", callback_data="trackmenu:ig_list"),
+             InlineKeyboardButton(text="📋 DS bài viết", callback_data="trackmenu:ig_plist")],
+        ]
+    elif prefix == "zalo":
+        rows = [
+            [InlineKeyboardButton(text="➕ Theo dõi SĐT", callback_data="trackmenu:zalo_add")],
+            [InlineKeyboardButton(text="📋 DS Zalo", callback_data="trackmenu:zalo_list")],
+        ]
+    elif prefix == "lists":
+        rows = [
+            [InlineKeyboardButton(text="➕ Tạo danh sách", callback_data="trackmenu:lists_new")],
+            [InlineKeyboardButton(text="📋 Xem danh sách", callback_data="trackmenu:lists_view")],
+            [InlineKeyboardButton(text="➕ Thêm UID vào DS", callback_data="trackmenu:lists_add")],
+        ]
+    elif prefix == "alerts":
+        rows = [
+            [InlineKeyboardButton(text="➕ Thêm cảnh báo", callback_data="trackmenu:alert_add")],
+            [InlineKeyboardButton(text="📋 DS cảnh báo", callback_data="trackmenu:alert_list")],
+        ]
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _trackmenu_text_main() -> str:
+    return (
+        "👁️ <b>TRUNG TÂM THEO DÕI</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Chọn loại muốn quản lý — khỏi cần nhớ lệnh:\n\n"
+        "📘 <b>Facebook UID</b> — theo dõi LIVE/DIE\n"
+        "🎵 <b>TikTok</b> — tài khoản & video\n"
+        "📸 <b>Instagram</b> — tài khoản & bài viết\n"
+        "💬 <b>Zalo</b> — theo dõi SĐT\n"
+        "📁 <b>Danh sách UID</b> — gom UID để quét hàng loạt\n"
+        "🔔 <b>Cảnh báo</b> — báo biến động tự động"
+    )
+
+
+def _vip_limit_for(user) -> int:
+    vip_level = 0
+    try:
+        vip_level = dict(user).get("vip_level", 0) if user else 0
+    except Exception:
+        pass
+    try:
+        return int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
+    except Exception:
+        return [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]
+
+
+@router.message(Command("theodoi"))
+async def on_theodoi(msg: Message, state: FSMContext):
+    await state.clear()
+    await msg.answer(_trackmenu_text_main(), parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+
+
+@router.callback_query(F.data.startswith("trackmenu:"))
+async def on_trackmenu_cb(cb: CallbackQuery, state: FSMContext):
+    data = cb.data or ""
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else "main"
+    sub = parts[2] if len(parts) > 2 else ""
+    tg_id = cb.from_user.id
+
+    try:
+        # ── Main menu ──
+        if action == "main":
+            await state.clear()
+            await cb.message.edit_text(_trackmenu_text_main(), parse_mode="HTML", reply_markup=_trackmenu_main_kb())
+            await cb.answer()
+            return
+
+        # ── Submenus ──
+        if action in ("fb", "tiktok", "ig", "zalo", "lists", "alerts") and not sub:
+            titles = {
+                "fb": "📘 <b>FACEBOOK UID</b>\nTheo dõi biến động LIVE/DIE của UID FB.\n\nChọn thao tác:",
+                "tiktok": "🎵 <b>TIKTOK</b>\nTheo dõi tài khoản & video TikTok.\n\nChọn thao tác:",
+                "ig": "📸 <b>INSTAGRAM</b>\nTheo dõi tài khoản & bài viết IG.\n\nChọn thao tác:",
+                "zalo": "💬 <b>ZALO</b>\nTheo dõi biến động SĐT Zalo.\n\nChọn thao tác:",
+                "lists": "📁 <b>DANH SÁCH UID</b>\nGom UID thành danh sách để quét hàng loạt.\n\nChọn thao tác:",
+                "alerts": "🔔 <b>CẢNH BÁO</b>\nBáo tự động khi có biến động.\n\nChọn thao tác:",
+            }
+            await cb.message.edit_text(titles.get(action, ""), parse_mode="HTML",
+                                       reply_markup=_trackmenu_sub_kb(action))
+            await cb.answer()
+            return
+
+        # ── Facebook: prompt thêm ──
+        if data == "trackmenu:fb_add":
+            await state.set_state(TrackMenuState.waiting_fb_uid)
+            await cb.message.edit_text(
+                "📘 <b>THÊM THEO DÕI UID FB</b>\n\nGửi UID Facebook cần theo dõi.\nVD: <code>1000123456789</code>\n\nGõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_trackmenu_back_kb("trackmenu:fb"))
+            await cb.answer()
+            return
+
+        # ── Facebook: danh sách ──
+        if data == "trackmenu:fb_list":
+            rows = db.get_user_watches(tg_id)
+            if not rows:
+                await cb.message.edit_text(
+                    "📭 Bạn chưa theo dõi UID nào.\n\nBấm ➕ Thêm UID FB để bắt đầu.",
+                    reply_markup=_trackmenu_sub_kb("fb"))
+                await cb.answer()
+                return
+            lines = ["📘 <b>UID ĐANG THEO DÕI</b>", "━━━━━━━━━━━━", ""]
+            kb_rows = []
+            for r in rows[:10]:
+                d = dict(r)
+                uid = str(d.get("uid") or "")
+                st = (d.get("last_status") or "?").upper()
+                mode = d.get("alert_mode") or "all"
+                mode_icon = "🔔" if mode == "all" else "🔕"
+                lines.append(f"{mode_icon} <code>{html.escape(uid)}</code> — <b>{st}</b>")
+                kb_rows.append([
+                    InlineKeyboardButton(text=f"{mode_icon} {uid[:12]}", callback_data=f"trackmenu:fb_toggle:{d.get('id')}"),
+                    InlineKeyboardButton(text="❌", callback_data=f"trackmenu:fb_del:{uid}"),
+                ])
+            if len(rows) > 10:
+                lines.append(f"\n<i>…và {len(rows) - 10} UID nữa — gõ /mywatches để xem hết</i>")
+            lines += ["", "🔔 = báo mọi thay đổi | 🔕 = chỉ khi DIE", "Bấm 🔔/🔕 để đổi chế độ, ❌ để hủy."]
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:fb")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            await cb.answer()
+            return
+
+        # ── Facebook: toggle chế độ ──
+        if action == "fb_toggle" and sub:
+            try:
+                wid = int(sub)
+            except ValueError:
+                await cb.answer("❌")
+                return
+            rows = db.get_user_watches(tg_id)
+            target = next((dict(r) for r in rows if str(r["id"]) == str(wid)), None)
+            if not target:
+                await cb.answer("❌ Không tìm thấy.", show_alert=True)
+                return
+            cur = target.get("alert_mode") or "all"
+            new_mode = "die_only" if cur == "all" else "all"
+            db.set_watch_alert_mode(wid, tg_id, new_mode)
+            await cb.answer("✅ Đã đổi thành " + ("chỉ khi DIE 🔕" if new_mode == "die_only" else "mọi thay đổi 🔔"))
+            # refresh list
+            cb2 = cb.model_copy(update={"data": "trackmenu:fb_list"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        # ── Facebook: xóa ──
+        if action == "fb_del" and sub:
+            n = db.remove_watch(tg_id, sub)
+            await cb.answer("✅ Đã hủy theo dõi." if n else "❌ Không tìm thấy.")
+            cb2 = cb.model_copy(update={"data": "trackmenu:fb_list"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        # ── TikTok / IG / Zalo: prompt thêm ──
+        prompts = {
+            "trackmenu:tiktok_add": (TrackMenuState.waiting_tiktok_username,
+                "🎵 <b>THEO DÕI TIKTOK</b>\n\nGửi username TikTok (không cần @).\nVD: <code>cristiano</code>\n\nGõ /huy để hủy."),
+            "trackmenu:tiktok_video_add": (TrackMenuState.waiting_tiktok_video,
+                "🎬 <b>THEO DÕI VIDEO TIKTOK</b>\n\nGửi link video TikTok.\nVD: <code>https://tiktok.com/@user/video/123</code>\n\nGõ /huy để hủy."),
+            "trackmenu:ig_add": (TrackMenuState.waiting_ig_username,
+                "📸 <b>THEO DÕI INSTAGRAM</b>\n\nGửi username IG (không cần @).\nVD: <code>cristiano</code>\n\nGõ /huy để hủy."),
+            "trackmenu:ig_post_add": (TrackMenuState.waiting_ig_post,
+                "🎞️ <b>THEO DÕI BÀI VIẾT IG</b>\n\nGửi link bài viết Instagram.\nVD: <code>https://www.instagram.com/p/C123456/</code>\n\nGõ /huy để hủy."),
+            "trackmenu:zalo_add": (TrackMenuState.waiting_zalo_phone,
+                "💬 <b>THEO DÕI ZALO</b>\n\nGửi số điện thoại cần theo dõi.\nVD: <code>0901234567</code>\n\nGõ /huy để hủy."),
+            "trackmenu:lists_new": (TrackMenuState.waiting_list_name,
+                "📁 <b>TẠO DANH SÁCH MỚI</b>\n\nGửi tên danh sách.\nVD: <code>khach-vip</code>\n\nGõ /huy để hủy."),
+            "trackmenu:lists_add": (TrackMenuState.waiting_list_add,
+                "📁 <b>THÊM UID VÀO DANH SÁCH</b>\n\nGửi theo dạng:\n<code>tên danh sách | uid</code>\nVD: <code>khach-vip | 1000123456789</code>\n\nGõ /huy để hủy."),
+            "trackmenu:alert_add": (TrackMenuState.waiting_alert_add,
+                "🔔 <b>THÊM CẢNH BÁO</b>\n\nGửi theo dạng:\n<code>platform target</code>\nVD: <code>fb_watch 1000123456789</code>\n\nGõ /huy để hủy."),
+        }
+        if data in prompts:
+            st, txt = prompts[data]
+            back_map = {
+                "trackmenu:tiktok_add": "trackmenu:tiktok", "trackmenu:tiktok_video_add": "trackmenu:tiktok",
+                "trackmenu:ig_add": "trackmenu:ig", "trackmenu:ig_post_add": "trackmenu:ig",
+                "trackmenu:zalo_add": "trackmenu:zalo", "trackmenu:lists_new": "trackmenu:lists",
+                "trackmenu:lists_add": "trackmenu:lists", "trackmenu:alert_add": "trackmenu:alerts",
+            }
+            await state.set_state(st)
+            await cb.message.edit_text(txt, parse_mode="HTML",
+                                       reply_markup=_trackmenu_back_kb(back_map.get(data, "trackmenu:main")))
+            await cb.answer()
+            return
+
+        # ── TikTok: DS tài khoản ──
+        if data == "trackmenu:tiktok_list":
+            tracks = db.user_tracks(tg_id)
+            if not tracks:
+                await cb.message.edit_text("📭 Chưa theo dõi tài khoản TikTok nào.",
+                                           reply_markup=_trackmenu_sub_kb("tiktok"))
+                await cb.answer()
+                return
+            lines = ["🎵 <b>TIKTOK ĐANG THEO DÕI</b>", ""]
+            kb_rows = []
+            for t in tracks[:10]:
+                t = dict(t)
+                un = t.get("tiktok_username") or ""
+                fl = t.get("last_followers") or 0
+                lines.append(f"• <b>@{html.escape(un)}</b> — 👥 {fmt_num(fl)}")
+                kb_rows.append([InlineKeyboardButton(text=f"❌ @{un[:18]}", callback_data=f"trackmenu:tiktok_del:{un}")])
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:tiktok")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            await cb.answer()
+            return
+
+        # ── TikTok: DS video ──
+        if data == "trackmenu:tiktok_vlist":
+            vtracks = db.user_video_tracks(tg_id)
+            if not vtracks:
+                await cb.message.edit_text("📭 Chưa theo dõi video TikTok nào.",
+                                           reply_markup=_trackmenu_sub_kb("tiktok"))
+                await cb.answer()
+                return
+            lines = ["🎬 <b>VIDEO TIKTOK ĐANG THEO DÕI</b>", ""]
+            kb_rows = []
+            for v in vtracks[:10]:
+                v = dict(v)
+                vid = str(v.get("video_id") or "")
+                un = v.get("tiktok_username") or ""
+                lines.append(f"• <a href=\"{html.escape(v.get('video_url') or '')}\">@{html.escape(un)}</a>")
+                kb_rows.append([InlineKeyboardButton(text=f"❌ Video {vid[:14]}", callback_data=f"trackmenu:tiktokv_del:{vid}")])
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:tiktok")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                                       disable_web_page_preview=True)
+            await cb.answer()
+            return
+
+        # ── TikTok: xóa ──
+        if action in ("tiktok_del", "tiktokv_del") and sub:
+            if action == "tiktok_del":
+                ok = db.remove_track(tg_id, sub)
+            else:
+                ok = db.remove_video_track(tg_id, sub)
+            await cb.answer("✅ Đã hủy." if ok else "❌ Không tìm thấy.")
+            cb2 = cb.model_copy(update={"data": "trackmenu:tiktok_list" if action == "tiktok_del" else "trackmenu:tiktok_vlist"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        # ── IG: DS tài khoản ──
+        if data == "trackmenu:ig_list":
+            tracks = db.user_ig_tracks(tg_id)
+            if not tracks:
+                await cb.message.edit_text("📭 Chưa theo dõi tài khoản IG nào.",
+                                           reply_markup=_trackmenu_sub_kb("ig"))
+                await cb.answer()
+                return
+            lines = ["📸 <b>IG ĐANG THEO DÕI</b>", ""]
+            kb_rows = []
+            for t in tracks[:10]:
+                t = dict(t)
+                un = t.get("ig_username") or ""
+                fl = t.get("last_followers") or 0
+                lines.append(f"• <b>@{html.escape(un)}</b> — 👥 {fmt_num(fl)}")
+                kb_rows.append([InlineKeyboardButton(text=f"❌ @{un[:18]}", callback_data=f"trackmenu:ig_del:{un}")])
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:ig")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            await cb.answer()
+            return
+
+        # ── IG: DS bài viết ──
+        if data == "trackmenu:ig_plist":
+            vtracks = db.user_ig_video_tracks(tg_id)
+            if not vtracks:
+                await cb.message.edit_text("📭 Chưa theo dõi bài viết IG nào.",
+                                           reply_markup=_trackmenu_sub_kb("ig"))
+                await cb.answer()
+                return
+            lines = ["🎞️ <b>BÀI VIẾT IG ĐANG THEO DÕI</b>", ""]
+            kb_rows = []
+            for v in vtracks[:10]:
+                v = dict(v)
+                pid = str(v.get("post_id") or "")
+                un = v.get("ig_username") or ""
+                lines.append(f"• <a href=\"{html.escape(v.get('post_url') or '')}\">@{html.escape(un)}</a>")
+                kb_rows.append([InlineKeyboardButton(text=f"❌ Post {pid[:14]}", callback_data=f"trackmenu:igp_del:{pid}")])
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:ig")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+                                       disable_web_page_preview=True)
+            await cb.answer()
+            return
+
+        # ── IG: xóa ──
+        if action in ("ig_del", "igp_del") and sub:
+            if action == "ig_del":
+                ok = db.remove_ig_track(tg_id, sub)
+            else:
+                ok = db.remove_ig_video_track(tg_id, sub)
+            await cb.answer("✅ Đã hủy." if ok else "❌ Không tìm thấy.")
+            cb2 = cb.model_copy(update={"data": "trackmenu:ig_list" if action == "ig_del" else "trackmenu:ig_plist"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        # ── Zalo: DS ──
+        if data == "trackmenu:zalo_list":
+            tracks = db.user_zalo_tracks(tg_id)
+            if not tracks:
+                await cb.message.edit_text("📭 Chưa theo dõi SĐT Zalo nào.",
+                                           reply_markup=_trackmenu_sub_kb("zalo"))
+                await cb.answer()
+                return
+            lines = ["💬 <b>SĐT ZALO ĐANG THEO DÕI</b>", ""]
+            kb_rows = []
+            for t in tracks[:10]:
+                t = dict(t)
+                phone = str(t.get("phone") or "")
+                nm = t.get("name") or ""
+                st = t.get("status") or ""
+                lines.append(f"• <code>{html.escape(phone)}</code> — {html.escape(nm)} ({st})")
+                kb_rows.append([InlineKeyboardButton(text=f"❌ {phone}", callback_data=f"trackmenu:zalo_del:{phone}")])
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:zalo")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            await cb.answer()
+            return
+
+        if action == "zalo_del" and sub:
+            ok = db.remove_zalo_track(tg_id, sub)
+            await cb.answer("✅ Đã hủy." if ok else "❌ Không tìm thấy.")
+            cb2 = cb.model_copy(update={"data": "trackmenu:zalo_list"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        # ── Lists: xem ──
+        if data == "trackmenu:lists_view":
+            lists = db.get_user_lists(tg_id)
+            if not lists:
+                await cb.message.edit_text("📭 Chưa có danh sách nào.\nBấm ➕ Tạo danh sách để bắt đầu.",
+                                           reply_markup=_trackmenu_sub_kb("lists"))
+                await cb.answer()
+                return
+            lines = ["📁 <b>DANH SÁCH CỦA BẠN</b>", ""]
+            kb_rows = []
+            for l in lists[:10]:
+                l = dict(l)
+                name = l.get("name") or ""
+                cnt = l.get("item_count", 0)
+                lines.append(f"• <b>{html.escape(name)}</b> — {cnt} UID")
+                kb_rows.append([
+                    InlineKeyboardButton(text=f"🔍 {name[:14]}", callback_data=f"trackmenu:lists_scan:{name}"),
+                    InlineKeyboardButton(text="🗑", callback_data=f"trackmenu:lists_del:{name}"),
+                ])
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:lists")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            await cb.answer()
+            return
+
+        # ── Lists: quét nhanh ──
+        if action == "lists_scan" and sub:
+            items = db.get_list_items(tg_id, sub)
+            uids = [str(dict(i).get("value", "")) for i in items if dict(i).get("value")]
+            if not uids:
+                await cb.answer("Danh sách trống.", show_alert=True)
+                return
+            await cb.answer(f"⏳ Đang quét {len(uids)} UID...")
+            # gọi logic scan dùng chung (không dùng FakeMsg nữa)
+            await _run_scanlist(cb.message.chat.id, cb.from_user.id, sub,
+                                answer=cb.message.answer, bot=cb.bot)
+            return
+
+        # ── Lists: xóa ──
+        if action == "lists_del" and sub:
+            ok = db.delete_user_list(tg_id, sub)
+            await cb.answer("🗑 Đã xóa." if ok else "❌ Không tìm thấy.")
+            cb2 = cb.model_copy(update={"data": "trackmenu:lists_view"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        # ── Alerts: DS ──
+        if data == "trackmenu:alert_list":
+            rules = db.get_alert_rules(tg_id=str(tg_id))
+            if not rules:
+                await cb.message.edit_text("📭 Chưa có cảnh báo nào.",
+                                           reply_markup=_trackmenu_sub_kb("alerts"))
+                await cb.answer()
+                return
+            lines = ["🔔 <b>DANH SÁCH CẢNH BÁO</b>", ""]
+            kb_rows = []
+            for r in rules[:10]:
+                r = dict(r)
+                lines.append(f"• ID {r['id']}: [{html.escape(str(r['platform']))}] {html.escape(str(r['target']))}")
+                kb_rows.append([InlineKeyboardButton(text=f"❌ Xóa #{r['id']}", callback_data=f"trackmenu:alert_del:{r['id']}")])
+            kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:alerts")])
+            await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
+                                       reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            await cb.answer()
+            return
+
+        if action == "alert_del" and sub:
+            try:
+                db.delete_alert_rule(int(sub))
+                await cb.answer("✅ Đã xóa.")
+            except Exception:
+                await cb.answer("❌ Lỗi.")
+            cb2 = cb.model_copy(update={"data": "trackmenu:alert_list"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        await cb.answer("❌")
+    except Exception as e:
+        log.warning("trackmenu cb lỗi: %s", e)
+        try:
+            await cb.answer("❌ Có lỗi xảy ra.")
+        except Exception:
+            pass
+
+
+def _trackmenu_back_kb(back_to: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Quay lại", callback_data=back_to)]
+    ])
+
+
+def _is_cancel(text: str) -> bool:
+    t = (text or "").strip().lower()
+    return t in ("/huy", "/cancel", "hủy", "huỷ")
+
+
 
 
 # ============================ SHOP ACC FB ============================
