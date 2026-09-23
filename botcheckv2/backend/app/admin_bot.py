@@ -568,7 +568,10 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     elif subcmd == "find":
         if not rest:
             await msg.answer("❌ HDSD: /adm find &lt;@username&gt;", parse_mode="HTML"); return
-        user = db.find_user_by_username(rest.strip())
+        q = rest.strip()
+        user = db.get_user(int(q)) if q.isdigit() else None
+        if not user:
+            user = db.find_user_by_username(q)
         if user:
             await msg.answer(_user_info_text(user), parse_mode="HTML")
         else:
@@ -1324,7 +1327,7 @@ def register_adm_menu(target_router):
             "go_ban": (AdmMenuState.ban_uid, "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần khoá."),
             "go_unban": (AdmMenuState.unban_uid, "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>\n\nGửi <b>User ID</b> cần mở khoá."),
             "go_setvip": (AdmMenuState.setvip_uid, "⭐ <b>SET VIP</b> (bước 1/3)\n\nGửi <b>User ID</b> cần set VIP."),
-            "go_find": (AdmMenuState.find_query, "🔎 <b>TÌM USER</b>\n\nGửi <b>@username</b> hoặc tên cần tìm."),
+            "go_find": (AdmMenuState.find_query, "🔎 <b>TÌM USER</b>\n\nGửi <b>@username</b>, <b>User ID</b> hoặc tên cần tìm."),
             "go_taopromo": (AdmMenuState.taopromo_code, "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 1/4)\n\nGửi <b>mã</b> (VD: SALE20)."),
             "go_promo": (AdmMenuState.promo_prefix, "💵 <b>TẠO MÃ TIỀN</b> (bước 1/4)\n\nGửi <b>prefix</b> (VD: SALE)."),
             "go_xoapromo": (AdmMenuState.xoapromo_code, "❌ <b>XOÁ MÃ GIẢM GIÁ</b>\n\nGửi <b>mã</b> cần xoá."),
@@ -1666,7 +1669,7 @@ def register_adm_menu(target_router):
             return
         await _admm_exec_via_msg(msg, state, f"/adm find {q}",
                                  restore_state=AdmMenuState.find_query)
-        await msg.answer("Gửi <b>@username</b> khác để tìm tiếp, hoặc /huy để huỷ.",
+        await msg.answer("Gửi <b>@username</b>/<b>ID</b> khác để tìm tiếp, hoặc /huy để huỷ.",
                          parse_mode="HTML")
 
     @target_router.message(AdmMenuState.taopromo_code)
