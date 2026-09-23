@@ -905,6 +905,56 @@ def _admm_skip_kb(skip_text="⏭ Bỏ qua"):
     ])
 
 
+# ------------------------------------------------- chọn user theo số thứ tự
+_USER_PICK_PAGE = 10
+
+
+def _admm_user_pick_text(page: int):
+    """Danh sách user đánh số thứ tự để admin bấm chọn thay vì nhập ID."""
+    from . import util
+    c = db.get_conn()
+    try:
+        total = c.execute("SELECT COUNT(*) n FROM tg_users").fetchone()["n"]
+        rows = [dict(r) for r in c.execute(
+            "SELECT tg_id, name, username, balance, is_blocked FROM tg_users "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (_USER_PICK_PAGE, page * _USER_PICK_PAGE)).fetchall()]
+    except Exception:
+        return "❌ Không đọc được danh sách user.", _admm_back_kb()
+    if not rows:
+        return "👥 Chưa có user nào.", _admm_back_kb()
+    lines = ["🔍 <b>XEM THÔNG TIN USER</b>",
+             f"👥 Tổng: <b>{total}</b> user — bấm <b>số thứ tự</b> để xem chi tiết,",
+             "hoặc gửi <b>User ID</b> trực tiếp.",
+             "━━━━━━━━━━━━"]
+    base = page * _USER_PICK_PAGE
+    btns, kb_rows = [], []
+    for i, r in enumerate(rows):
+        stt = base + i + 1
+        nm = html.escape(str(r.get("name") or ""))
+        un = f" (@{html.escape(str(r['username']))})" if r.get("username") else ""
+        bal = util.vnd(r.get("balance") or 0)
+        flag = " 🔴" if r.get("is_blocked") else ""
+        lines.append(f"<b>{stt}.</b> {nm}{un} — {bal}{flag}")
+        btns.append(InlineKeyboardButton(text=str(stt),
+                                         callback_data=f"admm:picku_{r['tg_id']}"))
+        if len(btns) == 5:
+            kb_rows.append(btns)
+            btns = []
+    if btns:
+        kb_rows.append(btns)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⏮ Trước", callback_data=f"admm:pickp_{page - 1}"))
+    if (page + 1) * _USER_PICK_PAGE < total:
+        nav.append(InlineKeyboardButton(text="⏭ Tiếp", callback_data=f"admm:pickp_{page + 1}"))
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")])
+    lines.append("━━━━━━━━━━━━\nGõ /huy để huỷ.")
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
 class _AdmTextShim:
     """Giả lập Message với text tuỳ chỉnh để tái dùng _handle_adm_cmd cho flow nút bấm."""
     def __init__(self, msg: Message, text: str, edit_target=None):
@@ -1229,6 +1279,44 @@ def register_adm_menu(target_router):
             await _admm_exec_via_cb(cb, state, "/adm dspromo")
             return
 
+        # ── Chọn user theo số thứ tự (xem thông tin) ──
+        if action.startswith("pickp_") or action.startswith("picku_"):
+            need = _perms.cmd_perm_for_text("/adm info 0")
+            if need and not _perms.has_perm(cb.from_user.id, need):
+                await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
+                                show_alert=True)
+                return
+            if action.startswith("pickp_"):
+                try:
+                    page = int(action.split("_", 1)[1])
+                except ValueError:
+                    page = 0
+                text, kb = _admm_user_pick_text(max(page, 0))
+                await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+                await cb.answer()
+                return
+            try:
+                uid = int(action.split("_", 1)[1])
+            except ValueError:
+                await cb.answer("ID không hợp lệ.", show_alert=True)
+                return
+            try:
+                db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                                   "menu_adm", f"/adm info {uid}")
+            except Exception:
+                pass
+            shim = _AdmTextShim(cb.message, f"/adm info {uid}", edit_target=cb.message)
+            await _handle_adm_cmd(shim, bot_instance=cb.bot)
+            rm = cb.message.reply_markup
+            rows = [list(r) for r in rm.inline_keyboard] if rm and rm.inline_keyboard else []
+            rows.append([InlineKeyboardButton(text="📋 Danh sách user",
+                                              callback_data="admm:pickp_0")])
+            await cb.message.edit_reply_markup(
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            await state.set_state(AdmMenuState.info_uid)
+            await cb.answer()
+            return
+
         # ── Bắt đầu các flow nhập liệu ──
         prompts = {
             "go_topup": (AdmMenuState.topup_uid, "💰 <b>CỘNG TIỀN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần cộng tiền."),
@@ -1236,7 +1324,6 @@ def register_adm_menu(target_router):
             "go_ban": (AdmMenuState.ban_uid, "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần khoá."),
             "go_unban": (AdmMenuState.unban_uid, "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>\n\nGửi <b>User ID</b> cần mở khoá."),
             "go_setvip": (AdmMenuState.setvip_uid, "⭐ <b>SET VIP</b> (bước 1/3)\n\nGửi <b>User ID</b> cần set VIP."),
-            "go_info": (AdmMenuState.info_uid, "🔍 <b>XEM THÔNG TIN USER</b>\n\nGửi <b>User ID</b>."),
             "go_find": (AdmMenuState.find_query, "🔎 <b>TÌM USER</b>\n\nGửi <b>@username</b> hoặc tên cần tìm."),
             "go_taopromo": (AdmMenuState.taopromo_code, "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 1/4)\n\nGửi <b>mã</b> (VD: SALE20)."),
             "go_promo": (AdmMenuState.promo_prefix, "💵 <b>TẠO MÃ TIỀN</b> (bước 1/4)\n\nGửi <b>prefix</b> (VD: SALE)."),
@@ -1244,6 +1331,17 @@ def register_adm_menu(target_router):
             "go_flashsale": (AdmMenuState.flashsale_code, "🔥 <b>FLASH SALE</b>\n\nGửi <b>mã</b> muốn thông báo tới toàn bộ user."),
             "go_webhook": (AdmMenuState.webhook_key, "🔔 <b>WEBHOOK RESELLER</b> (bước 1/2)\n\nGửi <b>tên key hoặc ID</b> reseller."),
         }
+        if action == "go_info":
+            need = _perms.cmd_perm_for_text("/adm info 0")
+            if need and not _perms.has_perm(cb.from_user.id, need):
+                await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
+                                show_alert=True)
+                return
+            await state.set_state(AdmMenuState.info_uid)
+            text, kb = _admm_user_pick_text(0)
+            await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
         if action in prompts:
             st, prompt = prompts[action]
             await state.set_state(st)
