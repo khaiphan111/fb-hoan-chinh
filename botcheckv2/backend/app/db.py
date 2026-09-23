@@ -151,7 +151,8 @@ def init_db() -> None:
                 name     TEXT DEFAULT '',
                 perms    TEXT DEFAULT '',
                 added_by BIGINT DEFAULT 0,
-                added_at BIGINT DEFAULT 0
+                added_at BIGINT DEFAULT 0,
+                expires_at BIGINT DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS admin_audit (
@@ -493,7 +494,8 @@ def migrate_db():
             "ALTER TABLE tg_users ADD COLUMN shop_balance BIGINT DEFAULT 0",
             "ALTER TABLE payos_orders ADD COLUMN target TEXT DEFAULT 'main'",
             "ALTER TABLE acc_restock_subs ADD COLUMN qty INTEGER DEFAULT 1",
-            "ALTER TABLE acc_restock_subs ADD COLUMN auto_buy INTEGER DEFAULT 0"
+            "ALTER TABLE acc_restock_subs ADD COLUMN auto_buy INTEGER DEFAULT 0",
+            "ALTER TABLE extra_admins ADD COLUMN expires_at BIGINT DEFAULT 0"
         ]:
             try:
                 c.execute(sql)
@@ -3642,16 +3644,18 @@ def extra_admin_get(tg_id: int):
     return dict(r) if r else None
 
 
-def extra_admin_add(tg_id: int, name: str, perms: str, added_by: int) -> bool:
-    """Thêm admin phụ. perms: chuỗi 'kho,price,...' (đã validate ở tầng gọi)."""
+def extra_admin_add(tg_id: int, name: str, perms: str, added_by: int,
+                    expires_at: int = 0) -> bool:
+    """Thêm admin phụ. perms: chuỗi 'kho,price,...' (đã validate ở tầng gọi).
+    expires_at: timestamp hết hạn (0 = vĩnh viễn)."""
     try:
         with _lock:
             c = get_conn()
             c.execute(
-                "INSERT OR REPLACE INTO extra_admins(tg_id, name, perms, added_by, added_at)"
-                " VALUES(?,?,?,?,?)",
+                "INSERT OR REPLACE INTO extra_admins(tg_id, name, perms, added_by, added_at, expires_at)"
+                " VALUES(?,?,?,?,?,?)",
                 (int(tg_id), (name or "")[:64], perms or "",
-                 int(added_by or 0), int(time.time())))
+                 int(added_by or 0), int(time.time()), int(expires_at or 0)))
             c.commit()
         return True
     except Exception:
@@ -3668,6 +3672,30 @@ def extra_admin_set_perms(tg_id: int, perms: str) -> bool:
         return cur.rowcount > 0
     except Exception:
         return False
+
+
+def extra_admin_set_expiry(tg_id: int, expires_at: int) -> bool:
+    """Đặt/gia hạn thời hạn quyền (0 = vĩnh viễn)."""
+    try:
+        with _lock:
+            c = get_conn()
+            cur = c.execute("UPDATE extra_admins SET expires_at=? WHERE tg_id=?",
+                            (int(expires_at or 0), int(tg_id)))
+            c.commit()
+        return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+def extra_admin_expired() -> list:
+    """Danh sách admin phụ đã hết hạn (expires_at>0 và đã qua)."""
+    try:
+        rows = get_conn().execute(
+            "SELECT * FROM extra_admins WHERE expires_at>0 AND expires_at<=?",
+            (int(time.time()),)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
 
 
 def extra_admin_del(tg_id: int) -> bool:

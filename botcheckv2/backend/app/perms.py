@@ -7,6 +7,7 @@
 - Mọi menu (/adm, /shopadm) tự lọc theo quyền; lệnh gõ tay bị middleware chặn.
 """
 from . import db
+import time
 
 # ─── CHỦ SHOP CỨNG: ID này LUÔN có quyền cao nhất, không thể bị tước bởi
 # restart/backend mất env/DB bị reset. Đừng đổi khi chưa được chủ shop duyệt.
@@ -83,25 +84,35 @@ def is_super(tg_id) -> bool:
         return False
 
 
+def _is_expired(row) -> bool:
+    """Admin phụ hết hạn tạm thời -> coi như không còn quyền."""
+    try:
+        exp = int((row or {}).get("expires_at") or 0)
+        return exp > 0 and exp <= int(time.time())
+    except Exception:
+        return False
+
+
 def is_admin(tg_id) -> bool:
-    """Super admin hoặc admin phụ (bất kỳ quyền nào)."""
+    """Super admin hoặc admin phụ (bất kỳ quyền nào, còn hạn)."""
     if is_super(tg_id):
         return True
     try:
-        return db.extra_admin_get(tg_id) is not None
+        row = db.extra_admin_get(tg_id)
+        return row is not None and not _is_expired(row)
     except Exception:
         return False
 
 
 def perms_of(tg_id) -> set:
-    """Tập quyền của user. Super admin -> tất cả."""
+    """Tập quyền của user. Super admin -> tất cả. Hết hạn -> rỗng."""
     if is_super(tg_id):
         return set(PERM_KEYS)
     try:
         row = db.extra_admin_get(tg_id)
     except Exception:
         row = None
-    if not row:
+    if not row or _is_expired(row):
         return set()
     raw = (row.get("perms") or "").strip()
     if raw == "*":
@@ -143,6 +154,8 @@ def notify_extra_ids(perm: str) -> list:
     try:
         from . import db as _db
         for r in _db.extra_admin_list():
+            if _is_expired(r):
+                continue
             ps = set((r["perms"] or "").split(",")) if r["perms"] else set()
             if perm in ps:
                 try:

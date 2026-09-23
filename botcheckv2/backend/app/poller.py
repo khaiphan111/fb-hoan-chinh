@@ -308,9 +308,50 @@ class FollowerPoller:
                     await self._maybe_stock_recheck(now_t, today)
                 except Exception as e:
                     log.warning("stock recheck schedule: %s", e)
+                # Thu hồi quyền admin phụ hết hạn tạm thời
+                try:
+                    await self._sweep_expired_admins()
+                except Exception as e:
+                    log.warning("admin expiry sweep: %s", e)
             except Exception as e:
                 log.warning("maintenance loop: %s", e)
             await asyncio.sleep(300)
+
+    async def _sweep_expired_admins(self):
+        """Thu hồi quyền admin phụ đã hết hạn tạm thời, báo cả 2 bên."""
+        rows = db.extra_admin_expired()
+        if not rows:
+            return
+        from . import perms as _perms
+        owner_id = _perms.super_id()
+        for r in rows:
+            aid = int(r["tg_id"])
+            db.extra_admin_del(aid)
+            try:
+                db.admin_audit_add(owner_id, "Hệ thống", "thuhoi_admin_hethan",
+                                   f"{aid} ({r.get('name') or ''})")
+            except Exception:
+                pass
+            if self._bot:
+                try:
+                    await self._bot.send_message(
+                        aid,
+                        "⏳ <b>Thông báo từ shop</b>\n\n"
+                        "Quyền quản trị tạm thời của bạn đã hết hạn.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+                if owner_id and owner_id != aid:
+                    try:
+                        await self._bot.send_message(
+                            owner_id,
+                            f"⏳ Quyền admin tạm thời của <code>{aid}</code> "
+                            f"({html.escape(r.get('name') or '')}) đã hết hạn, "
+                            f"bot đã tự thu hồi.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+            log.info("admin expiry sweep: revoked %s", aid)
 
     async def _maybe_stock_recheck(self, now_t, today):
         """Lịch re-check LIVE toàn bộ kho: mỗi stock_recheck_days ngày

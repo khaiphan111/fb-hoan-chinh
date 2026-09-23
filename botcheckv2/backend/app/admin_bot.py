@@ -844,6 +844,8 @@ class AdmMenuState(StatesGroup):
     webhook_key = State()
     webhook_url = State()
     admadd_id = State()
+    admadd_days = State()
+    admexp_days = State()
 
 
 def _admm_main_kb(tg_id=None):
@@ -1073,6 +1075,18 @@ def _admx_name_of(tg_id: int) -> str:
     return str(tg_id)
 
 
+def _admx_exp_text(expires_at) -> str:
+    """Chuỗi hiển thị thời hạn: 'Vĩnh viễn' hoặc 'đến dd/mm/yyyy'."""
+    try:
+        exp = int(expires_at or 0)
+    except Exception:
+        exp = 0
+    if not exp:
+        return "Vĩnh viễn"
+    import time as _t
+    return "đến " + _t.strftime("%d/%m/%Y", _t.localtime(exp))
+
+
 def _admx_list_text() -> str:
     rows = db.extra_admin_list()
     if not rows:
@@ -1080,7 +1094,8 @@ def _admx_list_text() -> str:
     lines = ["🛡️ <b>QUẢN LÝ ADMIN</b>", ""]
     for r in rows:
         pl = [ _perms.perm_label(p) for p in (r.get("perms") or "").split(",") if p ]
-        lines.append(f"• <code>{r['tg_id']}</code> {html.escape(r.get('name') or '?')}\n"
+        exp = f" ⏳ {_admx_exp_text(r.get('expires_at'))}" if r.get("expires_at") else ""
+        lines.append(f"• <code>{r['tg_id']}</code> {html.escape(r.get('name') or '?')}{exp}\n"
                      f"  └ {', '.join(pl) or '—'}")
     return "\n".join(lines)
 
@@ -1136,15 +1151,35 @@ def _audit_kb(page: int):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _admx_perm_kb(cur: set, save_cb: str):
+def _admx_perm_kb(cur: set, save_cb: str, expire_btn: bool = False,
+                 extra_rows: list = None):
     rows = []
     for k, label in _perms.PERMS:
         mark = "✅" if k in cur else "⬜"
         rows.append([InlineKeyboardButton(text=f"{mark} {label}",
                                           callback_data=f"admx:toggle:{k}")])
+    if expire_btn:
+        rows.append([InlineKeyboardButton(text="⏳ Lưu có thời hạn",
+                                          callback_data="admx:expdays")])
+    for r in (extra_rows or []):
+        rows.append(r)
     rows.append([InlineKeyboardButton(text="✅ Lưu", callback_data=save_cb),
                  InlineKeyboardButton(text="❌ Huỷ", callback_data="admx:list")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _admx_edit_extra_rows(aid: int, expires_at) -> list:
+    return [[InlineKeyboardButton(
+        text=f"⏳ Thời hạn: {_admx_exp_text(expires_at)}",
+        callback_data=f"admx:exp:{aid}")]]
+
+
+async def _admx_notify(bot, aid: int, text: str):
+    """Gửi tin báo cho admin phụ (không lỗi nếu họ chặn bot)."""
+    try:
+        await bot.send_message(int(aid), text, parse_mode="HTML")
+    except Exception:
+        pass
 
 
 def _admm_parse_uid(text: str):
@@ -1980,7 +2015,6 @@ def register_adm_menu(target_router):
     # ── Quản lý admin phụ (chỉ chủ shop) ──
     @target_router.callback_query(F.data.startswith("admx:"))
     async def _on_admx_cb(cb: CallbackQuery, state: FSMContext):
-        print(f"DEBUG admx cb: data={cb.data!r} from={cb.from_user.id}", flush=True)
         if not _perms.is_super(cb.from_user.id):
             await cb.answer("🚫 Chỉ chủ shop mới quản lý được admin.",
                             show_alert=True)
@@ -2038,13 +2072,19 @@ def register_adm_menu(target_router):
             if mode == "add":
                 title = f"➕ <b>THÊM ADMIN</b> <code>{aid}</code>"
                 save_cb = "admx:save"
+                kb = _admx_perm_kb(cur, save_cb, expire_btn=True)
             else:
                 title = f"🔑 <b>SỬA QUYỀN</b> <code>{aid}</code>"
                 save_cb = f"admx:saveedit:{aid}"
+                _row = db.extra_admin_get(aid)
+                kb = _admx_perm_kb(
+                    cur, save_cb,
+                    extra_rows=_admx_edit_extra_rows(
+                        aid, (_row or {}).get("expires_at")))
             await cb.message.edit_text(
                 f"{title}\n\nTick chọn các quyền được phép "
                 f"(<i>đang chọn {len(cur)}/{len(_perms.PERMS)}</i>):",
-                parse_mode="HTML", reply_markup=_admx_perm_kb(cur, save_cb))
+                parse_mode="HTML", reply_markup=kb)
             await cb.answer()
             return
 
@@ -2059,18 +2099,50 @@ def register_adm_menu(target_router):
                                ",".join(sorted(cur)), cb.from_user.id)
             db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
                                "them_admin", f"{aid} quyen=[{','.join(sorted(cur))}]")
-            try:
-                await cb.bot.send_message(
-                    int(aid),
-                    "🎉 <b>Bạn đã được cấp quyền quản trị!</b>\n"
-                    "Gõ /adm để mở menu quản trị.",
-                    parse_mode="HTML")
-            except Exception:
-                pass
+            await _admx_notify(
+                cb.bot, int(aid),
+                "🎉 <b>Bạn đã được cấp quyền quản trị!</b>\n"
+                "Gõ /adm để mở menu quản trị.")
             await state.clear()
             await cb.message.edit_text(
                 f"✅ Đã thêm admin <code>{aid}</code>.\n\n" + _admx_list_text(),
                 parse_mode="HTML", reply_markup=_admx_list_kb())
+            await cb.answer()
+            return
+
+        if action == "expdays":
+            # Thêm admin có thời hạn: hỏi số ngày rồi mới lưu
+            data = await state.get_data()
+            if data.get("admx_mode") != "add" or not data.get("admx_id"):
+                await cb.answer("Hết phiên, thử lại.", show_alert=True)
+                return
+            await state.set_state(AdmMenuState.admadd_days)
+            await cb.message.edit_text(
+                "⏳ <b>CẤP QUYỀN CÓ THỜI HẠN</b>\n\n"
+                "Nhập <b>số ngày</b> hiệu lực (1–3650).\n"
+                "Hết hạn bot sẽ tự thu hồi và báo cho cả 2 bên.\n\n"
+                "Gõ /huy để huỷ.",
+                parse_mode="HTML")
+            await cb.answer()
+            return
+
+        if action.startswith("exp:"):
+            # Đổi thời hạn của admin phụ đang sửa
+            aid = action[4:]
+            row = db.extra_admin_get(aid)
+            if not row:
+                await cb.answer("Admin không tồn tại.", show_alert=True)
+                return
+            await state.clear()
+            await state.update_data(admx_mode="expedit", admx_id=int(aid))
+            await state.set_state(AdmMenuState.admexp_days)
+            await cb.message.edit_text(
+                f"⏳ <b>THỜI HẠN QUYỀN</b> <code>{aid}</code>\n\n"
+                f"Hiện tại: <b>{_admx_exp_text(row.get('expires_at'))}</b>\n\n"
+                "Nhập <b>số ngày</b> hiệu lực mới (1–3650), "
+                "hoặc <b>0</b> để thành vĩnh viễn.\n\n"
+                "Gõ /huy để huỷ.",
+                parse_mode="HTML")
             await cb.answer()
             return
 
@@ -2089,7 +2161,9 @@ def register_adm_menu(target_router):
                 f"({html.escape(row.get('name') or '')})\n\n"
                 f"Tick chọn các quyền được phép:",
                 parse_mode="HTML",
-                reply_markup=_admx_perm_kb(cur, f"admx:saveedit:{aid}"))
+                reply_markup=_admx_perm_kb(
+                    cur, f"admx:saveedit:{aid}",
+                    extra_rows=_admx_edit_extra_rows(aid, row.get("expires_at"))))
             await cb.answer()
             return
 
@@ -2100,9 +2174,26 @@ def register_adm_menu(target_router):
                 return
             data = await state.get_data()
             cur = set(data.get("admx_perms") or [])
+            old_row = db.extra_admin_get(aid)
+            old = set((old_row.get("perms") or "").split(",")) if old_row else set()
+            removed = sorted(old - cur)
             db.extra_admin_set_perms(int(aid), ",".join(sorted(cur)))
             db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
                                "sua_quyen_admin", f"{aid} quyen=[{','.join(sorted(cur))}]")
+            if removed:
+                labels = [_perms.perm_label(p) for p in removed]
+                if not cur:
+                    await _admx_notify(
+                        cb.bot, int(aid),
+                        "🔔 <b>Thông báo từ shop</b>\n\n"
+                        "Toàn bộ quyền quản trị của bạn đã bị thu hồi.")
+                else:
+                    await _admx_notify(
+                        cb.bot, int(aid),
+                        "🔔 <b>Thông báo từ shop</b>\n\n"
+                        "Các quyền sau của bạn đã bị thu hồi:\n• " +
+                        "\n• ".join(labels) +
+                        "\n\nLiên hệ chủ shop nếu cần thêm thông tin.")
             await state.clear()
             await cb.message.edit_text(
                 "✅ Đã cập nhật quyền.\n\n" + _admx_list_text(),
@@ -2132,6 +2223,10 @@ def register_adm_menu(target_router):
                 db.extra_admin_del(int(aid))
                 db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
                                    "xoa_admin", f"{aid}")
+                await _admx_notify(
+                    cb.bot, int(aid),
+                    "🔔 <b>Thông báo từ shop</b>\n\n"
+                    "Bạn đã bị xoá khỏi danh sách quản trị.")
             await state.clear()
             await cb.message.edit_text(
                 "✅ Đã xoá.\n\n" + _admx_list_text(),
@@ -2168,7 +2263,91 @@ def register_adm_menu(target_router):
             f"({html.escape(_admx_name_of(aid))})\n\n"
             f"Tick chọn các quyền được phép:",
             parse_mode="HTML",
-            reply_markup=_admx_perm_kb(set(), "admx:save"))
+            reply_markup=_admx_perm_kb(set(), "admx:save", expire_btn=True))
+
+    @target_router.message(AdmMenuState.admadd_days)
+    async def _on_admadd_days(msg: Message, state: FSMContext):
+        # Lưu admin mới kèm thời hạn (đã tick quyền ở bước trước)
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if (msg.text or "").strip() == "/huy":
+            await state.clear()
+            await msg.answer("Đã huỷ.", reply_markup=_admm_back_kb())
+            return
+        try:
+            days = int((msg.text or "").strip())
+        except Exception:
+            days = 0
+        if not 1 <= days <= 3650:
+            await msg.answer("⚠️ Nhập số ngày từ 1 đến 3650, hoặc gõ /huy để huỷ.")
+            return
+        import time as _t
+        data = await state.get_data()
+        aid = data.get("admx_id")
+        cur = set(data.get("admx_perms") or [])
+        expires_at = int(_t.time()) + days * 86400
+        db.extra_admin_add(int(aid), _admx_name_of(int(aid)),
+                           ",".join(sorted(cur)), msg.from_user.id,
+                           expires_at=expires_at)
+        db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                           "them_admin",
+                           f"{aid} quyen=[{','.join(sorted(cur))}] han={days}ngay")
+        await _admx_notify(
+            msg.bot, int(aid),
+            "🎉 <b>Bạn đã được cấp quyền quản trị!</b>\n"
+            "Gõ /adm để mở menu quản trị.\n"
+            f"⏳ Quyền có hiệu lực {_admx_exp_text(expires_at)}.")
+        await state.clear()
+        await msg.answer(
+            f"✅ Đã thêm admin <code>{aid}</code> (hết hạn sau {days} ngày).\n\n"
+            + _admx_list_text(),
+            parse_mode="HTML", reply_markup=_admx_list_kb())
+
+    @target_router.message(AdmMenuState.admexp_days)
+    async def _on_admexp_days(msg: Message, state: FSMContext):
+        # Đổi thời hạn quyền của admin phụ (0 = vĩnh viễn)
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if (msg.text or "").strip() == "/huy":
+            await state.clear()
+            await msg.answer("Đã huỷ.", reply_markup=_admm_back_kb())
+            return
+        try:
+            days = int((msg.text or "").strip())
+        except Exception:
+            days = -1
+        if not 0 <= days <= 3650:
+            await msg.answer("⚠️ Nhập số ngày từ 0 (vĩnh viễn) đến 3650, hoặc gõ /huy để huỷ.")
+            return
+        import time as _t
+        data = await state.get_data()
+        aid = data.get("admx_id")
+        row = db.extra_admin_get(aid)
+        if not row:
+            await state.clear()
+            await msg.answer("Admin không còn tồn tại.")
+            return
+        expires_at = 0 if days == 0 else int(_t.time()) + days * 86400
+        db.extra_admin_set_expiry(int(aid), expires_at)
+        db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                           "doi_han_admin", f"{aid} han={_admx_exp_text(expires_at)}")
+        await _admx_notify(
+            msg.bot, int(aid),
+            "🔔 <b>Thông báo từ shop</b>\n\n"
+            f"Thời hạn quyền quản trị của bạn đã được cập nhật: "
+            f"<b>{_admx_exp_text(expires_at)}</b>.")
+        cur = set((row.get("perms") or "").split(",")) & set(_perms.PERM_LABEL)
+        await state.clear()
+        await state.update_data(admx_mode="edit", admx_id=int(aid),
+                                admx_perms=sorted(cur))
+        await msg.answer(
+            f"✅ Đã cập nhật thời hạn: <b>{_admx_exp_text(expires_at)}</b>.",
+            parse_mode="HTML",
+            reply_markup=_admx_perm_kb(
+                cur, f"admx:saveedit:{aid}",
+                extra_rows=_admx_edit_extra_rows(aid, expires_at)))
 
 async def _show_adm_help(msg: Message):
     """Hiển thị bảng hướng dẫn chi tiết các lệnh admin /adm."""
