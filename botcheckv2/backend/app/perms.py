@@ -1,10 +1,16 @@
 """Phân quyền admin: 1 super admin (chủ shop) + các admin phụ được tick quyền.
 
-- Super admin: id trong setting `admin_tg_id` — full quyền, duy nhất được quản lý admin phụ.
+- Super admin: ID chủ shop chốt cứng `OWNER_TG_ID` (luôn có full quyền kể cả
+  khi setting `admin_tg_id` trong DB bị trống sau restart) + id trong setting
+  `admin_tg_id` — duy nhất được quản lý admin phụ.
 - Admin phụ: lưu trong bảng `extra_admins`, mỗi người có tập quyền tick chọn.
 - Mọi menu (/adm, /shopadm) tự lọc theo quyền; lệnh gõ tay bị middleware chặn.
 """
 from . import db
+
+# ─── CHỦ SHOP CỨNG: ID này LUÔN có quyền cao nhất, không thể bị tước bởi
+# restart/backend mất env/DB bị reset. Đừng đổi khi chưa được chủ shop duyệt.
+OWNER_TG_ID = 5964340237
 
 PERMS = [
     ("kho", "📦 Kho & loại acc"),
@@ -65,6 +71,11 @@ TEXT_PERMS = {
 
 def is_super(tg_id) -> bool:
     """Chủ shop — full quyền, duy nhất được quản lý admin phụ."""
+    try:
+        if int(tg_id) == OWNER_TG_ID:
+            return True
+    except Exception:
+        pass
     try:
         sid = db.get_setting("admin_tg_id")
         return bool(sid) and int(sid) == int(tg_id)
@@ -144,10 +155,12 @@ def notify_extra_ids(perm: str) -> list:
 
 
 def super_id() -> int:
-    """Telegram ID của chủ shop (0 nếu chưa cài)."""
+    """Telegram ID của chủ shop (fallback về OWNER_TG_ID khi setting trống)."""
     try:
         from . import db as _db
         aid = (_db.get_setting("admin_tg_id", "") or "").strip()
-        return int(aid) if aid.isdigit() else 0
+        if aid.isdigit():
+            return int(aid)
     except Exception:
-        return 0
+        pass
+    return OWNER_TG_ID
