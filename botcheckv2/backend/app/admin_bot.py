@@ -358,8 +358,8 @@ class AdminBotManager:
         log.info("Admin Bot starting...")
         
         try:
-            # Drop pending updates
-            await self.bot.delete_webhook(drop_pending_updates=True)
+            # Giữ tin nhắn đang chờ: restart giữa chừng không được nuốt tin user
+            await self.bot.delete_webhook(drop_pending_updates=False)
             self.task = asyncio.create_task(self.dp.start_polling(self.bot))
         except Exception as e:
             log.error("Failed to start admin bot: %s", e)

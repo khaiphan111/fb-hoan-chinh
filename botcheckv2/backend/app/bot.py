@@ -3100,7 +3100,7 @@ class BotManager:
             self.bot = None
             return False
         try:
-            await self.bot.delete_webhook(drop_pending_updates=True)
+            await self.bot.delete_webhook(drop_pending_updates=False)  # GIỮ tin nhắn đang chờ: restart giữa chừng không được nuốt tin user
         except Exception:
             pass
         init_cache_db(_config.DB_PATH)

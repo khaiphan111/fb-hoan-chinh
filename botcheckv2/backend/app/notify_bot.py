@@ -118,7 +118,7 @@ class NotifyBotManager:
         self.running = True
         log.info("Notify Bot starting...")
         try:
-            await self.bot.delete_webhook(drop_pending_updates=True)
+            await self.bot.delete_webhook(drop_pending_updates=False)  # giữ tin nhắn đang chờ qua restart
             self.task = asyncio.create_task(self.dp.start_polling(self.bot))
             return True
         except Exception as e:
