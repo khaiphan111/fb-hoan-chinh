@@ -71,6 +71,9 @@ from .poller import poller
 
 log = logging.getLogger(__name__)
 router = Router()
+
+from .admin_bot import register_adm_menu as _register_adm_menu
+_register_adm_menu(router)  # menu nút /adm — đăng ký sớm, trước on_other
 from aiogram import BaseMiddleware
 from aiogram.types import Message
 
@@ -198,7 +201,7 @@ ADMIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
-        [KeyboardButton(text="/web")],
+        [KeyboardButton(text="/web"), KeyboardButton(text="/adm")],
         [KeyboardButton(text="\U0001f4ca Nhập kho Sheet")],
     ],
     resize_keyboard=True,
@@ -378,7 +381,7 @@ COMMANDS = [
     BotCommand(command="app",         description="Mở Mini App check UID"),
     BotCommand(command="accuracy",    description="Thống kê độ chính xác check"),
     BotCommand(command="theodoi",     description="👁️ Trung tâm theo dõi (menu nút gọn)"),
-    BotCommand(command="tienich",      description="🧰 Tiện ích: giftcode, mã giảm giá, ngày sinh, rút/chuyển tiền, lịch sử, BXH, đặt cọc (menu nút)"),
+    BotCommand(command="tienich",      description="🧰 Tiện ích: giftcode, mã giảm giá, ngày sinh, rút/chuyển tiền, lịch sử, đặt cọc (menu nút)"),
     BotCommand(command="dailyreport", description="Cài đặt báo cáo tự động hằng ngày"),
     BotCommand(command="stats",       description="Thống kê cá nhân của bạn"),
     BotCommand(command="daily",       description="Điểm danh nhận credits mỗi ngày"),
@@ -4841,11 +4844,12 @@ async def _show_history(msg, tg_id: int, kind):
 # ─── 6. /adm — LỆNH ADMIN TÍCH HỢP VÀO BOT CHÍNH ──────────────────────────────
 
 @router.message(Command("adm"))
-async def on_adm(msg: Message):
+async def on_adm(msg: Message, state: FSMContext):
     """Lệnh admin tập trung — chỉ admin_tg_id được cấp phép mới dùng được."""
     from .admin_bot import _handle_adm_cmd, is_admin
     if not is_admin(msg.chat.id, msg.from_user.id):
         return
+    await state.clear()
     await _handle_adm_cmd(msg, bot_instance=manager.bot)
 
 
@@ -5845,7 +5849,7 @@ def _tienich_text_main() -> str:
         "🎂 <b>Ngày sinh</b> — nhận quà sinh nhật hằng năm\n"
         "🔗 <b>Lấy UID</b> — từ link Facebook\n"
         "💸 <b>Rút / Chuyển tiền</b> — hoa hồng & số dư\n"
-        "📜 <b>Lịch sử / BXH</b> — xem nhanh có nút lọc\n"
+        "📜 <b>Lịch sử</b> — xem nhanh có nút lọc\n"
         "💰 <b>Đặt cọc</b> — giữ hàng hot, hủy cọc"
     )
 

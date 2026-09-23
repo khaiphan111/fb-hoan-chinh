@@ -424,7 +424,7 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     parts = msg.text.split(maxsplit=2)
     # parts[0] = /adm, parts[1] = subcmd, parts[2+] = args
     if len(parts) < 2:
-        await _show_adm_help(msg)
+        await _admm_show_main(msg)
         return
 
     subcmd = parts[1].lower().strip()
@@ -791,6 +791,919 @@ async def _answer_long(msg, text: str, parse_mode: str = "HTML", limit: int = 40
         head = f"<b>📋 Bảng lệnh admin{suffix}</b>\n\n" if i > 0 else ""
         await msg.answer(head + part, parse_mode=parse_mode)
 
+# ═══════════════════════════════════════════════════════════════════════════
+# MENU NÚT /adm — bấm nút thay vì gõ lệnh tay (18 sub-command gộp theo nhóm)
+# Đăng ký vào router bằng register_adm_menu(router) — dùng chung cho cả
+# bot chính (bot.py) và admin bot (router nội bộ file này).
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AdmMenuState(StatesGroup):
+    """States nhập liệu từng bước cho menu /adm."""
+    topup_uid = State()
+    topup_amount = State()
+    setbal_uid = State()
+    setbal_amount = State()
+    ban_uid = State()
+    ban_reason = State()
+    unban_uid = State()
+    setvip_uid = State()
+    setvip_days = State()
+    info_uid = State()
+    find_query = State()
+    taopromo_code = State()
+    taopromo_pct = State()
+    taopromo_uses = State()
+    taopromo_hours = State()
+    promo_prefix = State()
+    promo_amount = State()
+    promo_uses = State()
+    promo_expire = State()
+    xoapromo_code = State()
+    flashsale_code = State()
+    broadcast_text = State()
+    webhook_key = State()
+    webhook_url = State()
+
+
+def _admm_main_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Tiền tệ", callback_data="admm:cat_tien"),
+         InlineKeyboardButton(text="👤 Quản lý user", callback_data="admm:cat_user")],
+        [InlineKeyboardButton(text="📊 Báo cáo", callback_data="admm:cat_report"),
+         InlineKeyboardButton(text="🎟️ Mã giảm giá", callback_data="admm:cat_promo")],
+        [InlineKeyboardButton(text="📣 Broadcast & Webhook", callback_data="admm:cat_bcast")],
+        [InlineKeyboardButton(text="📖 Hướng dẫn đầy đủ", callback_data="admm:help")],
+    ])
+
+
+def _admm_text_main() -> str:
+    return (
+        "🛠️ <b>QUẢN TRỊ</b>\n"
+        "━━━━━━━━━━━━\n\n"
+        "Chọn nhóm thao tác — bấm nút, khỏi gõ lệnh tay:\n\n"
+        "💰 <b>Tiền tệ</b> — cộng tiền, set số dư\n"
+        "👤 <b>Quản lý user</b> — xem info, tìm, khoá/mở khoá, set VIP\n"
+        "📊 <b>Báo cáo</b> — tổng quan, doanh thu, đơn rút chờ duyệt\n"
+        "🎟️ <b>Mã giảm giá</b> — tạo/xem/xoá mã, flash sale\n"
+        "📣 <b>Broadcast</b> — gửi tin toàn bộ user, webhook reseller\n\n"
+        "<i>Vẫn gõ tay được: /adm &lt;lệnh&gt; &lt;tham số&gt; — vd /adm topup 123 50k</i>"
+    )
+
+
+def _admm_back_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")]
+    ])
+
+
+def _admm_confirm_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Xác nhận", callback_data="admm:confirm"),
+        InlineKeyboardButton(text="❌ Huỷ", callback_data="admm:cancel"),
+    ]])
+
+
+def _admm_skip_kb(skip_text="⏭ Bỏ qua"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=skip_text, callback_data="admm:skip")],
+        [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+    ])
+
+
+class _AdmTextShim:
+    """Giả lập Message với text tuỳ chỉnh để tái dùng _handle_adm_cmd cho flow nút bấm."""
+    def __init__(self, msg: Message, text: str, edit_target=None):
+        self._msg = msg
+        self.text = text
+        self._edit_target = edit_target
+        self._edited = False
+
+    @property
+    def chat(self):
+        return self._msg.chat
+
+    @property
+    def from_user(self):
+        return self._msg.from_user
+
+    @property
+    def bot(self):
+        return self._msg.bot
+
+    async def answer(self, text, **kwargs):
+        if self._edit_target is not None and not self._edited:
+            self._edited = True
+            kw = {k: v for k, v in kwargs.items()
+                  if k in ("parse_mode", "reply_markup", "disable_web_page_preview")}
+            await self._edit_target.edit_text(text, **kw)
+        else:
+            await self._msg.answer(text, **kwargs)
+
+
+async def _admm_show_main(msg: Message):
+    await msg.answer(_admm_text_main(), parse_mode="HTML", reply_markup=_admm_main_kb())
+
+
+async def _admm_exec_via_cb(cb: CallbackQuery, state: FSMContext, cmd_text: str):
+    """Chạy 1 sub-command /adm từ nút bấm, hiện kết quả ngay tại tin menu."""
+    await state.clear()
+    shim = _AdmTextShim(cb.message, cmd_text, edit_target=cb.message)
+    await _handle_adm_cmd(shim, bot_instance=cb.bot)
+    await cb.message.edit_reply_markup(reply_markup=_admm_back_kb())
+    await cb.answer()
+
+
+async def _admm_exec_via_msg(msg: Message, state: FSMContext, cmd_text: str):
+    """Chạy 1 sub-command /adm sau khi admin nhập liệu xong."""
+    await state.clear()
+    shim = _AdmTextShim(msg, cmd_text)
+    await _handle_adm_cmd(shim, bot_instance=msg.bot)
+
+
+async def _admm_show_confirm_cb(cb: CallbackQuery, state: FSMContext, title: str,
+                               lines: list, cmd_text: str):
+    await state.update_data(cmd_text=cmd_text)
+    txt = title + "\n━━━━━━━━━━━━\n" + "\n".join(lines) + "\n━━━━━━━━━━━━\n\nXác nhận thực hiện?"
+    await cb.message.edit_text(txt, parse_mode="HTML", reply_markup=_admm_confirm_kb())
+    await cb.answer()
+
+
+async def _admm_show_confirm_msg(msg: Message, state: FSMContext, title: str,
+                                lines: list, cmd_text: str):
+    await state.update_data(cmd_text=cmd_text)
+    txt = title + "\n━━━━━━━━━━━━\n" + "\n".join(lines) + "\n━━━━━━━━━━━━\n\nXác nhận thực hiện?"
+    await msg.answer(txt, parse_mode="HTML", reply_markup=_admm_confirm_kb())
+
+
+async def _admm_guard(msg: Message, state: FSMContext) -> bool:
+    """Chặn input không phải admin hoặc lệnh /huy. Trả True nếu đã xử lý xong."""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        await state.clear()
+        return True
+    if (msg.text or "").strip() == "/huy":
+        await state.clear()
+        await msg.answer("Đã huỷ thao tác.", reply_markup=_admm_back_kb())
+        return True
+    return False
+
+
+def _admm_parse_uid(text: str):
+    try:
+        return int((text or "").strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def _admm_parse_amount(text: str):
+    try:
+        return int((text or "").strip().replace(",", "").replace("k", "000").replace("K", "000"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def register_adm_menu(target_router):
+    """Gắn toàn bộ menu nút /adm (callback + nhập liệu FSM) vào router cho trước."""
+
+    @target_router.callback_query(F.data.startswith("admm:"))
+    async def _on_admm_cb(cb: CallbackQuery, state: FSMContext):
+        if not is_admin(cb.message.chat.id, cb.from_user.id):
+            await cb.answer("🚫 Không có quyền.", show_alert=True)
+            return
+        action = (cb.data or "")[5:]
+
+        # ── Menu chính ──
+        if action == "main":
+            await state.clear()
+            await cb.message.edit_text(_admm_text_main(), parse_mode="HTML",
+                                      reply_markup=_admm_main_kb())
+            await cb.answer()
+            return
+
+        if action == "help":
+            await cb.answer()
+            await _show_adm_help(cb.message)
+            return
+
+        # ── Nhóm Tiền tệ ──
+        if action == "cat_tien":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💰 Cộng tiền vào ví", callback_data="admm:go_topup")],
+                [InlineKeyboardButton(text="✏️ Set lại số dư", callback_data="admm:go_setbal")],
+                [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+            ])
+            await cb.message.edit_text("💰 <b>TIỀN TỆ</b>\n\nChọn thao tác:",
+                                      parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        # ── Nhóm Quản lý user ──
+        if action == "cat_user":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Xem thông tin user", callback_data="admm:go_info")],
+                [InlineKeyboardButton(text="🔎 Tìm user theo @username", callback_data="admm:go_find")],
+                [InlineKeyboardButton(text="🔴 Khoá tài khoản", callback_data="admm:go_ban"),
+                 InlineKeyboardButton(text="🟢 Mở khoá", callback_data="admm:go_unban")],
+                [InlineKeyboardButton(text="⭐ Set VIP", callback_data="admm:go_setvip")],
+                [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+            ])
+            await cb.message.edit_text("👤 <b>QUẢN LÝ USER</b>\n\nChọn thao tác:",
+                                      parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        # ── Nhóm Báo cáo ──
+        if action == "cat_report":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🖥 Tổng quan hệ thống", callback_data="admm:run_stats")],
+                [InlineKeyboardButton(text="📈 Doanh thu", callback_data="admm:run_revenue")],
+                [InlineKeyboardButton(text="📋 Đơn rút chờ duyệt", callback_data="admm:run_pending")],
+                [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+            ])
+            await cb.message.edit_text("📊 <b>BÁO CÁO</b>\n\nChọn báo cáo muốn xem:",
+                                      parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        # ── Nhóm Mã giảm giá ──
+        if action == "cat_promo":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🎟️ Tạo mã giảm %", callback_data="admm:go_taopromo"),
+                 InlineKeyboardButton(text="💵 Tạo mã tiền", callback_data="admm:go_promo")],
+                [InlineKeyboardButton(text="📜 Danh sách mã", callback_data="admm:run_dspromo"),
+                 InlineKeyboardButton(text="❌ Xoá mã", callback_data="admm:go_xoapromo")],
+                [InlineKeyboardButton(text="🔥 Gửi Flash sale", callback_data="admm:go_flashsale")],
+                [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+            ])
+            await cb.message.edit_text("🎟️ <b>MÃ GIẢM GIÁ</b>\n\nChọn thao tác:",
+                                      parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        # ── Nhóm Broadcast & Webhook ──
+        if action == "cat_bcast":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📢 Gửi broadcast", callback_data="admm:go_broadcast")],
+                [InlineKeyboardButton(text="🔔 Webhook reseller", callback_data="admm:go_webhook")],
+                [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+            ])
+            await cb.message.edit_text("📣 <b>BROADCAST & WEBHOOK</b>\n\nChọn thao tác:",
+                                      parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        # ── Chạy ngay (không cần nhập liệu) ──
+        if action == "run_stats":
+            await _admm_exec_via_cb(cb, state, "/adm stats")
+            return
+        if action == "run_revenue":
+            await _admm_exec_via_cb(cb, state, "/adm revenue")
+            return
+        if action == "run_pending":
+            await _admm_exec_via_cb(cb, state, "/adm pending")
+            return
+        if action == "run_dspromo":
+            await _admm_exec_via_cb(cb, state, "/adm dspromo")
+            return
+
+        # ── Bắt đầu các flow nhập liệu ──
+        prompts = {
+            "go_topup": (AdmMenuState.topup_uid, "💰 <b>CỘNG TIỀN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần cộng tiền."),
+            "go_setbal": (AdmMenuState.setbal_uid, "✏️ <b>SET SỐ DƯ</b> (bước 1/2)\n\nGửi <b>User ID</b> cần set lại số dư."),
+            "go_ban": (AdmMenuState.ban_uid, "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần khoá."),
+            "go_unban": (AdmMenuState.unban_uid, "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>\n\nGửi <b>User ID</b> cần mở khoá."),
+            "go_setvip": (AdmMenuState.setvip_uid, "⭐ <b>SET VIP</b> (bước 1/3)\n\nGửi <b>User ID</b> cần set VIP."),
+            "go_info": (AdmMenuState.info_uid, "🔍 <b>XEM THÔNG TIN USER</b>\n\nGửi <b>User ID</b>."),
+            "go_find": (AdmMenuState.find_query, "🔎 <b>TÌM USER</b>\n\nGửi <b>@username</b> hoặc tên cần tìm."),
+            "go_taopromo": (AdmMenuState.taopromo_code, "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 1/4)\n\nGửi <b>mã</b> (VD: SALE20)."),
+            "go_promo": (AdmMenuState.promo_prefix, "💵 <b>TẠO MÃ TIỀN</b> (bước 1/4)\n\nGửi <b>prefix</b> (VD: SALE)."),
+            "go_xoapromo": (AdmMenuState.xoapromo_code, "❌ <b>XOÁ MÃ GIẢM GIÁ</b>\n\nGửi <b>mã</b> cần xoá."),
+            "go_flashsale": (AdmMenuState.flashsale_code, "🔥 <b>FLASH SALE</b>\n\nGửi <b>mã</b> muốn thông báo tới toàn bộ user."),
+            "go_webhook": (AdmMenuState.webhook_key, "🔔 <b>WEBHOOK RESELLER</b> (bước 1/2)\n\nGửi <b>tên key hoặc ID</b> reseller."),
+        }
+        if action in prompts:
+            st, prompt = prompts[action]
+            await state.set_state(st)
+            await cb.message.edit_text(prompt + "\n\nGõ /huy để huỷ.",
+                                      parse_mode="HTML", reply_markup=_admm_back_kb())
+            await cb.answer()
+            return
+
+        # ── Broadcast: chọn đối tượng ──
+        if action == "go_broadcast":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👥 Tất cả user", callback_data="admm:bcast_tg_all"),
+                 InlineKeyboardButton(text="⭐ Chỉ VIP", callback_data="admm:bcast_tg_vip")],
+                [InlineKeyboardButton(text="😴 Inactive 7 ngày", callback_data="admm:bcast_tg_inactive")],
+                [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+            ])
+            await cb.message.edit_text("📢 <b>BROADCAST</b> (bước 1/2)\n\nChọn đối tượng nhận tin:",
+                                      parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        if action in ("bcast_tg_all", "bcast_tg_vip", "bcast_tg_inactive"):
+            target = {"bcast_tg_all": "all", "bcast_tg_vip": "vip",
+                      "bcast_tg_inactive": "inactive"}[action]
+            await state.update_data(bcast_target=target)
+            await state.set_state(AdmMenuState.broadcast_text)
+            await cb.message.edit_text("📢 <b>BROADCAST</b> (bước 2/2)\n\nGửi <b>nội dung</b> tin nhắn (hỗ trợ định dạng HTML).\n\nGõ /huy để huỷ.",
+                                      parse_mode="HTML", reply_markup=_admm_back_kb())
+            await cb.answer()
+            return
+
+        # ── Set VIP: chọn cấp ──
+        if action.startswith("setvip_lv_"):
+            data = await state.get_data()
+            uid = data.get("uid")
+            if not uid:
+                await cb.answer("Hết hạn, làm lại từ đầu.", show_alert=True)
+                return
+            try:
+                lv = int(action.rsplit("_", 1)[1])
+            except ValueError:
+                return
+            await state.update_data(level=lv)
+            await state.set_state(AdmMenuState.setvip_days)
+            labels = {0: "Thường", 1: "VIP 1 🥉", 2: "VIP 2 🥈", 3: "VIP 3 🥇"}
+            await cb.message.edit_text(
+                f"⭐ <b>SET VIP</b> (bước 3/3)\n\nUser <code>{uid}</code> → <b>{labels.get(lv, lv)}</b>\n\n"
+                f"Gửi <b>số ngày gia hạn</b> thêm, hoặc bấm Bỏ qua.",
+                parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Không gia hạn"))
+            await cb.answer()
+            return
+
+        # ── Webhook: gỡ ──
+        if action == "webhook_off":
+            data = await state.get_data()
+            key = data.get("key")
+            if not key:
+                await cb.answer("Hết hạn, làm lại từ đầu.", show_alert=True)
+                return
+            await _admm_show_confirm_cb(cb, state, "🔔 <b>XÁC NHẬN GỠ WEBHOOK</b>",
+                                       [f"🔑 Key: <b>{html.escape(str(key))}</b>",
+                                        "🧹 Webhook sẽ bị xoá"],
+                                       f"/adm webhook {key} off")
+            return
+
+        # ── Bỏ qua bước tuỳ chọn ──
+        if action == "skip":
+            st = await state.get_state()
+            data = await state.get_data()
+            from . import util as _util
+            if st == AdmMenuState.ban_reason.state:
+                await _admm_show_confirm_cb(cb, state, "🔴 <b>XÁC NHẬN KHOÁ</b>",
+                                           [f"👤 User: <code>{data['uid']}</code>",
+                                            "📝 Lý do: Vi phạm quy định"],
+                                           f"/adm ban {data['uid']}")
+                return
+            if st == AdmMenuState.setvip_days.state:
+                lv = data.get("level", 0)
+                labels = {0: "Thường", 1: "VIP 1 🥉", 2: "VIP 2 🥈", 3: "VIP 3 🥇"}
+                await _admm_show_confirm_cb(cb, state, "⭐ <b>XÁC NHẬN SET VIP</b>",
+                                           [f"👤 User: <code>{data['uid']}</code>",
+                                            f"⭐ Cấp: <b>{labels.get(lv, lv)}</b>"],
+                                           f"/adm setvip {data['uid']} {lv}")
+                return
+            if st == AdmMenuState.taopromo_uses.state:
+                await state.update_data(uses=0)
+                await state.set_state(AdmMenuState.taopromo_hours)
+                await cb.message.edit_text(
+                    "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 4/4)\n\nGửi <b>số giờ hiệu lực</b>, hoặc bấm Bỏ qua (vĩnh viễn).",
+                    parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
+                await cb.answer()
+                return
+            if st == AdmMenuState.taopromo_hours.state:
+                d = await state.get_data()
+                await _admm_show_confirm_cb(cb, state, "🎟️ <b>XÁC NHẬN TẠO MÃ</b>",
+                                           [f"🎫 Mã: <code>{html.escape(str(d['code']))}</code>",
+                                            f"💸 Giảm: <b>{d['pct']}%</b>",
+                                            f"👥 Lượt dùng: <b>{'không giới hạn' if not d.get('uses') else d['uses']}</b>",
+                                            "⏳ Hiệu lực: <b>vĩnh viễn</b>"],
+                                           f"/adm taopromo {d['code']} {d['pct']} {d.get('uses') or 0} 0")
+                return
+            if st == AdmMenuState.promo_uses.state:
+                await state.update_data(uses=1)
+                await state.set_state(AdmMenuState.promo_expire)
+                await cb.message.edit_text(
+                    "💵 <b>TẠO MÃ TIỀN</b> (bước 4/4)\n\nGửi <b>hạn dùng</b> (VD: 24h, 2d), hoặc bấm Bỏ qua (vĩnh viễn).",
+                    parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
+                await cb.answer()
+                return
+            if st == AdmMenuState.promo_expire.state:
+                d = await state.get_data()
+                await _admm_show_confirm_cb(cb, state, "💵 <b>XÁC NHẬN TẠO MÃ TIỀN</b>",
+                                           [f"🏷 Prefix: <b>{html.escape(str(d['prefix']))}</b>",
+                                            f"💰 Giá trị: <b>{_util.vnd(d['amount'])}</b>",
+                                            f"👥 Lượt dùng: <b>{d.get('uses') or 1}</b>",
+                                            "⏳ Hạn: <b>vĩnh viễn</b>"],
+                                           f"/adm promo {d['prefix']} {d['amount']} {d.get('uses') or 1} 0")
+                return
+            await cb.answer()
+            return
+
+        # ── Xác nhận / Huỷ ──
+        if action == "confirm":
+            data = await state.get_data()
+            cmd_text = data.get("cmd_text")
+            if not cmd_text:
+                await cb.answer("Hết hạn, làm lại từ đầu.", show_alert=True)
+                return
+            await _admm_exec_via_cb(cb, state, cmd_text)
+            return
+
+        if action == "cancel":
+            await state.clear()
+            await cb.message.edit_text(_admm_text_main(), parse_mode="HTML",
+                                      reply_markup=_admm_main_kb())
+            await cb.answer("Đã huỷ.")
+            return
+
+        await cb.answer()
+
+    # ── FSM: nhập liệu từng bước ──────────────────────────────────────────
+
+    @target_router.message(AdmMenuState.topup_uid)
+    async def _admm_topup_uid(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        uid = _admm_parse_uid(msg.text)
+        if not uid:
+            await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
+            return
+        if not db.get_user(uid):
+            await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>! Gửi lại ID khác hoặc /huy để huỷ.",
+                             parse_mode="HTML")
+            return
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.topup_amount)
+        await msg.answer("💰 <b>CỘNG TIỀN</b> (bước 2/2)\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
+                         parse_mode="HTML")
+
+    @target_router.message(AdmMenuState.topup_amount)
+    async def _admm_topup_amount(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        from . import util as _util
+        amount = _admm_parse_amount(msg.text)
+        if not amount or amount <= 0:
+            await msg.answer("❌ Số tiền không hợp lệ. Gửi lại hoặc /huy để huỷ.")
+            return
+        data = await state.get_data()
+        uid = data["uid"]
+        user = db.get_user(uid)
+        await _admm_show_confirm_msg(
+            msg, state, "💰 <b>XÁC NHẬN CỘNG TIỀN</b>",
+            [f"👤 User: <code>{uid}</code> ({html.escape(str((user or {}).get('name') or ''))})",
+             f"💵 Số tiền: <b>{_util.vnd(amount)}</b>"],
+            f"/adm topup {uid} {amount}")
+
+    @target_router.message(AdmMenuState.setbal_uid)
+    async def _admm_setbal_uid(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        uid = _admm_parse_uid(msg.text)
+        if not uid:
+            await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
+            return
+        if not db.get_user(uid):
+            await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>! Gửi lại ID khác hoặc /huy để huỷ.",
+                             parse_mode="HTML")
+            return
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.setbal_amount)
+        await msg.answer("✏️ <b>SET SỐ DƯ</b> (bước 2/2)\n\nGửi <b>số dư mới</b> (VD: 100000 hoặc 100k).\nGõ /huy để huỷ.",
+                         parse_mode="HTML")
+
+    @target_router.message(AdmMenuState.setbal_amount)
+    async def _admm_setbal_amount(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        from . import util as _util
+        amount = _admm_parse_amount(msg.text)
+        if amount is None or amount < 0:
+            await msg.answer("❌ Số tiền không hợp lệ. Gửi lại hoặc /huy để huỷ.")
+            return
+        data = await state.get_data()
+        uid = data["uid"]
+        user = db.get_user(uid)
+        cur = (user or {}).get("balance", 0)
+        await _admm_show_confirm_msg(
+            msg, state, "✏️ <b>XÁC NHẬN SET SỐ DƯ</b>",
+            [f"👤 User: <code>{uid}</code>",
+             f"💳 Số dư hiện tại: <b>{_util.vnd(cur)}</b>",
+             f"💳 Số dư mới: <b>{_util.vnd(amount)}</b>"],
+            f"/adm setbal {uid} {amount}")
+
+    @target_router.message(AdmMenuState.ban_uid)
+    async def _admm_ban_uid(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        uid = _admm_parse_uid(msg.text)
+        if not uid:
+            await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
+            return
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.ban_reason)
+        await msg.answer("🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 2/2)\n\nGửi <b>lý do</b> khoá, hoặc bấm Bỏ qua.",
+                         parse_mode="HTML", reply_markup=_admm_skip_kb())
+
+    @target_router.message(AdmMenuState.ban_reason)
+    async def _admm_ban_reason(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        reason = (msg.text or "").strip()
+        if not reason:
+            await msg.answer("❌ Lý do trống. Gửi lại, bấm Bỏ qua, hoặc /huy để huỷ.",
+                             reply_markup=_admm_skip_kb())
+            return
+        data = await state.get_data()
+        await _admm_show_confirm_msg(
+            msg, state, "🔴 <b>XÁC NHẬN KHOÁ</b>",
+            [f"👤 User: <code>{data['uid']}</code>",
+             f"📝 Lý do: {html.escape(reason)}"],
+            f"/adm ban {data['uid']} {reason}")
+
+    @target_router.message(AdmMenuState.unban_uid)
+    async def _admm_unban_uid(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        uid = _admm_parse_uid(msg.text)
+        if not uid:
+            await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
+            return
+        await _admm_show_confirm_msg(
+            msg, state, "🟢 <b>XÁC NHẬN MỞ KHOÁ</b>",
+            [f"👤 User: <code>{uid}</code>"],
+            f"/adm unban {uid}")
+
+    @target_router.message(AdmMenuState.setvip_uid)
+    async def _admm_setvip_uid(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        uid = _admm_parse_uid(msg.text)
+        if not uid:
+            await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
+            return
+        if not db.get_user(uid):
+            await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>! Gửi lại ID khác hoặc /huy để huỷ.",
+                             parse_mode="HTML")
+            return
+        await state.update_data(uid=uid)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Thường (0)", callback_data="admm:setvip_lv_0"),
+             InlineKeyboardButton(text="VIP 1 🥉", callback_data="admm:setvip_lv_1")],
+            [InlineKeyboardButton(text="VIP 2 🥈", callback_data="admm:setvip_lv_2"),
+             InlineKeyboardButton(text="VIP 3 🥇", callback_data="admm:setvip_lv_3")],
+            [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+        ])
+        await msg.answer(f"⭐ <b>SET VIP</b> (bước 2/3)\n\nChọn cấp VIP cho <code>{uid}</code>:",
+                         parse_mode="HTML", reply_markup=kb)
+
+    @target_router.message(AdmMenuState.setvip_days)
+    async def _admm_setvip_days(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        try:
+            days = int((msg.text or "").strip())
+            if days < 0:
+                raise ValueError
+        except ValueError:
+            await msg.answer("❌ Số ngày phải là số ≥ 0. Gửi lại, bấm Bỏ qua, hoặc /huy để huỷ.",
+                             reply_markup=_admm_skip_kb("⏭ Không gia hạn"))
+            return
+        data = await state.get_data()
+        labels = {0: "Thường", 1: "VIP 1 🥉", 2: "VIP 2 🥈", 3: "VIP 3 🥇"}
+        lv = data.get("level", 0)
+        await _admm_show_confirm_msg(
+            msg, state, "⭐ <b>XÁC NHẬN SET VIP</b>",
+            [f"👤 User: <code>{data['uid']}</code>",
+             f"⭐ Cấp: <b>{labels.get(lv, lv)}</b>",
+             f"⏳ Gia hạn thêm: <b>{days} ngày</b>"],
+            f"/adm setvip {data['uid']} {lv} {days}")
+
+    @target_router.message(AdmMenuState.info_uid)
+    async def _admm_info_uid(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        uid = _admm_parse_uid(msg.text)
+        if not uid:
+            await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
+            return
+        await _admm_exec_via_msg(msg, state, f"/adm info {uid}")
+
+    @target_router.message(AdmMenuState.find_query)
+    async def _admm_find_query(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        q = (msg.text or "").strip()
+        if not q:
+            await msg.answer("❌ Từ khoá trống. Gửi lại hoặc /huy để huỷ.")
+            return
+        await _admm_exec_via_msg(msg, state, f"/adm find {q}")
+
+    @target_router.message(AdmMenuState.taopromo_code)
+    async def _admm_taopromo_code(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        code = (msg.text or "").strip().upper()
+        if not code or len(code) > 24:
+            await msg.answer("❌ Mã không hợp lệ (tối đa 24 ký tự). Gửi lại hoặc /huy để huỷ.")
+            return
+        await state.update_data(code=code)
+        await state.set_state(AdmMenuState.taopromo_pct)
+        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 2/4)\n\nGửi <b>phần trăm giảm</b> (1-90).",
+                         parse_mode="HTML")
+
+    @target_router.message(AdmMenuState.taopromo_pct)
+    async def _admm_taopromo_pct(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        try:
+            pct = int((msg.text or "").strip())
+        except ValueError:
+            pct = 0
+        if not 1 <= pct <= 90:
+            await msg.answer("❌ Phần trăm phải từ 1 đến 90. Gửi lại hoặc /huy để huỷ.")
+            return
+        await state.update_data(pct=pct)
+        await state.set_state(AdmMenuState.taopromo_uses)
+        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 3/4)\n\nGửi <b>giới hạn lượt dùng</b>, hoặc bấm Bỏ qua (không giới hạn).",
+                         parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Không giới hạn"))
+
+    @target_router.message(AdmMenuState.taopromo_uses)
+    async def _admm_taopromo_uses(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        try:
+            uses = int((msg.text or "").strip())
+            if uses < 0:
+                raise ValueError
+        except ValueError:
+            await msg.answer("❌ Số lượt phải là số ≥ 0. Gửi lại, bấm Bỏ qua, hoặc /huy để huỷ.",
+                             reply_markup=_admm_skip_kb("⏭ Không giới hạn"))
+            return
+        await state.update_data(uses=uses)
+        await state.set_state(AdmMenuState.taopromo_hours)
+        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 4/4)\n\nGửi <b>số giờ hiệu lực</b>, hoặc bấm Bỏ qua (vĩnh viễn).",
+                         parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
+
+    @target_router.message(AdmMenuState.taopromo_hours)
+    async def _admm_taopromo_hours(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        try:
+            hours = int((msg.text or "").strip())
+            if hours < 0:
+                raise ValueError
+        except ValueError:
+            await msg.answer("❌ Số giờ phải là số ≥ 0. Gửi lại, bấm Bỏ qua, hoặc /huy để huỷ.",
+                             reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
+            return
+        data = await state.get_data()
+        await _admm_show_confirm_msg(
+            msg, state, "🎟️ <b>XÁC NHẬN TẠO MÃ</b>",
+            [f"🎫 Mã: <code>{html.escape(str(data['code']))}</code>",
+             f"💸 Giảm: <b>{data['pct']}%</b>",
+             f"👥 Lượt dùng: <b>{'không giới hạn' if not data.get('uses') else data['uses']}</b>",
+             f"⏳ Hiệu lực: <b>{'vĩnh viễn' if not hours else f'{hours} giờ'}</b>"],
+            f"/adm taopromo {data['code']} {data['pct']} {data.get('uses') or 0} {hours}")
+
+    @target_router.message(AdmMenuState.promo_prefix)
+    async def _admm_promo_prefix(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        prefix = (msg.text or "").strip().upper()
+        if not prefix or len(prefix) > 12:
+            await msg.answer("❌ Prefix không hợp lệ (tối đa 12 ký tự). Gửi lại hoặc /huy để huỷ.")
+            return
+        await state.update_data(prefix=prefix)
+        await state.set_state(AdmMenuState.promo_amount)
+        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 2/4)\n\nGửi <b>giá trị mã</b> (VD: 50000 hoặc 50k).",
+                         parse_mode="HTML")
+
+    @target_router.message(AdmMenuState.promo_amount)
+    async def _admm_promo_amount(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        amount = _admm_parse_amount(msg.text)
+        if not amount or amount <= 0:
+            await msg.answer("❌ Số tiền không hợp lệ. Gửi lại hoặc /huy để huỷ.")
+            return
+        await state.update_data(amount=amount)
+        await state.set_state(AdmMenuState.promo_uses)
+        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 3/4)\n\nGửi <b>số lượt dùng</b>, hoặc bấm Bỏ qua (1 lượt).",
+                         parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ 1 lượt"))
+
+    @target_router.message(AdmMenuState.promo_uses)
+    async def _admm_promo_uses(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        try:
+            uses = int((msg.text or "").strip())
+            if uses < 1:
+                raise ValueError
+        except ValueError:
+            await msg.answer("❌ Số lượt phải là số ≥ 1. Gửi lại, bấm Bỏ qua, hoặc /huy để huỷ.",
+                             reply_markup=_admm_skip_kb("⏭ 1 lượt"))
+            return
+        await state.update_data(uses=uses)
+        await state.set_state(AdmMenuState.promo_expire)
+        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 4/4)\n\nGửi <b>hạn dùng</b> (VD: 24h, 2d), hoặc bấm Bỏ qua (vĩnh viễn).",
+                         parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
+
+    @target_router.message(AdmMenuState.promo_expire)
+    async def _admm_promo_expire(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        from . import util as _util
+        expire = (msg.text or "").strip().lower()
+        if parse_time_str(expire) <= 0:
+            await msg.answer("❌ Hạn không hợp lệ (VD: 24h, 2d). Gửi lại, bấm Bỏ qua, hoặc /huy để huỷ.",
+                             reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
+            return
+        data = await state.get_data()
+        await _admm_show_confirm_msg(
+            msg, state, "💵 <b>XÁC NHẬN TẠO MÃ TIỀN</b>",
+            [f"🏷 Prefix: <b>{html.escape(str(data['prefix']))}</b>",
+             f"💰 Giá trị: <b>{_util.vnd(data['amount'])}</b>",
+             f"👥 Lượt dùng: <b>{data['uses']}</b>",
+             f"⏳ Hạn: <b>{html.escape(expire)}</b>"],
+            f"/adm promo {data['prefix']} {data['amount']} {data['uses']} {expire}")
+
+    @target_router.message(AdmMenuState.xoapromo_code)
+    async def _admm_xoapromo_code(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        code = (msg.text or "").strip().upper()
+        if not code:
+            await msg.answer("❌ Mã trống. Gửi lại hoặc /huy để huỷ.")
+            return
+        await _admm_show_confirm_msg(
+            msg, state, "❌ <b>XÁC NHẬN XOÁ MÃ</b>",
+            [f"🎫 Mã: <code>{html.escape(code)}</code>"],
+            f"/adm xoapromo {code}")
+
+    @target_router.message(AdmMenuState.flashsale_code)
+    async def _admm_flashsale_code(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        from . import util as _util
+        code = (msg.text or "").strip().upper()
+        ok, why, row = db.promo_valid(code)
+        if not ok:
+            await msg.answer(f"❌ {html.escape(str(why))} Gửi mã khác hoặc /huy để huỷ.",
+                             parse_mode="HTML")
+            return
+        d = dict(row)
+        exp_txt = f"\n⏰ Kết thúc: {_util.vn_time_str('%d/%m %H:%M', d['expires_at'])}" if d["expires_at"] else ""
+        lim_txt = f"\n🎫 Còn {int(d['max_uses']) - int(d['used_count'])} suất" if d["max_uses"] else ""
+        total = len(db.get_all_users_for_broadcast())
+        await _admm_show_confirm_msg(
+            msg, state, "🔥 <b>XÁC NHẬN FLASH SALE</b>",
+            [f"🎟️ Mã: <code>{d['code']}</code>",
+             f"💸 Giảm <b>{int(d['pct'])}%</b> khi mua gói credits{lim_txt}{exp_txt}",
+             f"👥 Sẽ gửi tới <b>{total}</b> user"],
+            f"/adm flashsale {code}")
+
+    @target_router.message(AdmMenuState.broadcast_text)
+    async def _admm_broadcast_text(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        text_content = (msg.text or "").strip()
+        if not text_content:
+            await msg.answer("❌ Nội dung trống. Gửi lại hoặc /huy để huỷ.")
+            return
+        data = await state.get_data()
+        target = data.get("bcast_target", "all")
+        vip_only = target == "vip"
+        inactive_days = 7 if target == "inactive" else 0
+        users = db.get_all_users_for_broadcast(vip_only=vip_only, inactive_days=inactive_days)
+        total = len(users)
+        target_label = "VIP" if vip_only else ("inactive 7 ngày" if inactive_days else "tất cả")
+        _pending_broadcasts[msg.chat.id] = {
+            "text": text_content,
+            "users": [u["tg_id"] for u in users],
+            "bot": msg.bot,
+        }
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=f"✅ Gửi ngay ({total} user)", callback_data="adm_bcast_confirm"),
+            InlineKeyboardButton(text="❌ Hủy", callback_data="adm_bcast_cancel"),
+        ]])
+        await state.clear()
+        await msg.answer(
+            f"📢 Gửi tới <b>{total} user</b> ({target_label}):\n<i>{html.escape(text_content[:300])}</i>\n\nXác nhận?",
+            parse_mode="HTML", reply_markup=kb)
+
+    @target_router.message(AdmMenuState.webhook_key)
+    async def _admm_webhook_key(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        key = (msg.text or "").strip()
+        if not key:
+            await msg.answer("❌ Tên key trống. Gửi lại hoặc /huy để huỷ.")
+            return
+        if not db.get_reseller_by_name_or_id(key):
+            await msg.answer(f"❌ Không tìm thấy key <b>{html.escape(key)}</b>. Gửi lại hoặc /huy để huỷ.",
+                             parse_mode="HTML")
+            return
+        await state.update_data(key=key)
+        await state.set_state(AdmMenuState.webhook_url)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧹 Gỡ webhook", callback_data="admm:webhook_off")],
+            [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+        ])
+        await msg.answer("🔔 <b>WEBHOOK RESELLER</b> (bước 2/2)\n\nGửi <b>URL webhook</b> (bắt đầu bằng http:// hoặc https://), hoặc bấm Gỡ webhook.",
+                         parse_mode="HTML", reply_markup=kb)
+
+    @target_router.message(AdmMenuState.webhook_url)
+    async def _admm_webhook_url(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        url = (msg.text or "").strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            await msg.answer("❌ URL phải bắt đầu bằng http:// hoặc https://. Gửi lại hoặc /huy để huỷ.")
+            return
+        data = await state.get_data()
+        key = data["key"]
+        await _admm_show_confirm_msg(
+            msg, state, "🔔 <b>XÁC NHẬN WEBHOOK</b>",
+            [f"🔑 Key: <b>{html.escape(str(key))}</b>",
+             f"🔗 URL: <code>{html.escape(url)}</code>"],
+            f"/adm webhook {key} {url}")
+
+    # ── Callback dùng chung: sửa các nút admin đang "chết" ở bot chính ────
+    # (adm_bcast_confirm/cancel, adm_ban_, adm_unban_ hiện chỉ có handler ở
+    # router admin_bot; adm_topup_ thì chưa có handler ở đâu cả)
+
+    @target_router.callback_query(F.data == "adm_bcast_confirm")
+    async def _admm_bcast_confirm(cb: CallbackQuery):
+        if not is_admin(cb.message.chat.id, cb.from_user.id):
+            await cb.answer("🚫 Không có quyền.", show_alert=True)
+            return
+        bcast = _pending_broadcasts.pop(cb.message.chat.id, None)
+        if not bcast:
+            await cb.answer("Đã hết hạn, vui lòng thực hiện lại!", show_alert=True)
+            return
+        await cb.answer("Đang gửi...")
+        await cb.message.edit_reply_markup(reply_markup=None)
+        target_bot = bcast.get("bot") or cb.bot
+        success = fail = 0
+        for tg_id in bcast["users"]:
+            try:
+                await target_bot.send_message(tg_id, bcast["text"], parse_mode="HTML")
+                success += 1
+                await asyncio.sleep(0.05)
+            except Exception:
+                fail += 1
+        await cb.message.answer(f"✅ <b>Broadcast xong!</b>\n✔ {success} thành công | ✘ {fail} lỗi",
+                                parse_mode="HTML")
+
+    @target_router.callback_query(F.data == "adm_bcast_cancel")
+    async def _admm_bcast_cancel(cb: CallbackQuery):
+        _pending_broadcasts.pop(cb.message.chat.id, None)
+        await cb.answer("Đã hủy.", show_alert=True)
+        await cb.message.edit_reply_markup(reply_markup=None)
+
+    @target_router.callback_query(F.data.startswith("adm_ban_"))
+    async def _admm_ban_quick(cb: CallbackQuery):
+        if not is_admin(cb.message.chat.id, cb.from_user.id):
+            return
+        try:
+            uid = int(cb.data.split("_")[-1])
+        except ValueError:
+            return
+        db.ban_user(uid)
+        await cb.answer(f"Đã khoá {uid}", show_alert=True)
+        await cb.message.edit_reply_markup(reply_markup=None)
+
+    @target_router.callback_query(F.data.startswith("adm_unban_"))
+    async def _admm_unban_quick(cb: CallbackQuery):
+        if not is_admin(cb.message.chat.id, cb.from_user.id):
+            return
+        try:
+            uid = int(cb.data.split("_")[-1])
+        except ValueError:
+            return
+        db.unban_user(uid)
+        await cb.answer(f"Đã mở khoá {uid}", show_alert=True)
+        await cb.message.edit_reply_markup(reply_markup=None)
+
+    @target_router.callback_query(F.data.startswith("adm_topup_"))
+    async def _admm_topup_quick(cb: CallbackQuery, state: FSMContext):
+        if not is_admin(cb.message.chat.id, cb.from_user.id):
+            return
+        try:
+            uid = int(cb.data.split("_")[-1])
+        except ValueError:
+            return
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.topup_amount)
+        await cb.message.answer(
+            f"💰 <b>CỘNG TIỀN</b> cho <code>{uid}</code>\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
+            parse_mode="HTML")
+        await cb.answer()
+
+
 async def _show_adm_help(msg: Message):
     """Hiển thị bảng hướng dẫn chi tiết các lệnh admin /adm."""
     help_text = (
@@ -921,8 +1834,9 @@ _pending_broadcasts = {}
 
 
 @router.message(Command("adm"))
-async def admin_bot_adm(msg: Message):
+async def admin_bot_adm(msg: Message, state: FSMContext):
     """Handler /adm trong admin_bot — chuyển tới _handle_adm_cmd."""
+    await state.clear()
     await _handle_adm_cmd(msg, bot_instance=manager.bot)
 
 
@@ -1642,3 +2556,5 @@ async def cmd_help_v2(msg: Message):
     )
     await msg.answer(help_text, parse_mode="HTML")
 
+
+register_adm_menu(router)
