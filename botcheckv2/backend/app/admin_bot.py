@@ -409,7 +409,9 @@ def _user_info_text(user) -> str:
         f"💰 Tổng nạp: <b>{util.vnd(user_dict.get('total_topup') or 0)}</b>\n"
         f"🎁 Hoa hồng: <b>{util.vnd(user_dict.get('ref_earnings') or 0)}</b>\n"
         f"⭐ VIP: <b>{vip_labels.get(user_dict.get('vip_level') or 0, '?')}</b>\n"
-        f"📅 Hạn dùng: <b>{sub_text}</b>\n"
+        f"📦 Gói FB (hạn dùng): <b>{sub_text}</b>\n"
+        f"🎟️ Credits: <b>{user_dict.get('credits') or 0}</b>\n"
+        f"🛍️ Ví shop: <b>{util.vnd(user_dict.get('shop_balance') or 0)}</b>\n"
         f"📅 Ngày tham gia: {created}\n"
         f"🔒 Trạng thái: {blocked}\n"
     )
@@ -2549,7 +2551,9 @@ def _user_info_text(user) -> str:
         f"💰 Tổng nạp: <b>{util.vnd(user_dict.get('total_topup') or 0)}</b>\n"
         f"🎁 Hoa hồng: <b>{util.vnd(user_dict.get('ref_earnings') or 0)}</b>\n"
         f"⭐ VIP: <b>{vip_labels.get(user_dict.get('vip_level') or 0, '?')}</b>\n"
-        f"📅 Hạn dùng: <b>{sub_text}</b>\n"
+        f"📦 Gói FB (hạn dùng): <b>{sub_text}</b>\n"
+        f"🎟️ Credits: <b>{user_dict.get('credits') or 0}</b>\n"
+        f"🛍️ Ví shop: <b>{util.vnd(user_dict.get('shop_balance') or 0)}</b>\n"
         f"📅 Ngày tham gia: {created}\n"
         f"🔒 Trạng thái: {blocked}\n"
     )
