@@ -771,6 +771,26 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
         await msg.answer(f"❓ Không hiểu sub-command: <code>{subcmd}</code>\nGõ /adm help để xem danh sách.", parse_mode="HTML")
 
 
+
+async def _answer_long(msg, text: str, parse_mode: str = "HTML", limit: int = 4000):
+    """Gửi text dài bằng cách chia thành nhiều tin nhắn, cắt ở ranh giới đoạn."""
+    parts, cur = [], []
+    cur_len = 0
+    for para in text.split("\n\n"):
+        chunk = para if not cur else "\n\n" + para
+        if cur and cur_len + len(chunk) > limit:
+            parts.append("\n\n".join(cur))
+            cur, cur_len = [para], len(para)
+        else:
+            cur.append(para)
+            cur_len += len(chunk)
+    if cur:
+        parts.append("\n\n".join(cur))
+    for i, part in enumerate(parts):
+        suffix = f" ({i+1}/{len(parts)})" if len(parts) > 1 else ""
+        head = f"<b>📋 Bảng lệnh admin{suffix}</b>\n\n" if i > 0 else ""
+        await msg.answer(head + part, parse_mode=parse_mode)
+
 async def _show_adm_help(msg: Message):
     """Hiển thị bảng hướng dẫn chi tiết các lệnh admin /adm."""
     help_text = (
@@ -894,7 +914,7 @@ async def _show_adm_help(msg: Message):
 
         "<i>Chỉ Admin ID được cấp phép mới sử dụng được các lệnh này.</i>"
     )
-    await msg.answer(help_text, parse_mode="HTML")
+    await _answer_long(msg, help_text)
 
 
 _pending_broadcasts = {}
