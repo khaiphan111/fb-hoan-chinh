@@ -72,6 +72,14 @@ async def morning_report() -> bool:
         wd = c.execute(
             "SELECT COUNT(*) n, COALESCE(SUM(amount),0) s FROM withdrawal_requests"
             " WHERE status='pending'").fetchone()
+        cat_profit = c.execute(
+            "SELECT cat.name nm, COUNT(*) n, COALESCE(SUM(o.price),0) rev,"
+            " COALESCE(SUM(COALESCE(b.cost_per_acc,0)),0) cost"
+            " FROM acc_orders o"
+            " LEFT JOIN acc_categories cat ON cat.id=o.cat_id"
+            " LEFT JOIN acc_batches b ON b.batch=o.batch"
+            " WHERE o.created_at>=? AND o.created_at<?"
+            " GROUP BY o.cat_id ORDER BY rev DESC", (ys, ye)).fetchall()
     except Exception as e:
         log.warning("morning_report query failed: %s", e)
         return False
@@ -87,6 +95,15 @@ async def morning_report() -> bool:
     ]
     for r in stock[:10]:
         lines.append(f"   • {r['nm']}: {r['n']}")
+    if cat_profit:
+        lines.append("")
+        lines.append("💹 <b>Lãi theo loại acc (hôm qua):</b>")
+        for r in cat_profit[:5]:
+            profit = int(r["rev"] or 0) - int(r["cost"] or 0)
+            emo = "🟢" if profit >= 0 else "🔴"
+            lines.append(f"{emo} {r['nm']}: {r['n']} đơn — lãi <b>{vnd(profit)}</b>")
+        best = cat_profit[0]
+        lines.append(f"🏆 Bán chạy nhất: <b>{best['nm']}</b> ({best['n']} đơn)")
     lines += [
         f"☠️ Acc DIE cách ly: <b>{die_n}</b>",
         f"⏳ Rút chờ duyệt: <b>{wd['n']}</b> ({vnd(wd['s'])})",

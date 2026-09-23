@@ -1937,6 +1937,7 @@ def migrate_new_features():
         )""",
         "ALTER TABLE acc_stock ADD COLUMN batch TEXT DEFAULT ''",
         "ALTER TABLE acc_warranty_claims ADD COLUMN reminded_at BIGINT DEFAULT 0",
+        "ALTER TABLE acc_warranty_claims ADD COLUMN handled_by BIGINT DEFAULT 0",
         # ---- GĐ4/GĐ5 đợt 4: giá khan hiếm, hộp mù, cọc, review, NCC, lô hàng ----
         "ALTER TABLE acc_categories ADD COLUMN low_threshold INTEGER DEFAULT 10",
         "ALTER TABLE acc_categories ADD COLUMN scarcity_pct INTEGER DEFAULT 15",
@@ -3960,11 +3961,11 @@ def acc_warranty_get(claim_id: int):
         "SELECT * FROM acc_warranty_claims WHERE id=?", (claim_id,)).fetchone()
 
 
-def acc_warranty_set_status(claim_id: int, status: str) -> bool:
+def acc_warranty_set_status(claim_id: int, status: str, handled_by: int = 0) -> bool:
     with _lock:
         c = get_conn()
-        c.execute("UPDATE acc_warranty_claims SET status=?, handled_at=? WHERE id=?",
-                  (status, int(time.time()), claim_id))
+        c.execute("UPDATE acc_warranty_claims SET status=?, handled_at=?, handled_by=? WHERE id=?",
+                  (status, int(time.time()), int(handled_by or 0), claim_id))
         c.commit()
         return True
 
@@ -4341,3 +4342,33 @@ def acc_last_order_at(tg_id: int) -> int:
     r = get_conn().execute(
         "SELECT MAX(created_at) m FROM acc_orders WHERE tg_id=?", (tg_id,)).fetchone()
     return int(r["m"] or 0)
+
+
+def db_backup(keep: int = 7) -> str:
+    """Sao lưu database mỗi đêm. SQLite: dùng backup API (an toàn khi DB đang
+    chạy). Postgres: bỏ qua (cần pg_dump riêng). Trả về đường dẫn file backup
+    hoặc chuỗi rỗng nếu không backup được."""
+    import datetime as _dt
+    if SUPABASE_URL:
+        return ""  # Postgres: không tự backup ở đây
+    d = os.path.expanduser("~/workspace/fb-hoan-chinh/backups/db")
+    os.makedirs(d, exist_ok=True)
+    fn = _dt.datetime.now().strftime("db_%Y%m%d_%H%M.db")
+    path = os.path.join(d, fn)
+    src = sqlite3.connect(config.DB_PATH, timeout=30)
+    try:
+        dst = sqlite3.connect(path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    files = sorted(f for f in os.listdir(d)
+                   if f.startswith("db_") and f.endswith(".db"))
+    for old in files[:-keep]:
+        try:
+            os.remove(os.path.join(d, old))
+        except Exception:
+            pass
+    return path

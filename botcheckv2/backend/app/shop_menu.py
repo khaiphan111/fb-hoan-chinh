@@ -149,15 +149,21 @@ GROUPS = {
 }
 
 
-def _group_kb(cat):
+def _group_kb(cat, tg_id=None):
     _, items = GROUPS[cat]
+    vis = []
+    for key, label in items:
+        fl = FLOWS.get(key) or {}
+        if fl.get("super_only") and tg_id and not _perms.is_super(tg_id):
+            continue
+        vis.append((key, label))
     rows = []
-    for i in range(0, len(items), 2):
-        row = [InlineKeyboardButton(text=items[i][1],
-                                    callback_data=f"shopm:go_{items[i][0]}")]
-        if i + 1 < len(items):
-            row.append(InlineKeyboardButton(text=items[i + 1][1],
-                                            callback_data=f"shopm:go_{items[i + 1][0]}"))
+    for i in range(0, len(vis), 2):
+        row = [InlineKeyboardButton(text=vis[i][1],
+                                    callback_data=f"shopm:go_{vis[i][0]}")]
+        if i + 1 < len(vis):
+            row.append(InlineKeyboardButton(text=vis[i + 1][1],
+                                            callback_data=f"shopm:go_{vis[i + 1][0]}"))
         rows.append(row)
     rows.append([InlineKeyboardButton(text="🏠 Menu shop acc", callback_data="shopm:main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -407,7 +413,7 @@ FLOWS = {
         "build": lambda v: f"/accinfo {v[0]}",
     },
     "profit": {
-        "cat": "orders", "handler": "on_lo",
+        "cat": "orders", "handler": "on_lo", "super_only": True,
         "steps": [("📊 <b>LÃI THEO LÔ</b>\n\nGửi <b>ID loại acc</b>.", "int")],
         "build": lambda v: f"/lo {v[0]}",
     },
@@ -585,7 +591,7 @@ def register_shop_menu(target_router):
                                            reply_markup=_main_kb(cb.from_user.id))
             else:
                 await cb.message.edit_text(_group_text(cat), parse_mode="HTML",
-                                            reply_markup=_group_kb(cat))
+                                            reply_markup=_group_kb(cat, cb.from_user.id))
             await cb.answer()
             return
 
@@ -596,6 +602,9 @@ def register_shop_menu(target_router):
                 return
             if not _perms.has_perm(cb.from_user.id, flow["cat"]):
                 await cb.answer("🚫 Bạn không có quyền thao tác này.", show_alert=True)
+                return
+            if flow.get("super_only") and not _perms.is_super(cb.from_user.id):
+                await cb.answer("🚫 Chỉ chủ shop mới xem được mục này.", show_alert=True)
                 return
             if "run" in flow:
                 await _exec_via_cb(cb, state, flow, flow["run"])

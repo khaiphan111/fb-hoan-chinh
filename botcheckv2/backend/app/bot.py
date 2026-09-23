@@ -565,6 +565,18 @@ async def process_fb_check(msg: Message, uid: str):
 
 
 # ─── HANDLERS ────────────────────────────────────────────────
+# Tin chào mừng khách mới (chỉ hiện lần đầu /start)
+_WELCOME_NEW = (
+    "🎉 <b>Chào mừng bạn đến với shop!</b>\n"
+    "━━━━━━━━━━━━━━━\n"
+    "🛒 <b>Mua acc FB:</b> gõ /shop — chọn loại acc, thanh toán là nhận acc ngay\n"
+    "💳 <b>Nạp tiền:</b> gõ /nap &lt;số tiền&gt; — quét mã QR là tiền vào ví\n"
+    "🎁 <b>Tân thủ</b> được tặng ngày dùng thử miễn phí (nếu đang bật)\n"
+    "❓ Cần hỗ trợ? Gõ /tienich để xem tiện ích\n"
+    "━━━━━━━━━━━━━━━\n\n"
+)
+
+
 @router.message(CommandStart())
 async def on_start(msg: Message):
     u = msg.from_user
@@ -583,7 +595,9 @@ async def on_start(msg: Message):
     if ref_id and int(ref_id) == int(u.id):
         ref_id = 0  # chống tự giới thiệu chính mình để ăn hoa hồng
     user = db.get_user(u.id)
+    is_new = False
     if not user:
+        is_new = True
         user = db.upsert_user(u.id, u.username or "", u.full_name or "", ref_id)
         
         # New User Notification for Admin
@@ -650,9 +664,10 @@ async def on_start(msg: Message):
     await msg.answer(
         f"👋 Xin chào <b>{msg.from_user.full_name}</b>!\n\n"
         "📱 Bot <b>TikTok/IG/FB Checker V2</b> sẵn sàng!\n\n"
-        f"Số dư: <b>{vnd(user['balance'])}</b>\n"
+        f"💰 Số dư: <b>{vnd(user['balance'])}</b>\n"
         f"Gói FB: <b>{_sub_text(user)}</b>\n\n"
         f"{trial_msg}"
+        + (_WELCOME_NEW if is_new else "") +
         "Gõ /help để xem hướng dẫn đầy đủ.\n"
         "Gõ /ref để lấy link giới thiệu nhận 10% hoa hồng.",
         reply_markup=(ADMIN_MENU if _is_admin(u.id) else MENU),
@@ -9037,11 +9052,84 @@ async def on_gia(msg: Message):
     except Exception:
         await msg.answer("❌ ID và giá phải là số.")
         return
+    cat = db.acc_category_get(cid)
+    if not cat:
+        await msg.answer("❌ Không tìm thấy loại này.")
+        return
+    old = int(cat["price"] or 0)
+    if not _price_change_ok(old, price):
+        # Giá chênh lệch bất thường -> hỏi xác nhận trước khi lưu
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Vẫn đổi giá",
+                                 callback_data=f"giacf:ok:{cid}:{price}"),
+            InlineKeyboardButton(text="❌ Huỷ",
+                                 callback_data=f"giacf:no:{cid}:{price}"),
+        ]])
+        await msg.answer(
+            f"⚠️ <b>GIÁ BẤT THƯỜNG!</b>\n\n"
+            f"Loại <b>#{cid}</b> {html.escape(cat['name'] or '')}\n"
+            f"Giá cũ: <b>{vnd(old)}</b> → Giá mới: <b>{vnd(price)}</b>\n\n"
+            f"Chênh lệch quá {_price_warn_pct()}% so với giá hiện tại. "
+            f"Bạn có chắc không nhập nhầm?",
+            parse_mode="HTML", reply_markup=kb)
+        return
     if db.acc_category_update(cid, price=price):
         await msg.answer(f"✅ Loại <b>#{cid}</b> đổi giá thành <b>{vnd(price)}</b>.",
                          parse_mode="HTML")
     else:
         await msg.answer("❌ Không tìm thấy loại này.")
+
+
+def _price_warn_pct() -> int:
+    try:
+        return max(1, int(db.get_setting("price_warn_pct", "50") or 50))
+    except Exception:
+        return 50
+
+
+def _price_change_ok(old: int, new: int) -> bool:
+    """True nếu mức đổi giá bình thường (không cần xác nhận)."""
+    if old <= 0 or new < 0:
+        return True
+    pct = _price_warn_pct()
+    lo = old * (100 - pct) / 100
+    hi = old * (100 + pct) / 100
+    return lo <= new <= hi
+
+
+@router.callback_query(F.data.startswith("giacf:"))
+async def on_giacf_cb(cb: CallbackQuery):
+    """Xác nhận đổi giá khi giá mới chênh lệch bất thường."""
+    if not (_perms.is_super(cb.from_user.id)
+            or _perms.has_perm(cb.from_user.id, "price")):
+        await cb.answer("🚫 Bạn không có quyền đổi giá.", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    if len(parts) != 4:
+        await cb.answer()
+        return
+    _, verdict, cid_s, price_s = parts
+    try:
+        cid, price = int(cid_s), int(price_s)
+    except Exception:
+        await cb.answer("Lỗi dữ liệu.", show_alert=True)
+        return
+    if verdict == "ok":
+        cat = db.acc_category_get(cid)
+        old = int(cat["price"] or 0) if cat else 0
+        if db.acc_category_update(cid, price=price):
+            db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                               "doi_gia_xac_nhan",
+                               f"loai #{cid} {vnd(old)} -> {vnd(price)}")
+            await cb.message.edit_text(
+                f"✅ Loại <b>#{cid}</b> đổi giá thành <b>{vnd(price)}</b> "
+                f"(đã xác nhận giá bất thường).",
+                parse_mode="HTML")
+        else:
+            await cb.message.edit_text("❌ Không tìm thấy loại này.")
+    else:
+        await cb.message.edit_text("❌ Đã huỷ đổi giá.")
+    await cb.answer()
 
 
 @router.message(Command("setmailapp"))
@@ -9481,8 +9569,13 @@ async def on_bhdone(msg: Message):
     if not cl:
         await msg.answer(f"❌ Không tìm thấy khiếu nại <b>#{cid}</b>.", parse_mode="HTML")
         return
-    db.acc_warranty_set_status(cid, "DONE")
-    await msg.answer(f"✅ Đã đánh dấu xong khiếu nại <b>#{cid}</b>.", parse_mode="HTML")
+    db.acc_warranty_set_status(cid, "DONE", handled_by=msg.from_user.id)
+    handler_name = html.escape(msg.from_user.full_name or "")
+    await msg.answer(
+        f"✅ Đã đánh dấu xong khiếu nại <b>#{cid}</b>.\n"
+        f"👤 Người duyệt: <b>{handler_name}</b> <code>{msg.from_user.id}</code> — "
+        f"{vn_time_str()}",
+        parse_mode="HTML")
 
 
 @router.message(Command("accinfo"))
@@ -10275,6 +10368,11 @@ async def on_chamdiem(msg: Message):
 @router.message(Command("lo"))
 async def on_lo(msg: Message):
     if not _is_admin(msg.from_user.id):
+        return
+    # Giá vốn/lãi chỉ chủ shop được xem — admin phụ không thấy
+    if not _perms.is_super(msg.from_user.id):
+        await msg.answer("🚫 Chỉ chủ shop mới xem được giá vốn/lãi.",
+                         parse_mode="HTML")
         return
     parts = (msg.text or "").split()
     if len(parts) < 2:

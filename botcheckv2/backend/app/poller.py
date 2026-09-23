@@ -285,6 +285,16 @@ class FollowerPoller:
                         log.warning("backup stock: %s", e)
                     finally:
                         db.set_setting("maint_stock_backup", today)
+                # Backup database mỗi đêm (4h sáng, giữ 7 bản gần nhất)
+                if now_t.tm_hour == 4 and db.get_setting("maint_db_backup") != today:
+                    try:
+                        path = db.db_backup(keep=7)
+                        if path:
+                            log.info("db backup ok: %s", path)
+                    except Exception as e:
+                        log.warning("backup db: %s", e)
+                    finally:
+                        db.set_setting("maint_db_backup", today)
                 # 5.4 Nhập kho tự động từ NCC (6h sáng)
                 if now_t.tm_hour == 6 and db.get_setting("maint_supplier_import") != today:
                     try:
