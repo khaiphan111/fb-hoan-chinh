@@ -3701,9 +3701,10 @@ def admin_audit_add(tg_id: int, name: str, action: str, detail: str = "") -> boo
 
 def admin_audit_list(limit: int = 15, offset: int = 0):
     try:
-        return get_conn().execute(
+        rows = get_conn().execute(
             "SELECT * FROM admin_audit ORDER BY id DESC LIMIT ? OFFSET ?",
             (int(limit), int(offset))).fetchall()
+        return [dict(r) for r in rows]
     except Exception:
         return []
 

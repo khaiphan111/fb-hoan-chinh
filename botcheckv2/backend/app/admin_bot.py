@@ -959,8 +959,11 @@ async def _admm_exec_via_cb(cb: CallbackQuery, state: FSMContext, cmd_text: str)
     await cb.answer()
 
 
-async def _admm_exec_via_msg(msg: Message, state: FSMContext, cmd_text: str):
-    """Chạy 1 sub-command /adm sau khi admin nhập liệu xong."""
+async def _admm_exec_via_msg(msg: Message, state: FSMContext, cmd_text: str,
+                            restore_state=None):
+    """Chạy 1 sub-command /adm sau khi admin nhập liệu xong.
+    restore_state: nếu cho, sau khi chạy xong sẽ đặt lại state này để admin
+    nhập tiếp (dùng cho các flow chỉ-xem như tìm/xem user)."""
     need = _perms.cmd_perm_for_text(cmd_text)
     if need and not _perms.has_perm(msg.from_user.id, need):
         await msg.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.")
@@ -973,6 +976,8 @@ async def _admm_exec_via_msg(msg: Message, state: FSMContext, cmd_text: str):
         pass
     shim = _AdmTextShim(msg, cmd_text)
     await _handle_adm_cmd(shim, bot_instance=msg.bot)
+    if restore_state is not None:
+        await state.set_state(restore_state)
 
 
 async def _admm_show_confirm_cb(cb: CallbackQuery, state: FSMContext, title: str,
@@ -1548,7 +1553,10 @@ def register_adm_menu(target_router):
         if not uid:
             await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
             return
-        await _admm_exec_via_msg(msg, state, f"/adm info {uid}")
+        await _admm_exec_via_msg(msg, state, f"/adm info {uid}",
+                                 restore_state=AdmMenuState.info_uid)
+        await msg.answer("Gửi <b>User ID</b> khác để xem tiếp, hoặc /huy để huỷ.",
+                         parse_mode="HTML")
 
     @target_router.message(AdmMenuState.find_query)
     async def _admm_find_query(msg: Message, state: FSMContext):
@@ -1558,7 +1566,10 @@ def register_adm_menu(target_router):
         if not q:
             await msg.answer("❌ Từ khoá trống. Gửi lại hoặc /huy để huỷ.")
             return
-        await _admm_exec_via_msg(msg, state, f"/adm find {q}")
+        await _admm_exec_via_msg(msg, state, f"/adm find {q}",
+                                 restore_state=AdmMenuState.find_query)
+        await msg.answer("Gửi <b>@username</b> khác để tìm tiếp, hoặc /huy để huỷ.",
+                         parse_mode="HTML")
 
     @target_router.message(AdmMenuState.taopromo_code)
     async def _admm_taopromo_code(msg: Message, state: FSMContext):
@@ -1863,135 +1874,10 @@ def register_adm_menu(target_router):
         await cb.answer()
 
 
-async def _show_adm_help(msg: Message):
-    """Hiển thị bảng hướng dẫn chi tiết các lệnh admin /adm."""
-    help_text = (
-        "🛠 <b>HƯỚNG DẪN CÁC LỆNH ADMIN — /adm &lt;subcmd&gt;</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-
-        "<b>👤 QUẢN LÝ TÀI KHOẢN USER</b>\n"
-        "• <code>/adm topup &lt;id&gt; &lt;tiền&gt;</code>\n"
-        "  👉 <i>Cộng tiền nạp (tính vào tổng nạp &amp; tự động nâng VIP).</i>\n"
-        "  💡 VD: <code>/adm topup 123456789 50000</code>\n\n"
-
-        "• <code>/adm setbal &lt;id&gt; &lt;tiền&gt;</code>\n"
-        "  👉 <i>Set số dư tài khoản trực tiếp.</i>\n"
-        "  💡 VD: <code>/adm setbal 123456789 100000</code>\n\n"
-
-        "• <code>/adm setvip &lt;id&gt; &lt;cấp&gt; [ngày]</code>\n"
-        "  👉 <i>Nâng cấp VIP (1, 2, 3) và gia hạn thêm số ngày sử dụng.</i>\n"
-        "  💡 VD: <code>/adm setvip 123456789 2 30</code>\n\n"
-
-        "• <code>/adm ban &lt;id&gt; [lý_do]</code>\n"
-        "  👉 <i>Khoá tài khoản user, chặn sử dụng bot.</i>\n"
-        "  💡 VD: <code>/adm ban 123456789 Vi phạm quy định</code>\n\n"
-
-        "• <code>/adm unban &lt;id&gt;</code>\n"
-        "  👉 <i>Mở khoá tài khoản cho user.</i>\n"
-        "  💡 VD: <code>/adm unban 123456789</code>\n\n"
-
-        "• <code>/adm info &lt;id&gt;</code>\n"
-        "  👉 <i>Xem toàn bộ thông tin chi tiết user theo Telegram ID.</i>\n"
-        "  💡 VD: <code>/adm info 123456789</code>\n\n"
-
-        "• <code>/adm find &lt;@username&gt;</code>\n"
-        "  👉 <i>Tìm thông tin user theo username Telegram.</i>\n"
-        "  💡 VD: <code>/adm find @khaitradecoin</code>\n\n"
-
-        "<b>📊 BÁO CÁO &amp; THỐNG KÊ</b>\n"
-        "• <code>/adm revenue</code> — <i>Báo cáo doanh thu nạp tiền (Hôm nay, Tháng, Tổng).</i>\n"
-        "• <code>/adm stats</code> — <i>Thống kê tổng quan hệ thống (User, VIP, Active).</i>\n"
-        "• <code>/adm pending</code> — <i>Danh sách đơn rút tiền hoa hồng chờ duyệt.</i>\n\n"
-
-        "<b>📢 MARKETING &amp; TẠO MÃ</b>\n"
-        "• <code>/adm broadcast &lt;tin_nhắn&gt;</code>\n"
-        "  👉 <i>Gửi thông báo tới toàn bộ người dùng.</i>\n"
-        "  💡 VD: <code>/adm broadcast Nâng cấp hệ thống 15p</code>\n\n"
-
-        "• <code>/adm broadcast vip &lt;tin_nhắn&gt;</code>\n"
-        "  👉 <i>Gửi thông báo riêng cho thành viên VIP (VIP > 0).</i>\n\n"
-
-        "• <code>/adm broadcast inactive &lt;tin_nhắn&gt;</code>\n"
-        "  👉 <i>Gửi thông báo cho user không hoạt động 7 ngày qua.</i>\n\n"
-
-        "• <code>/adm promo &lt;prefix&gt; &lt;tiền&gt; [lượt] [hạn]</code>\n"
-        "  👉 <i>Tạo mã quà tặng/Giftcode cho user nhập qua /code.</i>\n"
-        "  💡 VD: <code>/adm promo SALE 50000 100 24h</code>\n\n"
-
-        "<b>🔑 API RESELLER</b>\n"
-        "• <code>/taokey &lt;tên shop&gt; [credits]</code>\n"
-        "  👉 <i>Tạo API key cho reseller. Key chỉ hiện 1 lần!</i>\n"
-        "  💡 VD: <code>/taokey shopA 1000</code>\n\n"
-
-        "• <code>/napkey &lt;key_id&gt; &lt;credits&gt;</code>\n"
-        "  👉 <i>Nạp thêm credits cho key.</i>\n"
-        "  💡 VD: <code>/napkey 3 500</code>\n\n"
-
-        "• <code>/khoakey &lt;key_id&gt; [on|off]</code>\n"
-        "  👉 <i>Khóa/mở API key (VD: <code>/khoakey 3 off</code>).</i>\n\n"
-
-        "<b>🍪 COOKIE POOL FACEBOOK</b>\n"
-        "• <code>/cookieadd</code>\n"
-        "  👉 <i>Thêm cookie vào pool xoay vòng (gửi cookie ở tin nhắn tiếp theo, bot tự xóa).</i>\n\n"
-
-        "• <code>/cookielist</code> — <i>Xem pool cookie (đã che).</i>\n"
-        "• <code>/cookiedel &lt;stt&gt;</code> — <i>Xóa cookie khỏi pool.</i>\n\n"
-
-        
-        "<b>🛒 SHOP ACC FACEBOOK</b>\n"
-        "💡 <i>Dùng /shopadm để thao tác bằng nút bấm.</i>\n"
-        "• <code>/themloai &lt;tên&gt; | &lt;giá&gt; | &lt;giờ_BH&gt; | [mô_tả]</code> — Thêm loại acc mới\n"
-        "• <code>/xoaloai &lt;id&gt;</code> — Ẩn loại acc khỏi shop (tên vẫn giữ)\n"
-        "• <code>/hienloai &lt;id&gt;</code> — Hiện lại loại acc đã ẩn\n"
-        "• <code>/xoahan &lt;id&gt; yes</code> — <i>XÓA HẲN loại acc (không khôi phục được).</i>\n"
-        "• <code>/xoakho &lt;id&gt; yes</code> — <i>Xóa toàn bộ acc CHƯA BÁN trong kho của 1 loại.</i>\n"
-        "• <code>/themacc &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho (gửi file ở tin tiếp theo)\n"
-        "• <code>/setsheet &lt;link&gt; [tab]</code> — Cài đặt Google Sheet nhập kho\n"
-        "• <code>/nhapkhosheet &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho từ Sheet (chỉ quét dòng chưa đánh dấu)\n"
-        "• <code>/kho</code> — Xem tồn kho (kể cả loại đã tự ẩn)\n"
-        "• <code>/xuatkho [id_loại]</code> — <i>Xuất toàn bộ acc ra file .xlsx (sao lưu dự phòng).</i>\n"
-        "• <code>/gia &lt;id&gt; &lt;giá_mới&gt;</code> — Đổi giá bán\n"
-        "• <code>/creditbonus &lt;id&gt; &lt;số&gt;</code> — Combo mua acc tặng credits\n"
-        "• <code>/quadoi &lt;id_loại&gt;</code> — Chọn quà đổi điểm loyalty\n"
-        "• <code>/giovang &lt;id|0&gt; [giờ] [%]</code> / <code>off</code> — Giờ vàng giảm giá\n"
-        "• <code>/hopmugia &lt;giá&gt;</code> (0 = tắt) — Bật/tắt hộp mù\n"
-        "• <code>/hopmu &lt;id&gt;</code> — Cho loại acc tham gia/rời hộp mù\n"
-        "• <code>/accinfo &lt;uid&gt;</code> — Truy xuất hành trình 1 acc\n"
-        "• <code>/donhang</code> — Đơn hàng gần đây\n"
-        "• <code>/bhdon</code> — Đơn BH chờ duyệt | <code>/bhdone &lt;id&gt;</code> — Duyệt xong\n"
-        "• <code>/suabh &lt;id_loại&gt; &lt;giờ&gt;</code> — Đổi thời gian bảo hành\n"
-        "• <code>/lo &lt;id_loại&gt;</code> — Xem lãi từng lô nhập\n"
-        "• <code>/anhbia &lt;id_loại&gt;</code> — Đặt ảnh bìa (gửi ảnh ở tin tiếp theo) | <code>xoa</code> để gỡ\n"
-        "• <code>/setmailapp &lt;link&gt;</code> — Đặt link tải app mail ảo hiện cho khách sau khi mua\n"
-        "• <code>/recheck [số_ngày]</code> — Quét LIVE toàn bộ kho ngay (acc DIE → cách ly) | đặt chu kỳ tự động (mặc định 3 ngày)\n"
-        "• <code>/faq</code> — Xem FAQ | <code>/themcauhoi &lt;kw&gt; | &lt;trả_lời&gt;</code> — Thêm | <code>/xoacauhoi &lt;số&gt;</code> — Xóa\n\n"
-
-        "<b>🏭 NHÀ CUNG CẤP</b>\n"
-        "• <code>/themncc &lt;tên&gt; | &lt;liên_hệ&gt;</code> — Thêm NCC vào sổ\n"
-        "• <code>/ncc</code> — Sổ NCC (⭐ tay + tỉ lệ sống tự động)\n"
-        "• <code>/danhgiancc &lt;id&gt; &lt;sao 1-5&gt;</code> — Đánh giá tay\n"
-        "• <code>/chamdiem &lt;id&gt; [số_ngày=7]</code> — Chấm tỉ lệ sống theo lô\n"
-        "• <code>/nccauto &lt;url_file&gt; &lt;id_loại&gt; [ncc_id]</code> / <code>off</code> — Nhập kho tự động 6h sáng\n\n"
-
-"<b>🎟️ FLASH SALE (mã giảm giá)</b>\n"
-        "• <code>/adm taopromo &lt;CODE&gt; &lt;%&gt; [lượt] [giờ]</code>\n"
-        "  💡 VD: <code>/adm taopromo SALE20 20 100 24</code>\n\n"
-        "• <code>/adm dspromo</code> — <i>Xem các mã đang có.</i>\n"
-        "• <code>/adm xoapromo &lt;CODE&gt;</code> — <i>Xóa mã.</i>\n"
-        "• <code>/adm flashsale &lt;CODE&gt;</code> — <i>Gửi thông báo sale cho toàn bộ user.</i>\n\n"
-
-        "<b>🔔 WEBHOOK RESELLER</b>\n"
-        "• <code>/adm webhook &lt;tên_key|id&gt; &lt;url|off&gt;</code>\n"
-        "  👉 <i>Mỗi lượt API sẽ POST kết quả về URL.</i>\n"
-        "  💡 VD: <code>/adm webhook shopA https://site.com/hook</code>\n\n"
-
-        "<i>Chỉ Admin ID được cấp phép mới sử dụng được các lệnh này.</i>"
-    )
-    await _answer_long(msg, help_text)
-
     # ── Quản lý admin phụ (chỉ chủ shop) ──
     @target_router.callback_query(F.data.startswith("admx:"))
     async def _on_admx_cb(cb: CallbackQuery, state: FSMContext):
+        print(f"DEBUG admx cb: data={cb.data!r} from={cb.from_user.id}", flush=True)
         if not _perms.is_super(cb.from_user.id):
             await cb.answer("🚫 Chỉ chủ shop mới quản lý được admin.",
                             show_alert=True)
@@ -2180,6 +2066,133 @@ async def _show_adm_help(msg: Message):
             f"Tick chọn các quyền được phép:",
             parse_mode="HTML",
             reply_markup=_admx_perm_kb(set(), "admx:save"))
+
+async def _show_adm_help(msg: Message):
+    """Hiển thị bảng hướng dẫn chi tiết các lệnh admin /adm."""
+    help_text = (
+        "🛠 <b>HƯỚNG DẪN CÁC LỆNH ADMIN — /adm &lt;subcmd&gt;</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        "<b>👤 QUẢN LÝ TÀI KHOẢN USER</b>\n"
+        "• <code>/adm topup &lt;id&gt; &lt;tiền&gt;</code>\n"
+        "  👉 <i>Cộng tiền nạp (tính vào tổng nạp &amp; tự động nâng VIP).</i>\n"
+        "  💡 VD: <code>/adm topup 123456789 50000</code>\n\n"
+
+        "• <code>/adm setbal &lt;id&gt; &lt;tiền&gt;</code>\n"
+        "  👉 <i>Set số dư tài khoản trực tiếp.</i>\n"
+        "  💡 VD: <code>/adm setbal 123456789 100000</code>\n\n"
+
+        "• <code>/adm setvip &lt;id&gt; &lt;cấp&gt; [ngày]</code>\n"
+        "  👉 <i>Nâng cấp VIP (1, 2, 3) và gia hạn thêm số ngày sử dụng.</i>\n"
+        "  💡 VD: <code>/adm setvip 123456789 2 30</code>\n\n"
+
+        "• <code>/adm ban &lt;id&gt; [lý_do]</code>\n"
+        "  👉 <i>Khoá tài khoản user, chặn sử dụng bot.</i>\n"
+        "  💡 VD: <code>/adm ban 123456789 Vi phạm quy định</code>\n\n"
+
+        "• <code>/adm unban &lt;id&gt;</code>\n"
+        "  👉 <i>Mở khoá tài khoản cho user.</i>\n"
+        "  💡 VD: <code>/adm unban 123456789</code>\n\n"
+
+        "• <code>/adm info &lt;id&gt;</code>\n"
+        "  👉 <i>Xem toàn bộ thông tin chi tiết user theo Telegram ID.</i>\n"
+        "  💡 VD: <code>/adm info 123456789</code>\n\n"
+
+        "• <code>/adm find &lt;@username&gt;</code>\n"
+        "  👉 <i>Tìm thông tin user theo username Telegram.</i>\n"
+        "  💡 VD: <code>/adm find @khaitradecoin</code>\n\n"
+
+        "<b>📊 BÁO CÁO &amp; THỐNG KÊ</b>\n"
+        "• <code>/adm revenue</code> — <i>Báo cáo doanh thu nạp tiền (Hôm nay, Tháng, Tổng).</i>\n"
+        "• <code>/adm stats</code> — <i>Thống kê tổng quan hệ thống (User, VIP, Active).</i>\n"
+        "• <code>/adm pending</code> — <i>Danh sách đơn rút tiền hoa hồng chờ duyệt.</i>\n\n"
+
+        "<b>📢 MARKETING &amp; TẠO MÃ</b>\n"
+        "• <code>/adm broadcast &lt;tin_nhắn&gt;</code>\n"
+        "  👉 <i>Gửi thông báo tới toàn bộ người dùng.</i>\n"
+        "  💡 VD: <code>/adm broadcast Nâng cấp hệ thống 15p</code>\n\n"
+
+        "• <code>/adm broadcast vip &lt;tin_nhắn&gt;</code>\n"
+        "  👉 <i>Gửi thông báo riêng cho thành viên VIP (VIP > 0).</i>\n\n"
+
+        "• <code>/adm broadcast inactive &lt;tin_nhắn&gt;</code>\n"
+        "  👉 <i>Gửi thông báo cho user không hoạt động 7 ngày qua.</i>\n\n"
+
+        "• <code>/adm promo &lt;prefix&gt; &lt;tiền&gt; [lượt] [hạn]</code>\n"
+        "  👉 <i>Tạo mã quà tặng/Giftcode cho user nhập qua /code.</i>\n"
+        "  💡 VD: <code>/adm promo SALE 50000 100 24h</code>\n\n"
+
+        "<b>🔑 API RESELLER</b>\n"
+        "• <code>/taokey &lt;tên shop&gt; [credits]</code>\n"
+        "  👉 <i>Tạo API key cho reseller. Key chỉ hiện 1 lần!</i>\n"
+        "  💡 VD: <code>/taokey shopA 1000</code>\n\n"
+
+        "• <code>/napkey &lt;key_id&gt; &lt;credits&gt;</code>\n"
+        "  👉 <i>Nạp thêm credits cho key.</i>\n"
+        "  💡 VD: <code>/napkey 3 500</code>\n\n"
+
+        "• <code>/khoakey &lt;key_id&gt; [on|off]</code>\n"
+        "  👉 <i>Khóa/mở API key (VD: <code>/khoakey 3 off</code>).</i>\n\n"
+
+        "<b>🍪 COOKIE POOL FACEBOOK</b>\n"
+        "• <code>/cookieadd</code>\n"
+        "  👉 <i>Thêm cookie vào pool xoay vòng (gửi cookie ở tin nhắn tiếp theo, bot tự xóa).</i>\n\n"
+
+        "• <code>/cookielist</code> — <i>Xem pool cookie (đã che).</i>\n"
+        "• <code>/cookiedel &lt;stt&gt;</code> — <i>Xóa cookie khỏi pool.</i>\n\n"
+
+        
+        "<b>🛒 SHOP ACC FACEBOOK</b>\n"
+        "💡 <i>Dùng /shopadm để thao tác bằng nút bấm.</i>\n"
+        "• <code>/themloai &lt;tên&gt; | &lt;giá&gt; | &lt;giờ_BH&gt; | [mô_tả]</code> — Thêm loại acc mới\n"
+        "• <code>/xoaloai &lt;id&gt;</code> — Ẩn loại acc khỏi shop (tên vẫn giữ)\n"
+        "• <code>/hienloai &lt;id&gt;</code> — Hiện lại loại acc đã ẩn\n"
+        "• <code>/xoahan &lt;id&gt; yes</code> — <i>XÓA HẲN loại acc (không khôi phục được).</i>\n"
+        "• <code>/xoakho &lt;id&gt; yes</code> — <i>Xóa toàn bộ acc CHƯA BÁN trong kho của 1 loại.</i>\n"
+        "• <code>/themacc &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho (gửi file ở tin tiếp theo)\n"
+        "• <code>/setsheet &lt;link&gt; [tab]</code> — Cài đặt Google Sheet nhập kho\n"
+        "• <code>/nhapkhosheet &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho từ Sheet (chỉ quét dòng chưa đánh dấu)\n"
+        "• <code>/kho</code> — Xem tồn kho (kể cả loại đã tự ẩn)\n"
+        "• <code>/xuatkho [id_loại]</code> — <i>Xuất toàn bộ acc ra file .xlsx (sao lưu dự phòng).</i>\n"
+        "• <code>/gia &lt;id&gt; &lt;giá_mới&gt;</code> — Đổi giá bán\n"
+        "• <code>/creditbonus &lt;id&gt; &lt;số&gt;</code> — Combo mua acc tặng credits\n"
+        "• <code>/quadoi &lt;id_loại&gt;</code> — Chọn quà đổi điểm loyalty\n"
+        "• <code>/giovang &lt;id|0&gt; [giờ] [%]</code> / <code>off</code> — Giờ vàng giảm giá\n"
+        "• <code>/hopmugia &lt;giá&gt;</code> (0 = tắt) — Bật/tắt hộp mù\n"
+        "• <code>/hopmu &lt;id&gt;</code> — Cho loại acc tham gia/rời hộp mù\n"
+        "• <code>/accinfo &lt;uid&gt;</code> — Truy xuất hành trình 1 acc\n"
+        "• <code>/donhang</code> — Đơn hàng gần đây\n"
+        "• <code>/bhdon</code> — Đơn BH chờ duyệt | <code>/bhdone &lt;id&gt;</code> — Duyệt xong\n"
+        "• <code>/suabh &lt;id_loại&gt; &lt;giờ&gt;</code> — Đổi thời gian bảo hành\n"
+        "• <code>/lo &lt;id_loại&gt;</code> — Xem lãi từng lô nhập\n"
+        "• <code>/anhbia &lt;id_loại&gt;</code> — Đặt ảnh bìa (gửi ảnh ở tin tiếp theo) | <code>xoa</code> để gỡ\n"
+        "• <code>/setmailapp &lt;link&gt;</code> — Đặt link tải app mail ảo hiện cho khách sau khi mua\n"
+        "• <code>/recheck [số_ngày]</code> — Quét LIVE toàn bộ kho ngay (acc DIE → cách ly) | đặt chu kỳ tự động (mặc định 3 ngày)\n"
+        "• <code>/faq</code> — Xem FAQ | <code>/themcauhoi &lt;kw&gt; | &lt;trả_lời&gt;</code> — Thêm | <code>/xoacauhoi &lt;số&gt;</code> — Xóa\n\n"
+
+        "<b>🏭 NHÀ CUNG CẤP</b>\n"
+        "• <code>/themncc &lt;tên&gt; | &lt;liên_hệ&gt;</code> — Thêm NCC vào sổ\n"
+        "• <code>/ncc</code> — Sổ NCC (⭐ tay + tỉ lệ sống tự động)\n"
+        "• <code>/danhgiancc &lt;id&gt; &lt;sao 1-5&gt;</code> — Đánh giá tay\n"
+        "• <code>/chamdiem &lt;id&gt; [số_ngày=7]</code> — Chấm tỉ lệ sống theo lô\n"
+        "• <code>/nccauto &lt;url_file&gt; &lt;id_loại&gt; [ncc_id]</code> / <code>off</code> — Nhập kho tự động 6h sáng\n\n"
+
+"<b>🎟️ FLASH SALE (mã giảm giá)</b>\n"
+        "• <code>/adm taopromo &lt;CODE&gt; &lt;%&gt; [lượt] [giờ]</code>\n"
+        "  💡 VD: <code>/adm taopromo SALE20 20 100 24</code>\n\n"
+        "• <code>/adm dspromo</code> — <i>Xem các mã đang có.</i>\n"
+        "• <code>/adm xoapromo &lt;CODE&gt;</code> — <i>Xóa mã.</i>\n"
+        "• <code>/adm flashsale &lt;CODE&gt;</code> — <i>Gửi thông báo sale cho toàn bộ user.</i>\n\n"
+
+        "<b>🔔 WEBHOOK RESELLER</b>\n"
+        "• <code>/adm webhook &lt;tên_key|id&gt; &lt;url|off&gt;</code>\n"
+        "  👉 <i>Mỗi lượt API sẽ POST kết quả về URL.</i>\n"
+        "  💡 VD: <code>/adm webhook shopA https://site.com/hook</code>\n\n"
+
+        "<i>Chỉ Admin ID được cấp phép mới sử dụng được các lệnh này.</i>"
+    )
+    await _answer_long(msg, help_text)
+
 
 
 _pending_broadcasts = {}
