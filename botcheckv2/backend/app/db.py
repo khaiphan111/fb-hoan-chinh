@@ -146,6 +146,25 @@ def init_db() -> None:
                 value TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS extra_admins (
+                tg_id    BIGINT PRIMARY KEY,
+                name     TEXT DEFAULT '',
+                perms    TEXT DEFAULT '',
+                added_by BIGINT DEFAULT 0,
+                added_at BIGINT DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_audit (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id      BIGINT NOT NULL,
+                name       TEXT DEFAULT '',
+                action     TEXT DEFAULT '',
+                detail     TEXT DEFAULT '',
+                created_at BIGINT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_time
+                ON admin_audit(created_at DESC);
+
             CREATE TABLE IF NOT EXISTS tg_users (
                 tg_id        BIGINT PRIMARY KEY,
                 username     TEXT,
@@ -3605,6 +3624,93 @@ def loyalty_redeem_cat() -> int:
     """ID loại acc dùng để đổi quà. 0 = chưa cấu hình."""
     try:
         return int(get_setting("loyalty_redeem_cat", "0") or 0)
+    except Exception:
+        return 0
+
+
+# ------------------------- admin phụ (phân quyền) -------------------------
+def extra_admin_list() -> list:
+    rows = get_conn().execute(
+        "SELECT * FROM extra_admins ORDER BY added_at DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def extra_admin_get(tg_id: int):
+    r = get_conn().execute(
+        "SELECT * FROM extra_admins WHERE tg_id=?", (int(tg_id),)).fetchone()
+    return dict(r) if r else None
+
+
+def extra_admin_add(tg_id: int, name: str, perms: str, added_by: int) -> bool:
+    """Thêm admin phụ. perms: chuỗi 'kho,price,...' (đã validate ở tầng gọi)."""
+    try:
+        with _lock:
+            c = get_conn()
+            c.execute(
+                "INSERT OR REPLACE INTO extra_admins(tg_id, name, perms, added_by, added_at)"
+                " VALUES(?,?,?,?,?)",
+                (int(tg_id), (name or "")[:64], perms or "",
+                 int(added_by or 0), int(time.time())))
+            c.commit()
+        return True
+    except Exception:
+        return False
+
+
+def extra_admin_set_perms(tg_id: int, perms: str) -> bool:
+    try:
+        with _lock:
+            c = get_conn()
+            cur = c.execute("UPDATE extra_admins SET perms=? WHERE tg_id=?",
+                            (perms or "", int(tg_id)))
+            c.commit()
+        return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+def extra_admin_del(tg_id: int) -> bool:
+    try:
+        with _lock:
+            c = get_conn()
+            cur = c.execute("DELETE FROM extra_admins WHERE tg_id=?", (int(tg_id),))
+            c.commit()
+        return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+# ---------------- Nhật ký hoạt động admin (audit log) ----------------
+def admin_audit_add(tg_id: int, name: str, action: str, detail: str = "") -> bool:
+    """Ghi 1 dòng nhật ký: ai (tg_id/name) đã làm gì (action/detail)."""
+    try:
+        import time as _t
+        with _lock:
+            c = get_conn()
+            c.execute(
+                "INSERT INTO admin_audit(tg_id, name, action, detail, created_at)"
+                " VALUES(?,?,?,?,?)",
+                (int(tg_id), (name or "")[:80], (action or "")[:60],
+                 (detail or "")[:500], int(_t.time())))
+            c.commit()
+        return True
+    except Exception:
+        return False
+
+
+def admin_audit_list(limit: int = 15, offset: int = 0):
+    try:
+        return get_conn().execute(
+            "SELECT * FROM admin_audit ORDER BY id DESC LIMIT ? OFFSET ?",
+            (int(limit), int(offset))).fetchall()
+    except Exception:
+        return []
+
+
+def admin_audit_count() -> int:
+    try:
+        r = get_conn().execute("SELECT COUNT(*) AS c FROM admin_audit").fetchone()
+        return int(r["c"] or 0)
     except Exception:
         return 0
 

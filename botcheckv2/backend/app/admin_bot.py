@@ -13,6 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
 from . import config, db
+from . import perms as _perms
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,11 @@ def get_admin_ids() -> list[int]:
     return ids
 
 def is_admin(chat_id: int, user_id: int) -> bool:
+    try:
+        if _perms.is_admin(user_id):
+            return True
+    except Exception:
+        pass
     admins = get_admin_ids()
     return chat_id in admins or user_id in admins
 
@@ -430,6 +436,15 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     subcmd = parts[1].lower().strip()
     rest = parts[2].strip() if len(parts) > 2 else ""
 
+    # ── Phân quyền admin phụ theo từng sub-command ──
+    need = _perms.ADM_SUB_PERMS.get(subcmd)
+    if need and not _perms.has_perm(tg_id, need):
+        await msg.answer(
+            f"🚫 Bạn không có quyền <b>{_perms.perm_label(need)}</b>.\n"
+            f"Liên hệ chủ shop để được cấp thêm quyền.",
+            parse_mode="HTML")
+        return
+
     # ── /adm help ────────────────────────────────────────────────────────────
     if subcmd in ("help", "?"):
         await _show_adm_help(msg)
@@ -823,17 +838,37 @@ class AdmMenuState(StatesGroup):
     broadcast_text = State()
     webhook_key = State()
     webhook_url = State()
+    admadd_id = State()
 
 
-def _admm_main_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 Tiền tệ", callback_data="admm:cat_tien"),
-         InlineKeyboardButton(text="👤 Quản lý user", callback_data="admm:cat_user")],
-        [InlineKeyboardButton(text="📊 Báo cáo", callback_data="admm:cat_report"),
-         InlineKeyboardButton(text="🎟️ Mã giảm giá", callback_data="admm:cat_promo")],
-        [InlineKeyboardButton(text="📣 Broadcast & Webhook", callback_data="admm:cat_bcast")],
-        [InlineKeyboardButton(text="📖 Hướng dẫn đầy đủ", callback_data="admm:help")],
-    ])
+def _admm_main_kb(tg_id=None):
+    rows = []
+    cats = [
+        ("💰 Tiền tệ", "admm:cat_tien", "tien"),
+        ("👤 Quản lý user", "admm:cat_user", "user"),
+        ("📊 Báo cáo", "admm:cat_report", "report"),
+        ("🎟️ Mã giảm giá", "admm:cat_promo", "promo"),
+        ("📣 Broadcast & Webhook", "admm:cat_bcast", "bcast"),
+    ]
+    vis = [(t, c) for t, c, p in cats
+           if tg_id is None or _perms.has_perm(tg_id, p)]
+    for i in range(0, len(vis), 2):
+        row = [InlineKeyboardButton(text=vis[i][0], callback_data=vis[i][1])]
+        if i + 1 < len(vis):
+            row.append(InlineKeyboardButton(text=vis[i + 1][0],
+                                            callback_data=vis[i + 1][1]))
+        rows.append(row)
+    if tg_id is not None and _perms.is_super(tg_id):
+        rows.append([InlineKeyboardButton(text="🛡️ Quản lý admin",
+                                          callback_data="admx:list"),
+                     InlineKeyboardButton(text="📜 Nhật ký hoạt động",
+                                          callback_data="admx:audit")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="🚫 Không có quyền nào",
+                                          callback_data="admm:noop")])
+    rows.append([InlineKeyboardButton(text="📖 Hướng dẫn đầy đủ",
+                                      callback_data="admm:help")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _admm_text_main() -> str:
@@ -901,12 +936,23 @@ class _AdmTextShim:
 
 
 async def _admm_show_main(msg: Message):
-    await msg.answer(_admm_text_main(), parse_mode="HTML", reply_markup=_admm_main_kb())
+    await msg.answer(_admm_text_main(), parse_mode="HTML",
+                     reply_markup=_admm_main_kb(msg.from_user.id))
 
 
 async def _admm_exec_via_cb(cb: CallbackQuery, state: FSMContext, cmd_text: str):
     """Chạy 1 sub-command /adm từ nút bấm, hiện kết quả ngay tại tin menu."""
+    need = _perms.cmd_perm_for_text(cmd_text)
+    if need and not _perms.has_perm(cb.from_user.id, need):
+        await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
+                        show_alert=True)
+        return
     await state.clear()
+    try:
+        db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                           "menu_adm", (cmd_text or "")[:200])
+    except Exception:
+        pass
     shim = _AdmTextShim(cb.message, cmd_text, edit_target=cb.message)
     await _handle_adm_cmd(shim, bot_instance=cb.bot)
     await cb.message.edit_reply_markup(reply_markup=_admm_back_kb())
@@ -915,7 +961,16 @@ async def _admm_exec_via_cb(cb: CallbackQuery, state: FSMContext, cmd_text: str)
 
 async def _admm_exec_via_msg(msg: Message, state: FSMContext, cmd_text: str):
     """Chạy 1 sub-command /adm sau khi admin nhập liệu xong."""
+    need = _perms.cmd_perm_for_text(cmd_text)
+    if need and not _perms.has_perm(msg.from_user.id, need):
+        await msg.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.")
+        return
     await state.clear()
+    try:
+        db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                           "menu_adm", (cmd_text or "")[:200])
+    except Exception:
+        pass
     shim = _AdmTextShim(msg, cmd_text)
     await _handle_adm_cmd(shim, bot_instance=msg.bot)
 
@@ -947,6 +1002,91 @@ async def _admm_guard(msg: Message, state: FSMContext) -> bool:
     return False
 
 
+# ------------------------------------------------- quản lý admin phụ (chủ shop)
+def _admx_name_of(tg_id: int) -> str:
+    try:
+        u = db.get_user(tg_id)
+        if u:
+            return (u.get("username") and "@" + u["username"]) or u.get("name") or str(tg_id)
+    except Exception:
+        pass
+    return str(tg_id)
+
+
+def _admx_list_text() -> str:
+    rows = db.extra_admin_list()
+    if not rows:
+        return "🛡️ <b>QUẢN LÝ ADMIN</b>\n\nChưa có admin phụ nào.\nBấm <b>➕ Thêm admin</b> để cấp quyền."
+    lines = ["🛡️ <b>QUẢN LÝ ADMIN</b>", ""]
+    for r in rows:
+        pl = [ _perms.perm_label(p) for p in (r.get("perms") or "").split(",") if p ]
+        lines.append(f"• <code>{r['tg_id']}</code> {html.escape(r.get('name') or '?')}\n"
+                     f"  └ {', '.join(pl) or '—'}")
+    return "\n".join(lines)
+
+
+def _admx_list_kb():
+    rows = [[InlineKeyboardButton(text="➕ Thêm admin", callback_data="admx:add")]]
+    for r in db.extra_admin_list():
+        nm = r.get("name") or str(r["tg_id"])
+        rows.append([
+            InlineKeyboardButton(text=f"🔑 {nm}", callback_data=f"admx:edit:{r['tg_id']}"),
+            InlineKeyboardButton(text="🗑️", callback_data=f"admx:del:{r['tg_id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại menu Admin",
+                                      callback_data="admm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+_AUDIT_PER_PAGE = 12
+
+
+def _audit_text(page: int) -> str:
+    rows = db.admin_audit_list(_AUDIT_PER_PAGE, page * _AUDIT_PER_PAGE)
+    total = db.admin_audit_count()
+    lines = ["📜 <b>NHẬT KÝ HOẠT ĐỘNG ADMIN</b>",
+             f"<i>Tổng {total} dòng — trang {page + 1}</i>", ""]
+    if not rows:
+        lines.append("Chưa có hoạt động nào được ghi.")
+        return "\n".join(lines)
+    import datetime as _dt
+    for r in rows:
+        ts = _dt.datetime.fromtimestamp(r["created_at"]).strftime("%d/%m %H:%M")
+        nm = html.escape((r.get("name") or "")[:30])
+        act = html.escape(r.get("action") or "")
+        det = html.escape((r.get("detail") or "")[:120])
+        lines.append(f"• <code>{ts}</code> <b>{nm}</b> <code>{r['tg_id']}</code>\n"
+                     f"  └ {act}" + (f": {det}" if det else ""))
+    return "\n".join(lines)
+
+
+def _audit_kb(page: int):
+    total = db.admin_audit_count()
+    pages = max(1, (total + _AUDIT_PER_PAGE - 1) // _AUDIT_PER_PAGE)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ Trước",
+                                        callback_data=f"admx:audit:{page - 1}"))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton(text="Sau ▶️",
+                                        callback_data=f"admx:audit:{page + 1}"))
+    rows = [nav] if nav else []
+    rows.append([InlineKeyboardButton(text="◀️ Quản lý admin",
+                                      callback_data="admx:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _admx_perm_kb(cur: set, save_cb: str):
+    rows = []
+    for k, label in _perms.PERMS:
+        mark = "✅" if k in cur else "⬜"
+        rows.append([InlineKeyboardButton(text=f"{mark} {label}",
+                                          callback_data=f"admx:toggle:{k}")])
+    rows.append([InlineKeyboardButton(text="✅ Lưu", callback_data=save_cb),
+                 InlineKeyboardButton(text="❌ Huỷ", callback_data="admx:list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _admm_parse_uid(text: str):
     try:
         return int((text or "").strip())
@@ -975,7 +1115,11 @@ def register_adm_menu(target_router):
         if action == "main":
             await state.clear()
             await cb.message.edit_text(_admm_text_main(), parse_mode="HTML",
-                                      reply_markup=_admm_main_kb())
+                                      reply_markup=_admm_main_kb(cb.from_user.id))
+            await cb.answer()
+            return
+
+        if action == "noop":
             await cb.answer()
             return
 
@@ -986,6 +1130,9 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Tiền tệ ──
         if action == "cat_tien":
+            if not _perms.has_perm(cb.from_user.id, "tien"):
+                await cb.answer("🚫 Bạn không có quyền 💰 Tiền tệ.", show_alert=True)
+                return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="💰 Cộng tiền vào ví", callback_data="admm:go_topup")],
                 [InlineKeyboardButton(text="✏️ Set lại số dư", callback_data="admm:go_setbal")],
@@ -998,6 +1145,9 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Quản lý user ──
         if action == "cat_user":
+            if not _perms.has_perm(cb.from_user.id, "user"):
+                await cb.answer("🚫 Bạn không có quyền 👤 Quản lý user.", show_alert=True)
+                return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔍 Xem thông tin user", callback_data="admm:go_info")],
                 [InlineKeyboardButton(text="🔎 Tìm user theo @username", callback_data="admm:go_find")],
@@ -1013,6 +1163,9 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Báo cáo ──
         if action == "cat_report":
+            if not _perms.has_perm(cb.from_user.id, "report"):
+                await cb.answer("🚫 Bạn không có quyền 📊 Báo cáo.", show_alert=True)
+                return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🖥 Tổng quan hệ thống", callback_data="admm:run_stats")],
                 [InlineKeyboardButton(text="📈 Doanh thu", callback_data="admm:run_revenue")],
@@ -1026,6 +1179,9 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Mã giảm giá ──
         if action == "cat_promo":
+            if not _perms.has_perm(cb.from_user.id, "promo"):
+                await cb.answer("🚫 Bạn không có quyền 🎟️ Mã giảm giá.", show_alert=True)
+                return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎟️ Tạo mã giảm %", callback_data="admm:go_taopromo"),
                  InlineKeyboardButton(text="💵 Tạo mã tiền", callback_data="admm:go_promo")],
@@ -1041,6 +1197,9 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Broadcast & Webhook ──
         if action == "cat_bcast":
+            if not _perms.has_perm(cb.from_user.id, "bcast"):
+                await cb.answer("🚫 Bạn không có quyền 📣 Broadcast & webhook.", show_alert=True)
+                return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📢 Gửi broadcast", callback_data="admm:go_broadcast")],
                 [InlineKeyboardButton(text="🔔 Webhook reseller", callback_data="admm:go_webhook")],
@@ -1829,6 +1988,198 @@ async def _show_adm_help(msg: Message):
         "<i>Chỉ Admin ID được cấp phép mới sử dụng được các lệnh này.</i>"
     )
     await _answer_long(msg, help_text)
+
+    # ── Quản lý admin phụ (chỉ chủ shop) ──
+    @target_router.callback_query(F.data.startswith("admx:"))
+    async def _on_admx_cb(cb: CallbackQuery, state: FSMContext):
+        if not _perms.is_super(cb.from_user.id):
+            await cb.answer("🚫 Chỉ chủ shop mới quản lý được admin.",
+                            show_alert=True)
+            return
+        action = (cb.data or "")[5:]
+
+        if action == "list":
+            await state.clear()
+            await cb.message.edit_text(_admx_list_text(), parse_mode="HTML",
+                                       reply_markup=_admx_list_kb())
+            await cb.answer()
+            return
+
+        if action == "audit":
+            await state.clear()
+            await cb.message.edit_text(
+                _audit_text(0), parse_mode="HTML",
+                reply_markup=_audit_kb(0))
+            await cb.answer()
+            return
+
+        if action.startswith("audit:"):
+            try:
+                page = max(0, int(action[6:]))
+            except Exception:
+                page = 0
+            await cb.message.edit_text(
+                _audit_text(page), parse_mode="HTML",
+                reply_markup=_audit_kb(page))
+            await cb.answer()
+            return
+
+        if action == "add":
+            await state.clear()
+            await state.set_state(AdmMenuState.admadd_id)
+            await cb.message.edit_text(
+                "➕ <b>THÊM ADMIN</b>\n\nGửi <b>Telegram ID</b> của người cần cấp quyền "
+                "(lấy ID qua @userinfobot).\n\nGõ /huy để huỷ.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Huỷ",
+                                          callback_data="admx:list")]]))
+            await cb.answer()
+            return
+
+        if action.startswith("toggle:"):
+            p = action[7:]
+            data = await state.get_data()
+            cur = set(data.get("admx_perms") or [])
+            if p in _perms.PERM_LABEL:
+                cur = (cur - {p}) if p in cur else (cur | {p})
+                await state.update_data(admx_perms=sorted(cur))
+            mode = data.get("admx_mode")
+            aid = data.get("admx_id")
+            if mode == "add":
+                title = f"➕ <b>THÊM ADMIN</b> <code>{aid}</code>"
+                save_cb = "admx:save"
+            else:
+                title = f"🔑 <b>SỬA QUYỀN</b> <code>{aid}</code>"
+                save_cb = f"admx:saveedit:{aid}"
+            await cb.message.edit_text(
+                f"{title}\n\nTick chọn các quyền được phép "
+                f"(<i>đang chọn {len(cur)}/{len(_perms.PERMS)}</i>):",
+                parse_mode="HTML", reply_markup=_admx_perm_kb(cur, save_cb))
+            await cb.answer()
+            return
+
+        if action == "save":
+            data = await state.get_data()
+            aid = data.get("admx_id")
+            cur = set(data.get("admx_perms") or [])
+            if not aid:
+                await cb.answer("Thiếu ID, thử lại.", show_alert=True)
+                return
+            db.extra_admin_add(int(aid), _admx_name_of(int(aid)),
+                               ",".join(sorted(cur)), cb.from_user.id)
+            db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                               "them_admin", f"{aid} quyen=[{','.join(sorted(cur))}]")
+            try:
+                await cb.bot.send_message(
+                    int(aid),
+                    "🎉 <b>Bạn đã được cấp quyền quản trị!</b>\n"
+                    "Gõ /adm để mở menu quản trị.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            await state.clear()
+            await cb.message.edit_text(
+                f"✅ Đã thêm admin <code>{aid}</code>.\n\n" + _admx_list_text(),
+                parse_mode="HTML", reply_markup=_admx_list_kb())
+            await cb.answer()
+            return
+
+        if action.startswith("edit:"):
+            aid = action[5:]
+            row = db.extra_admin_get(aid)
+            if not row:
+                await cb.answer("Admin không tồn tại.", show_alert=True)
+                return
+            cur = set((row.get("perms") or "").split(",")) & set(_perms.PERM_LABEL)
+            await state.clear()
+            await state.update_data(admx_mode="edit", admx_id=int(aid),
+                                    admx_perms=sorted(cur))
+            await cb.message.edit_text(
+                f"🔑 <b>SỬA QUYỀN</b> <code>{aid}</code> "
+                f"({html.escape(row.get('name') or '')})\n\n"
+                f"Tick chọn các quyền được phép:",
+                parse_mode="HTML",
+                reply_markup=_admx_perm_kb(cur, f"admx:saveedit:{aid}"))
+            await cb.answer()
+            return
+
+        if action.startswith("saveedit:"):
+            aid = action[9:]
+            if not (aid or "").isdigit():
+                await cb.answer("Lỗi dữ liệu, thử lại.", show_alert=True)
+                return
+            data = await state.get_data()
+            cur = set(data.get("admx_perms") or [])
+            db.extra_admin_set_perms(int(aid), ",".join(sorted(cur)))
+            db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                               "sua_quyen_admin", f"{aid} quyen=[{','.join(sorted(cur))}]")
+            await state.clear()
+            await cb.message.edit_text(
+                "✅ Đã cập nhật quyền.\n\n" + _admx_list_text(),
+                parse_mode="HTML", reply_markup=_admx_list_kb())
+            await cb.answer()
+            return
+
+        if action.startswith("del:"):
+            aid = action[4:]
+            row = db.extra_admin_get(aid)
+            nm = (row or {}).get("name") or aid
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🗑️ Xoá luôn",
+                                      callback_data=f"admx:delyes:{aid}"),
+                 InlineKeyboardButton(text="❌ Huỷ",
+                                      callback_data="admx:list")]])
+            await cb.message.edit_text(
+                f"Xoá quyền admin của <code>{aid}</code> "
+                f"({html.escape(str(nm))})?",
+                parse_mode="HTML", reply_markup=kb)
+            await cb.answer()
+            return
+
+        if action.startswith("delyes:"):
+            aid = action[7:]
+            if (aid or "").isdigit():
+                db.extra_admin_del(int(aid))
+                db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                                   "xoa_admin", f"{aid}")
+            await state.clear()
+            await cb.message.edit_text(
+                "✅ Đã xoá.\n\n" + _admx_list_text(),
+                parse_mode="HTML", reply_markup=_admx_list_kb())
+            await cb.answer()
+            return
+
+        await cb.answer()
+
+    @target_router.message(AdmMenuState.admadd_id)
+    async def _on_admadd_id(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if (msg.text or "").strip() == "/huy":
+            await state.clear()
+            await msg.answer("Đã huỷ.", reply_markup=_admm_back_kb())
+            return
+        try:
+            aid = int((msg.text or "").strip())
+        except Exception:
+            await msg.answer("⚠️ ID phải là số. Gửi lại hoặc gõ /huy để huỷ.")
+            return
+        if _perms.is_super(aid):
+            await msg.answer("⚠️ Đây là ID chủ shop rồi, không cần thêm. "
+                             "Gửi ID khác hoặc /huy.")
+            return
+        if db.extra_admin_get(aid):
+            await msg.answer("⚠️ ID này đã là admin. Gửi ID khác hoặc /huy.")
+            return
+        await state.update_data(admx_mode="add", admx_id=aid, admx_perms=[])
+        await msg.answer(
+            f"➕ <b>THÊM ADMIN</b> <code>{aid}</code> "
+            f"({html.escape(_admx_name_of(aid))})\n\n"
+            f"Tick chọn các quyền được phép:",
+            parse_mode="HTML",
+            reply_markup=_admx_perm_kb(set(), "admx:save"))
 
 
 _pending_broadcasts = {}

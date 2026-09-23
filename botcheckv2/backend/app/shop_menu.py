@@ -14,6 +14,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+from . import perms as _perms
+from . import db
+
 
 class ShopMenuState(StatesGroup):
     input = State()    # đang chờ admin nhập liệu từng bước
@@ -21,8 +24,7 @@ class ShopMenuState(StatesGroup):
 
 
 def _is_admin_sync(tg_id: int) -> bool:
-    from .bot import _is_admin
-    return _is_admin(tg_id)
+    return _perms.is_admin(tg_id)
 
 
 def _get_handler(name: str):
@@ -67,14 +69,16 @@ class _ShopTextShim:
 
 # ---------------------------------------------------------------- bàn phím
 
-def _main_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Kho & Loại acc", callback_data="shopm:cat_kho")],
-        [InlineKeyboardButton(text="💲 Giá & Khuyến mãi", callback_data="shopm:cat_price")],
-        [InlineKeyboardButton(text="📋 Đơn hàng & Bảo hành", callback_data="shopm:cat_orders")],
-        [InlineKeyboardButton(text="❓ FAQ tự động", callback_data="shopm:cat_faq")],
-        [InlineKeyboardButton(text="🏭 Nhà cung cấp", callback_data="shopm:cat_sup")],
-    ])
+def _main_kb(tg_id=None):
+    rows = []
+    for cat, (title, _items) in GROUPS.items():
+        if tg_id is not None and not _perms.has_perm(tg_id, cat):
+            continue
+        label = title.replace("<b>", "").replace("</b>", "")
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"shopm:cat_{cat}")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="🚫 Không có quyền nào", callback_data="shopm:noop")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _main_text():
@@ -117,6 +121,7 @@ GROUPS = {
         ("set_warranty", "🛡️ Đổi bảo hành"),
         ("credit_bonus", "🎁 Combo tặng credits"),
         ("loyalty_gift", "🎁 Quà đổi điểm"),
+        ("loyalty_random", "🎲 Điểm ngẫu nhiên"),
         ("happy_hour", "⚡ Giờ vàng"),
         ("mystery_price", "🎲 Giá hộp mù"),
         ("mystery_toggle", "🎲 Hộp mù: bật/tắt loại"),
@@ -209,9 +214,30 @@ def _p_mystery_price():
 def _p_loyalty():
     from . import db
     cid = db.get_setting("loyalty_redeem_cat", "0") or "0"
+    pts = db.get_setting("loyalty_redeem_points", "10") or "10"
     cur = "chưa cài" if cid == "0" else f"loại #{cid}"
-    return (f"🎁 <b>QUÀ ĐỔI ĐIỂM LOYALTY</b>\n\nHiện tại: <b>{html.escape(cur)}</b>.\n\n"
+    return (f"🎁 <b>QUÀ ĐỔI ĐIỂM LOYALTY</b> (bước 1/2)\n\nHiện tại: <b>{html.escape(cur)}</b> — <b>{html.escape(str(pts))}</b> điểm.\n\n"
             f"Gửi <b>ID loại</b> làm quà (<code>0</code> để tắt).")
+
+
+def _p_loyalty_random():
+    from . import db
+    try:
+        lo = int(db.get_setting("loyalty_random_min", "1") or 1)
+        hi = int(db.get_setting("loyalty_random_max", "5") or 5)
+        cap = int(db.get_setting("loyalty_random_cap", "0") or 0)
+        mo = int(db.get_setting("loyalty_random_min_order", "0") or 0)
+        dm = int(db.get_setting("loyalty_random_daily_max", "0") or 0)
+    except Exception:
+        lo, hi, cap, mo, dm = 1, 5, 0, 0, 0
+    cur = "đang tắt" if cap <= 0 else f"{lo}–{hi} điểm/lần, tối đa {cap} điểm/user"
+    if cap > 0:
+        if mo > 0:
+            cur += f", đơn ≥ {mo}đ"
+        if dm > 0:
+            cur += f", {dm} lượt/ngày"
+    return (f"🎲 <b>ĐIỂM NGẪU NHIÊN SAU MUA</b> (bước 1/5)\n\nHiện tại: <b>{html.escape(cur)}</b>.\n\n"
+            f"Gửi <b>điểm thấp nhất</b> mỗi lần random (VD: 1).")
 
 
 # ------------------------------------------------------------------ định nghĩa flow
@@ -324,8 +350,22 @@ FLOWS = {
     },
     "loyalty_gift": {
         "cat": "price", "handler": "on_quadoi",
-        "steps": [(_p_loyalty, "int")],
-        "build": lambda v: f"/quadoi {v[0]}",
+        "steps": [
+            (_p_loyalty, "int"),
+            ("🎁 <b>QUÀ ĐỔI ĐIỂM LOYALTY</b> (bước 2/2)\n\nGửi <b>số điểm</b> cần để đổi quà (<code>0</code> = giữ nguyên).", "opt_int"),
+        ],
+        "build": lambda v: f"/quadoi {v[0]}" + (f" {v[1]}" if v[1] else ""),
+    },
+    "loyalty_random": {
+        "cat": "price", "handler": "on_loyaltyrandom",
+        "steps": [
+            (_p_loyalty_random, "int"),
+            ("🎲 <b>ĐIỂM NGẪU NHIÊN SAU MUA</b> (bước 2/5)\n\nGửi <b>điểm cao nhất</b> mỗi lần random (VD: 5).", "int"),
+            ("🎲 <b>ĐIỂM NGẪU NHIÊN SAU MUA</b> (bước 3/5)\n\nGửi <b>tổng điểm tối đa</b> mỗi user được nhận (<code>0</code> = tắt tính năng).", "int"),
+            ("🎲 <b>ĐIỂM NGẪU NHIÊN SAU MUA</b> (bước 4/5)\n\nGửi <b>giá trị đơn tối thiểu</b> (VNĐ) để được random — chống cày điểm bằng acc rẻ (<code>0</code> = không giới hạn).", "int"),
+            ("🎲 <b>ĐIỂM NGẪU NHIÊN SAU MUA</b> (bước 5/5)\n\nGửi <b>số lượt random tối đa mỗi ngày</b> cho mỗi user (<code>0</code> = không giới hạn).", "int"),
+        ],
+        "build": lambda v: f"/loyaltyrandom {v[0]} {v[1]} {v[2]} {v[3]} {v[4]}",
     },
     "happy_hour": {
         "cat": "price", "handler": "on_giovang",
@@ -478,6 +518,11 @@ async def _exec_handler(shim, state, flow):
 
 async def _exec_via_cb(cb: CallbackQuery, state: FSMContext, flow, cmd_text: str):
     """Chạy lệnh từ nút bấm — kết quả hiện ngay tại tin menu."""
+    try:
+        db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                           "menu_shopadm", (cmd_text or "")[:200])
+    except Exception:
+        pass
     shim = _ShopTextShim(cb.message, cmd_text, edit_target=cb.message)
     await _exec_handler(shim, state, flow)
     if await state.get_state() is None:
@@ -490,6 +535,11 @@ async def _exec_via_cb(cb: CallbackQuery, state: FSMContext, flow, cmd_text: str
 
 async def _exec_via_msg(msg: Message, state: FSMContext, flow, cmd_text: str):
     """Chạy lệnh sau khi admin nhập liệu xong."""
+    try:
+        db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                           "menu_shopadm", (cmd_text or "")[:200])
+    except Exception:
+        pass
     shim = _ShopTextShim(msg, cmd_text)
     await _exec_handler(shim, state, flow)
 
@@ -504,7 +554,8 @@ def register_shop_menu(target_router):
         if not _is_admin_sync(msg.from_user.id):
             return
         await state.clear()
-        await msg.answer(_main_text(), parse_mode="HTML", reply_markup=_main_kb())
+        await msg.answer(_main_text(), parse_mode="HTML",
+                         reply_markup=_main_kb(msg.from_user.id))
 
     @target_router.callback_query(F.data.startswith("shopm:"))
     async def _on_shopm_cb(cb: CallbackQuery, state: FSMContext):
@@ -513,17 +564,25 @@ def register_shop_menu(target_router):
             return
         action = (cb.data or "")[6:]
 
+        if action == "noop":
+            await cb.answer()
+            return
+
         if action == "main":
             await state.clear()
-            await cb.message.edit_text(_main_text(), parse_mode="HTML", reply_markup=_main_kb())
+            await cb.message.edit_text(_main_text(), parse_mode="HTML",
+                                       reply_markup=_main_kb(cb.from_user.id))
             await cb.answer()
             return
 
         if action.startswith("cat_") or action.startswith("back_"):
             cat = action[4:] if action.startswith("cat_") else action[5:]
-            if cat not in GROUPS:
+            if cat not in GROUPS or not _perms.has_perm(cb.from_user.id, cat):
+                if cat in GROUPS:
+                    await cb.answer("🚫 Bạn không có quyền nhóm này.", show_alert=True)
                 await state.clear()
-                await cb.message.edit_text(_main_text(), parse_mode="HTML", reply_markup=_main_kb())
+                await cb.message.edit_text(_main_text(), parse_mode="HTML",
+                                           reply_markup=_main_kb(cb.from_user.id))
             else:
                 await cb.message.edit_text(_group_text(cat), parse_mode="HTML",
                                             reply_markup=_group_kb(cat))
@@ -534,6 +593,9 @@ def register_shop_menu(target_router):
             flow = FLOWS.get(action[3:])
             if not flow:
                 await cb.answer()
+                return
+            if not _perms.has_perm(cb.from_user.id, flow["cat"]):
+                await cb.answer("🚫 Bạn không có quyền thao tác này.", show_alert=True)
                 return
             if "run" in flow:
                 await _exec_via_cb(cb, state, flow, flow["run"])
@@ -562,6 +624,10 @@ def register_shop_menu(target_router):
         flow = FLOWS.get(data.get("shopm_flow") or "")
         if not flow:
             await state.clear()
+            return
+        if not _perms.has_perm(msg.from_user.id, flow["cat"]):
+            await state.clear()
+            await msg.answer("🚫 Bạn không có quyền thao tác này.")
             return
         step_idx = int(data.get("shopm_step") or 0)
         vals = data.get("shopm_vals") or []
@@ -611,5 +677,9 @@ def register_shop_menu(target_router):
             except Exception:
                 pass
             await cb.answer()
+            return
+        if not _perms.has_perm(cb.from_user.id, flow["cat"]):
+            await state.clear()
+            await cb.answer("🚫 Bạn không có quyền thao tác này.", show_alert=True)
             return
         await _exec_via_cb(cb, state, flow, cmd)

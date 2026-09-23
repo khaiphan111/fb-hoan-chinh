@@ -55,6 +55,7 @@ class TienIchState(StatesGroup):
     waiting_transfer_amount = State()
 
 from . import db
+from . import perms as _perms
 from . import notify_bot as _notify_bot
 from . import config as _config
 from .persist import SQLiteStorage, check_cache_get, check_cache_set, init_cache_db
@@ -71,6 +72,41 @@ from .poller import poller
 
 log = logging.getLogger(__name__)
 router = Router()
+
+
+@router.message.middleware()
+async def _perm_middleware(handler, event, data):
+    """Chặn admin phụ gõ lệnh tay thuộc nhóm quyền chưa được cấp.
+
+    Chỉ áp dụng cho admin phụ (không phải super admin). Super admin và
+    khách thường đi qua bình thường. Menu nút (/adm, /shopadm) tự lọc riêng.
+    """
+    try:
+        from aiogram.types import Message as _Msg
+        if isinstance(event, _Msg) and event.from_user:
+            uid = event.from_user.id
+            if _perms.is_admin(uid) and not _perms.is_super(uid):
+                need = _perms.cmd_perm_for_text(event.text or "")
+                if need and not _perms.has_perm(uid, need):
+                    await event.answer(
+                        f"🚫 Bạn không có quyền <b>{_perms.perm_label(need)}</b>.\n"
+                        f"Liên hệ chủ shop để được cấp thêm quyền.",
+                        parse_mode="HTML")
+                    return
+            if _perms.is_admin(uid):
+                # Nhật ký: admin (kể cả chủ shop) gõ lệnh tay thuộc diện quản trị
+                _need2 = _perms.cmd_perm_for_text(event.text or "")
+                _head = ((event.text or "").strip().split() or [""])[0].lower()
+                if _need2 or _head in ("/adm", "/shopadm"):
+                    try:
+                        db.admin_audit_add(
+                            uid, event.from_user.full_name, "lenh_tay",
+                            (event.text or "")[:200])
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return await handler(event, data)
 
 from .admin_bot import register_adm_menu as _register_adm_menu
 _register_adm_menu(router)  # menu nút /adm — đăng ký sớm, trước on_other
@@ -277,6 +313,9 @@ async def on_sheet_button(msg: Message, state: FSMContext):
     """Nút bấm cố định trên bàn phím admin: mở flow nhập kho từ Sheet."""
     if not _is_admin(msg.from_user.id):
         return
+    if not _perms.has_perm(msg.from_user.id, "kho"):
+        await msg.answer("🚫 Bạn không có quyền 📦 Kho & loại acc.")
+        return
     await state.clear()
     sid = db.get_setting("sheet_import_id") or ""
     tab = db.get_setting("sheet_import_tab") or "NhapKho"
@@ -310,6 +349,9 @@ async def on_sheet_pick(cb: CallbackQuery, state: FSMContext):
     if not _is_admin(cb.from_user.id):
         await cb.answer("🚫")
         return
+    if not _perms.has_perm(cb.from_user.id, "kho"):
+        await cb.answer("🚫 Không có quyền.", show_alert=True)
+        return
     try:
         cat_id = int(cb.data.split("_", 1)[1])
     except Exception:
@@ -338,6 +380,10 @@ async def on_sheet_ncc_cost(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
         await state.clear()
         return
+    if not _perms.has_perm(msg.from_user.id, "kho"):
+        await state.clear()
+        await msg.answer("🚫 Bạn không có quyền 📦 Kho & loại acc.")
+        return
     data = await state.get_data()
     cat_id = data.get("sheet_cat_id")
     await state.clear()
@@ -358,6 +404,9 @@ async def on_sheet_ncc_cost(msg: Message, state: FSMContext):
 async def on_sheet_go(cb: CallbackQuery, state: FSMContext):
     if not _is_admin(cb.from_user.id):
         await cb.answer("🚫")
+        return
+    if not _perms.has_perm(cb.from_user.id, "kho"):
+        await cb.answer("🚫 Không có quyền.", show_alert=True)
         return
     await state.clear()
     try:
@@ -828,14 +877,7 @@ async def notify_admin_withdrawal_request(req_id: int, tg_id: int, amount: int, 
         admin_sender_bot = manager.bot
 
     if admin_sender_bot:
-        admins = []
-        try:
-            if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
-        except: pass
-        try:
-            if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
-        except: pass
-        
+        admins = _withdraw_admin_ids()
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Duyệt & Đã Chuyển", callback_data=f"tg_admin_withdraw_approve_{req_id}_{tg_id}_{amount}"),
@@ -859,16 +901,43 @@ async def notify_admin_withdrawal_request(req_id: int, tg_id: int, amount: int, 
         }
         asyncio.create_task(zalo_manager.send_message(admin_zalo, admin_msg, reply_markup=zalo_kb))
 
+def _withdraw_admin_ids() -> list:
+    """ID được phép duyệt/từ chối rút tiền: chủ shop + group +
+    admin phụ đang có quyền Tiền tệ."""
+    ids = []
+    try:
+        if db.get_setting("admin_tg_id"): ids.append(int(db.get_setting("admin_tg_id")))
+    except: pass
+    try:
+        if db.get_setting("admin_tg_group_id"): ids.append(int(db.get_setting("admin_tg_group_id")))
+    except: pass
+    try:
+        for tid in _perms.notify_extra_ids("tien"):
+            if tid not in ids:
+                ids.append(tid)
+    except: pass
+    return ids
+
+
+async def _notify_super_subadmin_action(actor_id: int, actor_name: str, text: str):
+    """Báo chủ shop khi admin phụ thực hiện thao tác nhạy cảm (duyệt/từ chối rút)."""
+    try:
+        if _perms.is_super(actor_id):
+            return
+        sid = _perms.super_id()
+        if sid and manager.bot:
+            await manager.bot.send_message(
+                sid,
+                f"👤 <b>Admin phụ {html.escape(actor_name or '')}</b> "
+                f"({actor_id}) vừa {text}",
+                parse_mode="HTML")
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data.startswith("tg_admin_withdraw_approve_"))
 async def on_admin_withdraw_approve(cb: CallbackQuery):
-    admins = []
-    try:
-        if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
-    except: pass
-    try:
-        if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
-    except: pass
-    
+    admins = _withdraw_admin_ids()
     if cb.message.chat.id not in admins and cb.from_user.id not in admins:
         await cb.answer("❌ Bạn không có quyền duyệt!", show_alert=True)
         return
@@ -913,17 +982,15 @@ async def on_admin_withdraw_approve(cb: CallbackQuery):
             await manager.bot.send_message(tg_id, cust_msg, parse_mode="HTML")
     except Exception as notify_err:
         log.error("Could not notify user of approved withdrawal: %s", notify_err)
+    db.admin_audit_add(cb.from_user.id, cb.from_user.full_name, "duyet_rut_tien",
+                       f"#{actual_req_id} {vnd(amount)} cho user {tg_id}")
+    await _notify_super_subadmin_action(
+        cb.from_user.id, cb.from_user.full_name,
+        f"duyệt đơn rút <b>#{actual_req_id}</b> ({vnd(amount)})")
 
 @router.callback_query(F.data.startswith("tg_admin_withdraw_reject_"))
 async def on_admin_withdraw_reject(cb: CallbackQuery):
-    admins = []
-    try:
-        if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
-    except: pass
-    try:
-        if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
-    except: pass
-    
+    admins = _withdraw_admin_ids()
     if cb.message.chat.id not in admins and cb.from_user.id not in admins:
         await cb.answer("❌ Bạn không có quyền từ chối!", show_alert=True)
         return
@@ -965,6 +1032,11 @@ async def on_admin_withdraw_reject(cb: CallbackQuery):
             await manager.bot.send_message(tg_id, cust_msg, parse_mode="HTML")
     except Exception as notify_err:
         log.error("Could not notify user of rejected withdrawal: %s", notify_err)
+    db.admin_audit_add(cb.from_user.id, cb.from_user.full_name, "tu_choi_rut_tien",
+                       f"#{actual_req_id} {vnd(amount)} của user {tg_id}")
+    await _notify_super_subadmin_action(
+        cb.from_user.id, cb.from_user.full_name,
+        f"từ chối đơn rút <b>#{actual_req_id}</b> ({vnd(amount)})")
 
 @router.message(Command("doitien"))
 async def on_doitien(msg: Message):
@@ -1687,9 +1759,8 @@ async def on_payos_status(msg: Message):
 
 @router.message(Command("payosset"))
 async def on_payosset(msg: Message):
-    """Admin: lưu key PayOS (tin nhắn chứa key sẽ bị xóa ngay)."""
-    from .admin_bot import is_admin
-    if not is_admin(msg.chat.id, msg.from_user.id):
+    """Chủ shop: lưu key PayOS (tin nhắn chứa key sẽ bị xóa ngay)."""
+    if not _perms.is_super(msg.from_user.id):
         return
     parts = (msg.text or "").split()
     try:
@@ -5055,7 +5126,8 @@ def _credit_packs() -> list:
 
 
 def _is_admin(tg_id: int) -> bool:
-    """Kiểm tra quyền admin theo setting admin_tg_id / admin_tg_group_id."""
+    """Kiểm tra quyền admin: super admin (setting admin_tg_id / admin_tg_group_id)
+    hoặc admin phụ được cấp quyền. Phân quyền chi tiết xem app/perms.py."""
     try:
         if db.get_setting("admin_tg_id") and int(db.get_setting("admin_tg_id")) == int(tg_id):
             return True
@@ -5066,7 +5138,10 @@ def _is_admin(tg_id: int) -> bool:
             return True
     except Exception:
         pass
-    return False
+    try:
+        return _perms.is_admin(tg_id)
+    except Exception:
+        return False
 
 
 def _sub_credit_bonus(price_per_month: int) -> int:
@@ -6485,7 +6560,7 @@ def _buyer_shim(tg_id: int):
 
 async def _notify_purchase_admin(bot, buyer, orders: list):
     """Báo admin khi khách mua acc: qua bot thông báo riêng nếu có,
-    fallback về bot chính."""
+    fallback về bot chính. Admin phụ có quyền Đơn hàng cũng nhận tin."""
     if not orders:
         return
     try:
@@ -6493,6 +6568,17 @@ async def _notify_purchase_admin(bot, buyer, orders: list):
         sent = await _notify_bot.manager.send_to_privileged(text)
         if not sent:
             await _notify_shop_admin(bot, text)
+        try:
+            priv = set(_notify_bot.privileged_ids())
+        except Exception:
+            priv = set()
+        for tid in _perms.notify_extra_ids("orders"):
+            if tid in priv:
+                continue
+            try:
+                await bot.send_message(tid, text, parse_mode="HTML")
+            except Exception:
+                pass
     except Exception as e:
         log.warning("Báo admin đơn mua acc lỗi: %s", e)
 
@@ -6636,15 +6722,33 @@ async def _notify_admin_photo(bot, file_id: str, caption: str):
             pass
 
 
-async def _notify_admin_smart(bot, text: str):
-    """Báo admin: ưu tiên bot thông báo riêng, fallback về bot chính."""
+async def _notify_admin_smart(bot, text: str, perm: str = None):
+    """Báo admin: ưu tiên bot thông báo riêng, fallback về bot chính.
+    perm: nếu có, gửi thêm cho các admin phụ đang giữ quyền đó
+    (tránh trùng người đã nhận qua kênh privileged)."""
     try:
         sent = await _notify_bot.manager.send_to_privileged(text)
         if sent:
-            return
+            pass
+        else:
+            await _notify_shop_admin(bot, text)
     except Exception:
-        pass
-    await _notify_shop_admin(bot, text)
+        try:
+            await _notify_shop_admin(bot, text)
+        except Exception:
+            pass
+    if perm:
+        try:
+            priv = set(_notify_bot.privileged_ids())
+        except Exception:
+            priv = set()
+        for tid in _perms.notify_extra_ids(perm):
+            if tid in priv:
+                continue
+            try:
+                await bot.send_message(tid, text, parse_mode="HTML")
+            except Exception:
+                pass
 
 
 def _totp_now(secret: str, digits: int = 6, period: int = 30) -> str:
@@ -7339,10 +7443,9 @@ async def on_acc_confirm(cb: CallbackQuery):
         extras.append(f"⭐ Tích <b>{pts} điểm</b> loyalty (tổng: <b>{new_pts}</b> điểm) — "
                       f"đủ điểm đổi acc miễn phí bằng /doiqua")
     if extras:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎡 Quay ngay", callback_data="spin_now")],
-        ])
-        await cb.message.answer("\n".join(extras), parse_mode="HTML", reply_markup=kb)
+        rkey = f"o{min(o['id'] for o in delivered)}" if delivered else None
+        await cb.message.answer("\n".join(extras), parse_mode="HTML",
+                                reply_markup=_spin_kb(rkey, tg_id, final))
     # 4.6 Upsell: gợi ý mua thêm trong 10 phút được giảm thêm
     try:
         if upsell_pct_cfg > 0 and not want_upsell:
@@ -7396,6 +7499,7 @@ async def on_acc_confirm(cb: CallbackQuery):
             cb.bot,
             f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn <b>{left}</b> acc. "
             f"Nhập thêm bằng /themacc {cat_id}",
+            perm="kho",
         )
 
 
@@ -7753,9 +7857,9 @@ async def on_cart_confirm(cb: CallbackQuery):
                       "đủ điểm đổi acc miễn phí bằng /doiqua")
     summary.append("")
     summary += extras
-    kb2 = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎡 Quay ngay", callback_data="spin_now")]])
-    await cb.message.answer("\n".join(summary), parse_mode="HTML", reply_markup=kb2)
+    rkey = f"c{min(o['id'] for o in delivered)}" if delivered else None
+    await cb.message.answer("\n".join(summary), parse_mode="HTML",
+                            reply_markup=_spin_kb(rkey, tg_id, paid_total))
     try:
         guide = db.get_setting("postbuy_guide", "") or (
             "📋 <b>HƯỚNG DẪN SAU KHI MUA ACC</b>\n"
@@ -7794,7 +7898,8 @@ async def on_cart_confirm(cb: CallbackQuery):
                 await _notify_admin_smart(
                     cb.bot,
                     f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn "
-                    f"<b>{left}</b> acc. Nhập thêm bằng /themacc {cid}")
+                    f"<b>{left}</b> acc. Nhập thêm bằng /themacc {cid}",
+                    perm="kho")
 
 
 
@@ -7822,6 +7927,148 @@ async def on_spin_now(cb: CallbackQuery):
         await cb.message.answer("😅 Bạn đã hết vé quay. Mua acc ở /shop để nhận thêm vé nhé!")
         return
     await _do_spin(cb.message, cb.from_user.id, tickets)
+
+
+# ---- Điểm loyalty ngẫu nhiên sau khi mua acc ----
+def _loyalty_random_cfg():
+    """(min, max, cap_user, min_order, daily_max) cho điểm ngẫu nhiên sau mua.
+    None = đang tắt. min_order: đơn phải >= X tiền mới được random (0 = không
+    giới hạn). daily_max: mỗi user tối đa N lượt random/ngày (0 = không giới hạn)."""
+    try:
+        lo = int(db.get_setting("loyalty_random_min", "1") or 1)
+        hi = int(db.get_setting("loyalty_random_max", "5") or 5)
+        cap = int(db.get_setting("loyalty_random_cap", "0") or 0)
+        min_order = int(db.get_setting("loyalty_random_min_order", "0") or 0)
+        daily_max = int(db.get_setting("loyalty_random_daily_max", "0") or 0)
+    except Exception:
+        return None
+    if cap <= 0 or lo <= 0 or hi < lo:
+        return None
+    return (lo, hi, cap, max(0, min_order), max(0, daily_max))
+
+
+def _loyalty_random_received(tg_id: int) -> int:
+    """Tổng điểm ngẫu nhiên user đã nhận (để so với trần cap_user)."""
+    r = db.get_conn().execute(
+        "SELECT COALESCE(SUM(delta),0) AS s FROM loyalty_history "
+        "WHERE tg_id=? AND reason LIKE 'randpts:%'", (tg_id,)).fetchone()
+    try:
+        return int(r["s"] or 0)
+    except Exception:
+        return 0
+
+
+def _loyalty_random_today(tg_id: int) -> int:
+    """Số lượt random user đã bấm trong hôm nay (chống cày điểm)."""
+    try:
+        import datetime as _dt
+        start = int(_dt.datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp())
+        r = db.get_conn().execute(
+            "SELECT COUNT(*) AS c FROM loyalty_history "
+            "WHERE tg_id=? AND reason LIKE 'randpts:%' AND created_at>=?",
+            (tg_id, start)).fetchone()
+        return int(r["c"] or 0)
+    except Exception:
+        return 0
+
+
+def _order_total_for_randkey(key: str) -> int:
+    """Tổng tiền của đơn từ rand key (o<order_id> / c<order_id>). 0 nếu không rõ."""
+    try:
+        oid = int((key or "")[1:])
+        r = db.get_conn().execute(
+            "SELECT price FROM acc_orders WHERE id=?", (oid,)).fetchone()
+        return int(r["price"] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def _spin_kb(order_key=None, tg_id: int = 0, order_total: int = 0):
+    """Bàn phím tin quà tặng sau mua: nút quay + nút điểm ngẫu nhiên (nếu bật
+    và đơn/user đủ điều kiện chống cày điểm). Nhãn nút hiện tiến độ (x/y)."""
+    rows = [[InlineKeyboardButton(text="🎡 Quay ngay", callback_data="spin_now")]]
+    if order_key:
+        cfg = _loyalty_random_cfg()
+        if cfg:
+            lo, hi, cap, min_order, daily_max = cfg
+            ok = True
+            if min_order > 0 and order_total < min_order:
+                ok = False
+            if ok and daily_max > 0 and tg_id:
+                ok = _loyalty_random_today(tg_id) < daily_max
+            if ok:
+                prog = ""
+                if tg_id and cap > 0:
+                    prog = f" ({_loyalty_random_received(tg_id)}/{cap})"
+                rows.append([InlineKeyboardButton(
+                    text=f"🎲 Nhận điểm ngẫu nhiên{prog}",
+                    callback_data=f"randpts:{order_key}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("randpts:"))
+async def on_randpts(cb: CallbackQuery):
+    tg_id = cb.from_user.id
+    key = (cb.data or "").split(":", 1)[1].strip()[:40]
+    cfg = _loyalty_random_cfg()
+    if not cfg or not key:
+        await cb.answer("Tính năng đang tắt.", show_alert=True)
+        return
+    lo, hi, cap, min_order, daily_max = cfg
+    # Chống cày điểm: kiểm tra lại điều kiện lúc bấm (đơn tối thiểu + lượt/ngày)
+    if min_order > 0 and _order_total_for_randkey(key) < min_order:
+        await cb.answer(
+            f"Đơn này chưa đủ {vnd(min_order)} để nhận điểm ngẫu nhiên.",
+            show_alert=True)
+        return
+    if daily_max > 0 and _loyalty_random_today(tg_id) >= daily_max:
+        await cb.answer(
+            f"Hôm nay bạn đã nhận đủ {daily_max} lượt điểm ngẫu nhiên rồi!",
+            show_alert=True)
+        return
+    import random as _random
+    with db._lock:
+        c = db.get_conn()
+        dup = c.execute("SELECT 1 FROM loyalty_history WHERE tg_id=? AND reason=?",
+                        (tg_id, f"randpts:{key}")).fetchone()
+        r = c.execute("SELECT COALESCE(SUM(delta),0) AS s FROM loyalty_history "
+                      "WHERE tg_id=? AND reason LIKE 'randpts:%'", (tg_id,)).fetchone()
+        try:
+            received = int(r["s"] or 0)
+        except Exception:
+            received = 0
+        if dup:
+            outcome, pts, total = "dup", 0, 0
+        elif received >= cap:
+            outcome, pts, total = "capped", 0, 0
+        else:
+            pts = min(_random.randint(lo, hi), cap - received)
+            total = db.loyalty_add(tg_id, pts, f"randpts:{key}")
+            outcome = "ok"
+    if outcome == "dup":
+        await cb.answer("Đơn này bạn đã nhận điểm rồi!", show_alert=True)
+        return
+    if outcome == "capped":
+        await cb.answer(f"Bạn đã nhận đủ tối đa {cap} điểm ngẫu nhiên!",
+                        show_alert=True)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=_spin_kb())
+    except Exception:
+        pass
+    new_recv = received + pts
+    await cb.answer(f"🎲 Bạn nhận được {pts} điểm ngẫu nhiên! ({new_recv}/{cap})",
+                    show_alert=True)
+    try:
+        await cb.message.answer(
+            f"🎲 <b>ĐIỂM NGẪU NHIÊN</b>\n"
+            f"Chúc mừng! Bạn nhận được <b>{pts}</b> điểm loyalty "
+            f"(đã nhận <b>{new_recv}/{cap}</b> điểm ngẫu nhiên, "
+            f"tổng: <b>{total}</b> điểm) — đủ điểm đổi acc miễn phí bằng /doiqua.",
+            parse_mode="HTML")
+    except Exception:
+        pass
 
 
 async def _do_spin(msg, tg_id: int, tickets: int):
@@ -8711,7 +8958,8 @@ async def on_kho(msg: Message):
     lines += ["", "Đổi giá: <code>/gia &lt;id&gt; &lt;giá&gt;</code>",
               "Đổi giờ BH: <code>/suabh &lt;id&gt; &lt;giờ&gt;</code>",
               "Tặng credits: <code>/creditbonus &lt;id&gt; &lt;số&gt;</code>",
-              "Quà đổi điểm: <code>/quadoi &lt;id&gt;</code>",
+              "Quà đổi điểm: <code>/quadoi &lt;id&gt; [điểm]</code>",
+              "Điểm ngẫu nhiên sau mua: <code>/loyaltyrandom &lt;min&gt; &lt;max&gt; &lt;cap_user&gt;</code>",
               "Giờ vàng: <code>/giovang &lt;id|0&gt; [giờ_bd-giờ_kt] [%]</code>",
               "Hộp mù: <code>/hopmu &lt;id&gt;</code> — giá: <code>/hopmugia &lt;giá|0&gt;</code>",
               "NCC: <code>/themncc</code> / <code>/ncc</code>",
@@ -8923,16 +9171,17 @@ async def on_creditbonus(msg: Message):
 
 @router.message(Command("quadoi"))
 async def on_quadoi(msg: Message):
-    """Admin: chọn loại acc làm quà đổi điểm loyalty. /quadoi <id_loại> | /quadoi 0 để tắt"""
+    """Admin: chọn loại acc làm quà đổi điểm loyalty. /quadoi <id_loại> [số_điểm] | /quadoi 0 để tắt"""
     if not _is_admin(msg.from_user.id):
         return
     parts = (msg.text or "").split()
     if len(parts) < 2:
         cid = db.loyalty_redeem_cat()
         c = db.acc_category_get(cid) if cid else None
+        pts = db.get_setting("loyalty_redeem_points", "10") or "10"
         await msg.answer(
-            f"🎁 Quà đổi điểm hiện tại: <b>{html.escape(c['name']) if c else 'chưa cài'}</b>\n"
-            f"Cú pháp: <code>/quadoi &lt;id_loại&gt;</code> (xem id: /kho)",
+            f"🎁 Quà đổi điểm hiện tại: <b>{html.escape(c['name']) if c else 'chưa cài'}</b> — <b>{html.escape(str(pts))}</b> điểm.\n"
+            f"Cú pháp: <code>/quadoi &lt;id_loại&gt; [số_điểm]</code> (xem id: /kho)",
             parse_mode="HTML")
         return
     try:
@@ -8944,9 +9193,71 @@ async def on_quadoi(msg: Message):
         await msg.answer("❌ Không tìm thấy loại này.")
         return
     db.set_setting("loyalty_redeem_cat", str(cid))
+    pts_txt = ""
+    if len(parts) >= 3:
+        try:
+            pts = int(parts[2])
+            if pts > 0:
+                db.set_setting("loyalty_redeem_points", str(pts))
+                pts_txt = f" — <b>{pts}</b> điểm"
+        except Exception:
+            pass
     c = db.acc_category_get(cid) if cid else None
-    await msg.answer(f"✅ Quà đổi điểm: <b>{html.escape(c['name']) if c else 'đã tắt'}</b>.",
+    await msg.answer(f"✅ Quà đổi điểm: <b>{html.escape(c['name']) if c else 'đã tắt'}</b>{pts_txt}.",
                      parse_mode="HTML")
+
+
+@router.message(Command("loyaltyrandom"))
+async def on_loyaltyrandom(msg: Message):
+    """Admin: cài điểm loyalty ngẫu nhiên sau mua.
+    /loyaltyrandom <min> <max> <cap_user> [min_order] [daily_max] (cap=0 tắt)"""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 4:
+        cfg = _loyalty_random_cfg()
+        if not cfg:
+            cur = "đang tắt"
+        else:
+            cur = (f"{cfg[0]}–{cfg[1]} điểm/lần, tối đa {cfg[2]} điểm/user"
+                   f"{f', đơn ≥ {vnd(cfg[3])}' if cfg[3] > 0 else ''}"
+                   f"{f', tối đa {cfg[4]} lượt/ngày' if cfg[4] > 0 else ''}")
+        await msg.answer(
+            f"🎲 Điểm ngẫu nhiên hiện tại: <b>{html.escape(cur)}</b>\n"
+            f"Cú pháp: <code>/loyaltyrandom &lt;min&gt; &lt;max&gt; &lt;cap_user&gt; "
+            f"[đơn_tối_thiểu] [lượt_tối_đa_ngày]</code>\n"
+            f"<i>cap_user = 0 để tắt tính năng</i>",
+            parse_mode="HTML")
+        return
+    try:
+        lo, hi, cap = int(parts[1]), int(parts[2]), int(parts[3])
+        min_order = int(parts[4]) if len(parts) > 4 else int(
+            db.get_setting("loyalty_random_min_order", "0") or 0)
+        daily_max = int(parts[5]) if len(parts) > 5 else int(
+            db.get_setting("loyalty_random_daily_max", "0") or 0)
+    except Exception:
+        await msg.answer("❌ Các giá trị phải là số.")
+        return
+    if lo <= 0 or hi < lo or cap < 0 or min_order < 0 or daily_max < 0:
+        await msg.answer("❌ Giá trị không hợp lệ (cần 0 < min ≤ max, cap ≥ 0).")
+        return
+    db.set_setting("loyalty_random_min", str(lo))
+    db.set_setting("loyalty_random_max", str(hi))
+    db.set_setting("loyalty_random_cap", str(cap))
+    db.set_setting("loyalty_random_min_order", str(min_order))
+    db.set_setting("loyalty_random_daily_max", str(daily_max))
+    db.admin_audit_add(msg.from_user.id, msg.from_user.full_name, "loyaltyrandom",
+                       f"min={lo} max={hi} cap={cap} min_order={min_order} daily_max={daily_max}")
+    extra = ""
+    if min_order > 0:
+        extra += f", đơn ≥ {vnd(min_order)}"
+    if daily_max > 0:
+        extra += f", tối đa {daily_max} lượt/ngày"
+    await msg.answer(
+        f"✅ Điểm ngẫu nhiên: <b>{lo}–{hi}</b> điểm/lần, tối đa <b>{cap}</b> điểm/user"
+        f"{extra}"
+        + (" (đang tắt)" if cap <= 0 else "") + ".",
+        parse_mode="HTML")
 
 
 @router.message(Command("xoaloai"))
