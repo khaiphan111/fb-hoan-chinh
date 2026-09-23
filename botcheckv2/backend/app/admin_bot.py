@@ -1780,6 +1780,7 @@ async def _show_adm_help(msg: Message):
 
         
         "<b>🛒 SHOP ACC FACEBOOK</b>\n"
+        "💡 <i>Dùng /shopadm để thao tác bằng nút bấm.</i>\n"
         "• <code>/themloai &lt;tên&gt; | &lt;giá&gt; | &lt;giờ_BH&gt; | [mô_tả]</code> — Thêm loại acc mới\n"
         "• <code>/xoaloai &lt;id&gt;</code> — Ẩn loại acc khỏi shop (tên vẫn giữ)\n"
         "• <code>/hienloai &lt;id&gt;</code> — Hiện lại loại acc đã ẩn\n"

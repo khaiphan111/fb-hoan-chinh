@@ -74,6 +74,8 @@ router = Router()
 
 from .admin_bot import register_adm_menu as _register_adm_menu
 _register_adm_menu(router)  # menu nút /adm — đăng ký sớm, trước on_other
+from .shop_menu import register_shop_menu as _register_shop_menu
+_register_shop_menu(router)  # menu nút /shopadm — đăng ký sớm, trước on_other
 from aiogram import BaseMiddleware
 from aiogram.types import Message
 
@@ -202,6 +204,7 @@ ADMIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
         [KeyboardButton(text="/web"), KeyboardButton(text="/adm")],
+        [KeyboardButton(text="/shopadm")],
         [KeyboardButton(text="\U0001f4ca Nhập kho Sheet")],
     ],
     resize_keyboard=True,
@@ -211,6 +214,7 @@ ADMIN_COMMANDS_EXTRA = [
     BotCommand(command="setsheet", description="Cài đặt Google Sheet nhập kho"),
     BotCommand(command="nhapkhosheet", description="Nhập kho từ Google Sheet: /nhapkhosheet <id_loại>"),
     BotCommand(command="adm", description="Bảng lệnh admin"),
+    BotCommand(command="shopadm", description="🛒 Menu shop acc & NCC (nút bấm)"),
     BotCommand(command="kho", description="Xem tồn kho"),
     BotCommand(command="themacc", description="Nhập kho từ file: /themacc <id_loại>"),
 ]
