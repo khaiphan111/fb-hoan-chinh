@@ -37,6 +37,28 @@ app.include_router(miniapp_router)
 
 
 import asyncio
+import time
+
+
+_STARTUP_NOTIFY_STAMP = os.path.expanduser("~/workspace/fb-hoan-chinh/watchdog/last_startup_notify")
+_STARTUP_NOTIFY_MIN_INTERVAL = 3600  # giây: tối đa 1 tin "kết nối thành công" mỗi 60 phút
+
+
+def _startup_notify_allowed() -> bool:
+    """Chống spam tin nhắn 'Bot đã kết nối thành công!' khi backend restart liên tục.
+    Trả về True nếu đã hơn _STARTUP_NOTIFY_MIN_INTERVAL kể từ lần gửi trước."""
+    try:
+        last = float(open(_STARTUP_NOTIFY_STAMP).read().strip())
+        if time.time() - last < _STARTUP_NOTIFY_MIN_INTERVAL:
+            return False
+    except Exception:
+        pass
+    try:
+        with open(_STARTUP_NOTIFY_STAMP, "w") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
+    return True
 
 @app.on_event("startup")
 async def on_startup():
@@ -65,9 +87,9 @@ async def on_startup():
             print(f"DEBUG: manager.start() returned: {tg_ok}", flush=True)
             if tg_ok:
                 started_any = True
-                # Gửi thông báo khởi động thành công đến admin
+                # Gửi thông báo khởi động thành công đến admin (chống spam: tối đa 1 tin/60 phút)
                 admin_tg_id = db.get_setting("admin_tg_id")
-                if admin_tg_id:
+                if admin_tg_id and _startup_notify_allowed():
                     try:
                         await manager.bot.send_message(
                             int(admin_tg_id),
