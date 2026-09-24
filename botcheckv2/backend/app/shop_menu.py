@@ -248,7 +248,10 @@ def _p_loyalty_random():
 
 # ------------------------------------------------------------------ định nghĩa flow
 # kind bước nhập: text | int | price | opt_text | opt_int | opt_price
-#   | pick_cat (chọn ID loại acc bằng nút bấm; vẫn gõ tay được)
+#   | pick_cat (chọn loại acc bằng nút; vẫn gõ tay được)
+#   | pick_cat_all (như pick_cat + hiện cả loại đang ẩn, đánh dấu 🙈)
+#   | pick_cat_opt (như pick_cat + nút "📦 Toàn bộ" = None)
+#   | pick_supplier / pick_supplier_opt (chọn NCC bằng nút; _opt = thêm "không chọn")
 # "run": chạy ngay không cần nhập | "short": {giá_trị: lệnh_chạy_ngay} ở bước 1
 # "confirm": hiện màn hình xác nhận trước khi chạy | "needs_state": handler cần FSMContext
 
@@ -267,8 +270,8 @@ FLOWS = {
     "import_file": {
         "cat": "kho", "handler": "on_themacc", "needs_state": True,
         "steps": [
-            ("📥 <b>NHẬP KHO</b> (bước 1/3)\n\nGửi <b>ID loại acc</b> (xem ở /kho).", "int"),
-            ("📥 <b>NHẬP KHO</b> (bước 2/3)\n\nGửi <b>ID NCC</b> (trống = không chọn).", "opt_int"),
+            ("📥 <b>NHẬP KHO</b> (bước 1/3)\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat"),
+            ("📥 <b>NHẬP KHO</b> (bước 2/3)\n\nChọn <b>NCC</b> bên dưới (hoặc gõ ID, trống = không chọn).", "pick_supplier_opt"),
             ("📥 <b>NHẬP KHO</b> (bước 3/3)\n\nGửi <b>giá vốn</b>/acc (trống = 0).", "opt_price"),
         ],
         "build": lambda v: "/themacc " + str(v[0]) + (f" {v[1]}" if v[1] else "") + (f" {v[2]}" if v[2] else ""),
@@ -277,7 +280,7 @@ FLOWS = {
         "cat": "kho", "handler": "on_nhapkhosheet",
         "steps": [
             ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 1/3)\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat"),
-            ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 2/3)\n\nGửi <b>ID NCC</b> (trống = không chọn).", "opt_int"),
+            ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 2/3)\n\nChọn <b>NCC</b> bên dưới (hoặc gõ ID, trống = không chọn).", "pick_supplier_opt"),
             ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 3/3)\n\nGửi <b>giá vốn</b>/acc (trống = 0).", "opt_price"),
         ],
         "build": lambda v: "/nhapkhosheet " + str(v[0]) + (f" {v[1]}" if v[1] else "") + (f" {v[2]}" if v[2] else ""),
@@ -293,38 +296,38 @@ FLOWS = {
     "view_stock": {"cat": "kho", "handler": "on_kho", "run": "/kho"},
     "export_stock": {
         "cat": "kho", "handler": "on_xuatkho",
-        "steps": [("📤 <b>XUẤT KHO</b>\n\nGửi <b>ID loại</b> (trống = xuất toàn bộ).", "opt_int")],
+        "steps": [("📤 <b>XUẤT KHO</b>\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID, trống = toàn bộ).", "pick_cat_opt")],
         "build": lambda v: "/xuatkho" + (f" {v[0]}" if v[0] is not None else ""),
     },
     "set_cover": {
         "cat": "kho", "handler": "on_anhbia", "needs_state": True,
-        "steps": [("🖼️ <b>ĐẶT ẢNH BÌA</b>\n\nGửi <b>ID loại acc</b>, rồi gửi 1 ảnh ở tin tiếp theo.", "int")],
+        "steps": [("🖼️ <b>ĐẶT ẢNH BÌA</b>\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID), rồi gửi 1 ảnh ở tin tiếp theo.", "pick_cat")],
         "build": lambda v: f"/anhbia {v[0]}",
     },
     "del_cover": {
         "cat": "kho", "handler": "on_anhbia",
-        "steps": [("🗑️ <b>GỠ ẢNH BÌA</b>\n\nGửi <b>ID loại acc</b> cần gỡ ảnh.", "int")],
+        "steps": [("🗑️ <b>GỠ ẢNH BÌA</b>\n\nChọn <b>loại acc</b> cần gỡ ảnh bên dưới (hoặc gõ ID).", "pick_cat")],
         "build": lambda v: f"/anhbia {v[0]} xoa",
     },
     "hide_cat": {
         "cat": "kho", "handler": "on_xoaloai",
-        "steps": [("🙈 <b>ẨN LOẠI KHỎI SHOP</b>\n\nGửi <b>ID loại</b> cần ẩn (tên vẫn giữ trong DB).", "int")],
+        "steps": [("🙈 <b>ẨN LOẠI KHỎI SHOP</b>\n\nChọn <b>loại</b> cần ẩn bên dưới (hoặc gõ ID).", "pick_cat")],
         "build": lambda v: f"/xoaloai {v[0]}",
     },
     "show_cat": {
         "cat": "kho", "handler": "on_hienloai",
-        "steps": [("👁️ <b>HIỆN LẠI LOẠI ĐÃ ẨN</b>\n\nGửi <b>ID loại</b> cần hiện lại.", "int")],
+        "steps": [("👁️ <b>HIỆN LẠI LOẠI ĐÃ ẨN</b>\n\nChọn <b>loại</b> cần hiện lại bên dưới (🙈 = đang ẩn).", "pick_cat_all")],
         "build": lambda v: f"/hienloai {v[0]}",
     },
     "clear_stock": {
         "cat": "kho", "handler": "on_xoakho", "confirm": True,
-        "steps": [("🧹 <b>XÓA KHO</b>\n\nGửi <b>ID loại</b> cần xóa toàn bộ acc CHƯA BÁN.", "int")],
+        "steps": [("🧹 <b>XÓA KHO</b>\n\nChọn <b>loại</b> cần xóa toàn bộ acc CHƯA BÁN (hoặc gõ ID).", "pick_cat_all")],
         "summary": lambda v: f"🧹 <b>XÓA KHO</b>\n\nXóa toàn bộ acc <b>CHƯA BÁN</b> của loại <b>#{v[0]}</b>?\n<i>Không khôi phục được.</i>",
         "build": lambda v: f"/xoakho {v[0]} yes",
     },
     "del_cat": {
         "cat": "kho", "handler": "on_xoahan", "confirm": True,
-        "steps": [("🗑️ <b>XÓA HẲN LOẠI ACC</b>\n\nGửi <b>ID loại</b> cần xóa hẳn.", "int")],
+        "steps": [("🗑️ <b>XÓA HẲN LOẠI ACC</b>\n\nChọn <b>loại</b> cần xóa hẳn bên dưới (hoặc gõ ID).", "pick_cat_all")],
         "summary": lambda v: f"🗑️ <b>XÓA HẲN LOẠI ACC</b>\n\nXóa hẳn loại <b>#{v[0]}</b> khỏi DB?\n<i>Không khôi phục được. Nếu còn acc đã bán, loại sẽ đổi tên + ẩn để giữ lịch sử.</i>",
         "build": lambda v: f"/xoahan {v[0]} yes",
     },
@@ -334,7 +337,7 @@ FLOWS = {
     "set_price": {
         "cat": "price", "handler": "on_gia",
         "steps": [
-            ("💲 <b>ĐỔI GIÁ BÁN</b> (bước 1/2)\n\nGửi <b>ID loại acc</b>.", "int"),
+            ("💲 <b>ĐỔI GIÁ BÁN</b> (bước 1/2)\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat"),
             ("💲 <b>ĐỔI GIÁ BÁN</b> (bước 2/2)\n\nGửi <b>giá mới</b> (VD: 30000).", "price"),
         ],
         "build": lambda v: f"/gia {v[0]} {v[1]}",
@@ -342,7 +345,7 @@ FLOWS = {
     "set_warranty": {
         "cat": "price", "handler": "on_suabh",
         "steps": [
-            ("🛡️ <b>ĐỔI BẢO HÀNH</b> (bước 1/2)\n\nGửi <b>ID loại acc</b>.", "int"),
+            ("🛡️ <b>ĐỔI BẢO HÀNH</b> (bước 1/2)\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat"),
             ("🛡️ <b>ĐỔI BẢO HÀNH</b> (bước 2/2)\n\nGửi <b>bảo hành mới</b>: <code>30p</code> | <code>24h</code> | <code>2 ngày</code> | <code>1 tuần</code>.", "text"),
         ],
         "build": lambda v: f"/suabh {v[0]} {v[1]}",
@@ -350,7 +353,7 @@ FLOWS = {
     "credit_bonus": {
         "cat": "price", "handler": "on_creditbonus",
         "steps": [
-            ("🎁 <b>COMBO TẶNG CREDITS</b> (bước 1/2)\n\nGửi <b>ID loại acc</b>.", "int"),
+            ("🎁 <b>COMBO TẶNG CREDITS</b> (bước 1/2)\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat"),
             ("🎁 <b>COMBO TẶNG CREDITS</b> (bước 2/2)\n\nGửi <b>số credits tặng</b> khi mua acc loại này.", "int"),
         ],
         "build": lambda v: f"/creditbonus {v[0]} {v[1]}",
@@ -391,7 +394,7 @@ FLOWS = {
     },
     "mystery_toggle": {
         "cat": "price", "handler": "on_hopmu",
-        "steps": [("🎲 <b>HỘP MÙ: BẬT/TẮT LOẠI</b>\n\nGửi <b>ID loại acc</b> (bật ↔ tắt).", "int")],
+        "steps": [("🎲 <b>HỘP MÙ: BẬT/TẮT LOẠI</b>\n\nChọn <b>loại acc</b> bên dưới (bật ↔ tắt).", "pick_cat")],
         "build": lambda v: f"/hopmu {v[0]}",
     },
     "mail_app": {
@@ -415,7 +418,7 @@ FLOWS = {
     },
     "profit": {
         "cat": "orders", "handler": "on_lo", "super_only": True,
-        "steps": [("📊 <b>LÃI THEO LÔ</b>\n\nGửi <b>ID loại acc</b>.", "int")],
+        "steps": [("📊 <b>LÃI THEO LÔ</b>\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat")],
         "build": lambda v: f"/lo {v[0]}",
     },
 
@@ -448,7 +451,7 @@ FLOWS = {
     "sup_rate": {
         "cat": "sup", "handler": "on_danhgiancc",
         "steps": [
-            ("⭐ <b>ĐÁNH GIÁ NCC</b> (bước 1/2)\n\nGửi <b>ID NCC</b> (xem ở Sổ NCC).", "int"),
+            ("⭐ <b>ĐÁNH GIÁ NCC</b> (bước 1/2)\n\nChọn <b>NCC</b> bên dưới (hoặc gõ ID).", "pick_supplier"),
             ("⭐ <b>ĐÁNH GIÁ NCC</b> (bước 2/2)\n\nGửi <b>số sao</b> (1-5).", "int"),
         ],
         "build": lambda v: f"/danhgiancc {v[0]} {v[1]}",
@@ -456,7 +459,7 @@ FLOWS = {
     "sup_score": {
         "cat": "sup", "handler": "on_chamdiem",
         "steps": [
-            ("📊 <b>CHẤM TỈ LỆ SỐNG</b> (bước 1/2)\n\nGửi <b>ID NCC</b>.", "int"),
+            ("📊 <b>CHẤM TỈ LỆ SỐNG</b> (bước 1/2)\n\nChọn <b>NCC</b> bên dưới (hoặc gõ ID).", "pick_supplier"),
             ("📊 <b>CHẤM TỈ LỆ SỐNG</b> (bước 2/2)\n\nGửi <b>số ngày</b> quét (trống = 7).", "opt_int"),
         ],
         "build": lambda v: f"/chamdiem {v[0]}" + (f" {v[1]}" if v[1] is not None else ""),
@@ -466,8 +469,8 @@ FLOWS = {
         "short": {"off": "/nccauto off"},
         "steps": [
             (_p_sup_auto, "text"),
-            ("🤖 <b>NHẬP KHO TỰ ĐỘNG</b> (bước 2/3)\n\nGửi <b>ID loại acc</b> sẽ nhập vào.", "int"),
-            ("🤖 <b>NHẬP KHO TỰ ĐỘNG</b> (bước 3/3)\n\nGửi <b>ID NCC</b> (trống = không chọn).", "opt_int"),
+            ("🤖 <b>NHẬP KHO TỰ ĐỘNG</b> (bước 2/3)\n\nChọn <b>loại acc</b> sẽ nhập vào (hoặc gõ ID).", "pick_cat"),
+            ("🤖 <b>NHẬP KHO TỰ ĐỘNG</b> (bước 3/3)\n\nChọn <b>NCC</b> bên dưới (hoặc gõ ID, trống = không chọn).", "pick_supplier_opt"),
         ],
         "build": lambda v: f"/nccauto {v[0]} {v[1]}" + (f" {v[2]}" if v[2] else ""),
     },
@@ -485,12 +488,15 @@ def _parse_step(kind, raw):
             return True, int(t), ""
         except Exception:
             return False, None, "⚠️ Phải là số, gửi lại nhé."
-    if kind == "pick_cat":
-        # Chọn loại acc bằng nút; gõ tay ID vẫn được
+    if kind.startswith("pick_"):
+        # Chọn bằng nút bấm (loại acc / NCC); gõ tay ID vẫn được
+        t = (raw or "").strip()
+        if kind.endswith("_opt") and not t:
+            return True, None, ""
         try:
             return True, int(t), ""
         except Exception:
-            return False, None, "⚠️ Bấm nút chọn loại, hoặc gõ ID loại nhé."
+            return False, None, "⚠️ Bấm nút chọn bên dưới, hoặc gõ ID nhé."
     if kind == "price":
         try:
             return True, int(t.replace(".", "").replace(",", "").replace(" ", "")), ""
@@ -520,14 +526,13 @@ def _render_prompt(step):
     return p() if callable(p) else p
 
 
-def _cat_pick_kb(flow_key: str, step_idx: int, cat: str):
-    """Bàn phím chọn loại acc (theo thứ tự ID) cho bước pick_cat."""
+def _cat_pick_kb(flow_key: str, step_idx: int, cat: str,
+                 include_hidden: bool = False, optional: bool = False):
+    """Bàn phím chọn loại acc (theo thứ tự ID) cho bước pick_cat*."""
     try:
-        cats = db.acc_category_list()
+        cats = db.acc_category_list(include_hidden=include_hidden)
     except Exception:
         cats = []
-    if not cats:
-        return None
     rows = []
     for c in cats:
         try:
@@ -535,9 +540,50 @@ def _cat_pick_kb(flow_key: str, step_idx: int, cat: str):
         except Exception:
             continue
         nm = (c["name"] or "").strip()[:28] or f"Loại {cid}"
+        hid = ""
+        try:
+            hid = " 🙈" if int(c["hidden"] or 0) else ""
+        except Exception:
+            pass
         rows.append([InlineKeyboardButton(
-            text=f"#{cid} {nm}",
+            text=f"#{cid} {nm}{hid}",
             callback_data=f"shopm:pick:{flow_key}:{step_idx}:{cid}")])
+    if not rows and not optional:
+        return None
+    if optional:
+        rows.append([InlineKeyboardButton(
+            text="📦 Toàn bộ",
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:all")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data=f"shopm:back_{cat}")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _sup_pick_kb(flow_key: str, step_idx: int, cat: str,
+                 optional: bool = False):
+    """Bàn phím chọn NCC (theo thứ tự ID) cho bước pick_supplier*."""
+    try:
+        sups = db.supplier_list()
+    except Exception:
+        sups = []
+    rows = []
+    for s in sorted(sups, key=lambda r: int(r["id"] or 0)):
+        try:
+            sid = int(s["id"])
+        except Exception:
+            continue
+        nm = (s["name"] or "").strip()[:28] or f"NCC {sid}"
+        rows.append([InlineKeyboardButton(
+            text=f"#{sid} {nm}",
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{sid}")])
+    if not rows and not optional:
+        return None
+    if optional:
+        rows.append([InlineKeyboardButton(
+            text="➖ Không chọn NCC",
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:none")])
     rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
                                       callback_data=f"shopm:back_{cat}")])
     rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
@@ -546,9 +592,21 @@ def _cat_pick_kb(flow_key: str, step_idx: int, cat: str):
 
 
 def _step_kb(flow, flow_key: str, step_idx: int):
-    """Bàn phím cho bước nhập liệu: nút chọn loại acc nếu là pick_cat."""
-    if flow["steps"][step_idx][1] == "pick_cat":
+    """Bàn phím cho bước nhập liệu: nút chọn loại acc / NCC nếu là pick_*."""
+    kind = flow["steps"][step_idx][1]
+    if kind == "pick_cat":
         return _cat_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
+    if kind == "pick_cat_all":
+        return (_cat_pick_kb(flow_key, step_idx, flow["cat"], include_hidden=True)
+                or _back_kb(flow["cat"]))
+    if kind == "pick_cat_opt":
+        return (_cat_pick_kb(flow_key, step_idx, flow["cat"], optional=True)
+                or _back_kb(flow["cat"]))
+    if kind == "pick_supplier":
+        return _sup_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
+    if kind == "pick_supplier_opt":
+        return (_sup_pick_kb(flow_key, step_idx, flow["cat"], optional=True)
+                or _back_kb(flow["cat"]))
     return _back_kb(flow["cat"])
 
 
@@ -611,17 +669,30 @@ def register_shop_menu(target_router):
             return
         try:
             _, _, flow_key, step_s, cat_s = (cb.data or "").split(":")
-            step_idx, val = int(step_s), int(cat_s)
+            step_idx = int(step_s)
         except Exception:
             await cb.answer()
             return
         data = await state.get_data()
         flow = FLOWS.get(flow_key)
+        kind = (flow["steps"][step_idx][1] if flow
+                and step_idx < len(flow["steps"]) else "")
         if (not flow or data.get("shopm_flow") != flow_key
                 or int(data.get("shopm_step") or 0) != step_idx
-                or flow["steps"][step_idx][1] != "pick_cat"):
+                or not kind.startswith("pick_")):
             await cb.answer("Hết phiên, thử lại.", show_alert=True)
             return
+        if cat_s in ("all", "none"):
+            if not kind.endswith("_opt"):
+                await cb.answer("Hết phiên, thử lại.", show_alert=True)
+                return
+            val = None
+        else:
+            try:
+                val = int(cat_s)
+            except Exception:
+                await cb.answer()
+                return
         if not _perms.has_perm(cb.from_user.id, flow["cat"]):
             await state.clear()
             await cb.answer("🚫 Bạn không có quyền thao tác này.", show_alert=True)
