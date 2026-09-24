@@ -2492,7 +2492,8 @@ _HUONGDAN_TEXTS = {
         "━━━━━━━━━━━━━━━\n"
         "• <b>/nap &lt;số tiền&gt;</b> — nạp tự động (quét QR), chọn ví chính/shop\n"
         "• <b>/napshop &lt;số tiền&gt;</b> — nạp thẳng vào ví shop để mua acc\n"
-        "• <b>/bank &lt;số tiền&gt;</b> — lấy thông tin chuyển khoản tay\n\n"
+        "• <b>/bank &lt;số tiền&gt;</b> — lấy thông tin chuyển khoản tay\n"
+        "• <b>/sodu</b> — xem tất cả số dư: ví chính, ví shop, credits, điểm\n\n"
         "💡 <b>Ví chính</b>: check UID, mua gói/VIP.\n"
         "💡 <b>Ví shop</b>: mua acc, đặt cọc, hộp mù."
     ),
