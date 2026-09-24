@@ -248,6 +248,7 @@ def _p_loyalty_random():
 
 # ------------------------------------------------------------------ định nghĩa flow
 # kind bước nhập: text | int | price | opt_text | opt_int | opt_price
+#   | pick_cat (chọn ID loại acc bằng nút bấm; vẫn gõ tay được)
 # "run": chạy ngay không cần nhập | "short": {giá_trị: lệnh_chạy_ngay} ở bước 1
 # "confirm": hiện màn hình xác nhận trước khi chạy | "needs_state": handler cần FSMContext
 
@@ -275,7 +276,7 @@ FLOWS = {
     "import_sheet": {
         "cat": "kho", "handler": "on_nhapkhosheet",
         "steps": [
-            ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 1/3)\n\nGửi <b>ID loại acc</b> (xem ở /kho).", "int"),
+            ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 1/3)\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat"),
             ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 2/3)\n\nGửi <b>ID NCC</b> (trống = không chọn).", "opt_int"),
             ("📊 <b>NHẬP KHO TỪ SHEET</b> (bước 3/3)\n\nGửi <b>giá vốn</b>/acc (trống = 0).", "opt_price"),
         ],
@@ -484,6 +485,12 @@ def _parse_step(kind, raw):
             return True, int(t), ""
         except Exception:
             return False, None, "⚠️ Phải là số, gửi lại nhé."
+    if kind == "pick_cat":
+        # Chọn loại acc bằng nút; gõ tay ID vẫn được
+        try:
+            return True, int(t), ""
+        except Exception:
+            return False, None, "⚠️ Bấm nút chọn loại, hoặc gõ ID loại nhé."
     if kind == "price":
         try:
             return True, int(t.replace(".", "").replace(",", "").replace(" ", "")), ""
@@ -511,6 +518,38 @@ def _parse_step(kind, raw):
 def _render_prompt(step):
     p = step[0]
     return p() if callable(p) else p
+
+
+def _cat_pick_kb(flow_key: str, step_idx: int, cat: str):
+    """Bàn phím chọn loại acc (theo thứ tự ID) cho bước pick_cat."""
+    try:
+        cats = db.acc_category_list()
+    except Exception:
+        cats = []
+    if not cats:
+        return None
+    rows = []
+    for c in cats:
+        try:
+            cid = int(c["id"])
+        except Exception:
+            continue
+        nm = (c["name"] or "").strip()[:28] or f"Loại {cid}"
+        rows.append([InlineKeyboardButton(
+            text=f"#{cid} {nm}",
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{cid}")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data=f"shopm:back_{cat}")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _step_kb(flow, flow_key: str, step_idx: int):
+    """Bàn phím cho bước nhập liệu: nút chọn loại acc nếu là pick_cat."""
+    if flow["steps"][step_idx][1] == "pick_cat":
+        return _cat_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
+    return _back_kb(flow["cat"])
 
 
 async def _exec_handler(shim, state, flow):
@@ -563,6 +602,50 @@ def register_shop_menu(target_router):
         await msg.answer(_main_text(), parse_mode="HTML",
                          reply_markup=_main_kb(msg.from_user.id))
 
+    @target_router.callback_query(F.data.startswith("shopm:pick:"))
+    async def _on_shopm_pick(cb: CallbackQuery, state: FSMContext):
+        # Bấm nút chọn loại acc ở bước pick_cat (thay cho gõ ID).
+        # Đăng ký TRƯỚC handler "shopm:" để không bị nuốt callback.
+        if not _is_admin_sync(cb.from_user.id):
+            await cb.answer("🚫 Không có quyền.", show_alert=True)
+            return
+        try:
+            _, _, flow_key, step_s, cat_s = (cb.data or "").split(":")
+            step_idx, val = int(step_s), int(cat_s)
+        except Exception:
+            await cb.answer()
+            return
+        data = await state.get_data()
+        flow = FLOWS.get(flow_key)
+        if (not flow or data.get("shopm_flow") != flow_key
+                or int(data.get("shopm_step") or 0) != step_idx
+                or flow["steps"][step_idx][1] != "pick_cat"):
+            await cb.answer("Hết phiên, thử lại.", show_alert=True)
+            return
+        if not _perms.has_perm(cb.from_user.id, flow["cat"]):
+            await state.clear()
+            await cb.answer("🚫 Bạn không có quyền thao tác này.", show_alert=True)
+            return
+        vals = (data.get("shopm_vals") or []) + [val]
+        if step_idx + 1 < len(flow["steps"]):
+            await state.update_data(shopm_step=step_idx + 1, shopm_vals=vals)
+            prompt = _render_prompt(flow["steps"][step_idx + 1])
+            await cb.message.edit_text(
+                prompt + "\n\nGõ /huy để huỷ.", parse_mode="HTML",
+                reply_markup=_step_kb(flow, flow_key, step_idx + 1))
+            await cb.answer()
+            return
+        cmd_text = flow["build"](vals)
+        if flow.get("confirm"):
+            await state.update_data(shopm_cmd=cmd_text)
+            await state.set_state(ShopMenuState.confirm)
+            await cb.message.edit_text(
+                flow["summary"](vals) + "\n\nXác nhận thực hiện?",
+                parse_mode="HTML", reply_markup=_confirm_kb())
+            await cb.answer()
+            return
+        await _exec_via_cb(cb, state, flow, cmd_text)
+
     @target_router.callback_query(F.data.startswith("shopm:"))
     async def _on_shopm_cb(cb: CallbackQuery, state: FSMContext):
         if not _is_admin_sync(cb.from_user.id):
@@ -614,7 +697,7 @@ def register_shop_menu(target_router):
             await state.set_state(ShopMenuState.input)
             prompt = _render_prompt(flow["steps"][0])
             await cb.message.edit_text(prompt + "\n\nGõ /huy để huỷ.", parse_mode="HTML",
-                                       reply_markup=_back_kb(flow["cat"]))
+                                       reply_markup=_step_kb(flow, action[3:], 0))
             await cb.answer()
             return
 
@@ -658,7 +741,8 @@ def register_shop_menu(target_router):
         if step_idx + 1 < len(flow["steps"]):
             await state.update_data(shopm_step=step_idx + 1, shopm_vals=vals)
             prompt = _render_prompt(flow["steps"][step_idx + 1])
-            await msg.answer(prompt + "\n\nGõ /huy để huỷ.", parse_mode="HTML")
+            await msg.answer(prompt + "\n\nGõ /huy để huỷ.", parse_mode="HTML",
+                             reply_markup=_step_kb(flow, data.get("shopm_flow") or "", step_idx + 1))
             return
         cmd_text = flow["build"](vals)
         if flow.get("confirm"):
@@ -692,3 +776,5 @@ def register_shop_menu(target_router):
             await cb.answer("🚫 Bạn không có quyền thao tác này.", show_alert=True)
             return
         await _exec_via_cb(cb, state, flow, cmd)
+
+
