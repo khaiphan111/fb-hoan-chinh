@@ -226,7 +226,7 @@ MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
-        [KeyboardButton(text="/web")],
+        [KeyboardButton(text="/web"), KeyboardButton(text="/huongdan")],
     ],
     resize_keyboard=True,
 )
@@ -239,7 +239,7 @@ ADMIN_MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
-        [KeyboardButton(text="/web"), KeyboardButton(text="/adm")],
+        [KeyboardButton(text="/web"), KeyboardButton(text="/adm"), KeyboardButton(text="/huongdan")],
         [KeyboardButton(text="/shopadm")],
         [KeyboardButton(text="\U0001f4ca Nhập kho Sheet")],
     ],
