@@ -107,6 +107,9 @@ GROUPS = {
         ("add_stall", "🏪 Thêm gian hàng mới"),
         ("import_file", "📥 Nhập kho (gửi file)"),
         ("import_sheet", "📊 Nhập kho từ Sheet"),
+        ("update_file", "🔄 Cập nhật kho (gửi file)"),
+        ("update_sheet", "🔄 Cập nhật từ Sheet"),
+        ("edit_acc", "✏️ Sửa thông tin 1 acc"),
         ("auto_import", "⏰ Nhập kho tự động"),
         ("set_sheet", "🔗 Cài đặt Sheet"),
         ("view_stock", "📦 Xem tồn kho"),
@@ -353,6 +356,17 @@ FLOWS = {
         ],
         "build": lambda v: "/nhapkhosheet " + str(v[0]) + (f" {v[1]}" if v[1] else "") + (f" {v[2]}" if v[2] else ""),
     },
+    "update_file": {
+        "cat": "kho", "handler": "on_capnhatacc", "needs_state": True,
+        "steps": [("🔄 <b>CẬP NHẬT KHO TỪ FILE</b>\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat")],
+        "build": lambda v: f"/capnhatacc {v[0]}",
+    },
+    "update_sheet": {
+        "cat": "kho", "handler": "on_capnhatsheet",
+        "steps": [("🔄 <b>CẬP NHẬT TỪ SHEET</b>\n\nChọn <b>loại acc</b> bên dưới (hoặc gõ ID).", "pick_cat")],
+        "build": lambda v: f"/capnhatsheet {v[0]}",
+    },
+    "edit_acc": {"cat": "kho", "handler": "on_suaacc", "run": "/suaacc"},
     "set_sheet": {
         "cat": "kho", "handler": "on_setsheet",
         "steps": [

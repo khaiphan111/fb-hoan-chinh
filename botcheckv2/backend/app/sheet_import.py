@@ -117,6 +117,24 @@ async def read_unmarked(spreadsheet_id: str, tab: str):
     return out
 
 
+async def read_marked(spreadsheet_id: str, tab: str):
+    """Đọc các dòng ĐÃ có đánh dấu ở cột I (đã nhập kho trước đó).
+    Trả về [(số_dòng_sheet, [A..H])]. Dùng cho cập nhật thông tin từ Sheet."""
+    d = await _cli(["sheets", "spreadsheets", "values", "get", "--params",
+                    json.dumps({"spreadsheetId": spreadsheet_id, "range": f"{tab}!A2:I"})])
+    out = []
+    for i, vals in enumerate(d.get("values") or []):
+        cells = [str(v or "").strip() for v in vals]
+        while len(cells) < 9:
+            cells.append("")
+        if not cells[8]:
+            continue  # chưa đánh dấu -> dòng mới, không thuộc phạm vi cập nhật
+        if not any(cells[:8]):
+            continue  # dòng trống
+        out.append((i + 2, cells[:8]))
+    return out
+
+
 def _col_name(n: int) -> str:
     s = ""
     while n:

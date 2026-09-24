@@ -253,6 +253,9 @@ ADMIN_COMMANDS_EXTRA = [
     BotCommand(command="shopadm", description="🛒 Menu shop acc & NCC (nút bấm)"),
     BotCommand(command="kho", description="Xem tồn kho"),
     BotCommand(command="themacc", description="Nhập kho từ file: /themacc <id_loại>"),
+    BotCommand(command="capnhatacc", description="Cập nhật T.tin acc từ file: /capnhatacc <id_loại>"),
+    BotCommand(command="capnhatsheet", description="Cập nhật T.tin acc từ Sheet: /capnhatsheet <id_loại>"),
+    BotCommand(command="suaacc", description="Sửa thông tin 1 acc: /suaacc [id_loại] [uid]"),
 ]
 
 
@@ -6811,9 +6814,12 @@ def _is_cancel(text: str) -> bool:
 # ============================ SHOP ACC FB ============================
 class AccShopState(StatesGroup):
     waiting_for_stock_file = State()
+    waiting_for_update_file = State()
     waiting_for_cover = State()
     waiting_for_review_comment = State()
     waiting_for_custom_qty = State()
+    waiting_for_edit_uid = State()
+    waiting_for_edit_value = State()
 
 
 def _purchase_alert_text(buyer, orders: list) -> str:
@@ -9148,21 +9154,15 @@ def _smart_stock_fields(fields: list) -> dict:
 
 
 
-async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx=None):
-    """Pipeline nhập kho dùng chung cho /themacc (file) và /nhapkhosheet (Google Sheet).
-    rows: list dict {uid,password,created_date,backup_mail,note,totp,cookie,token}.
-    sheet_ctx: None hoặc {"sheet_id","tab"} — ghi trạng thái ngược vào sheet."""
-    # Cột mk trống -> dùng mặc định "khai2006" (các cột khác giữ đúng vị trí)
-    for r in rows:
-        if not (r.get("password") or "").strip():
-            r["password"] = "khai2006"
-    # Tự giải link FB ở cột đầu -> UID số (nếu file ghi link thay vì UID)
+async def _resolve_stock_links(rows, wait, action_text="nhập kho"):
+    """Giải link FB ở cột đầu -> UID số (dùng chung cho nhập kho và cập nhật).
+    Trả (resolved, failed, failed_lines, uid_to_link)."""
     link_idx = [i for i, r in enumerate(rows)
                 if re.search(r'facebook\.com|fb\.com|fb\.watch|^https?://', (r.get("uid") or ""), re.I)]
     resolved = failed = 0
     failed_lines = []
     if link_idx:
-        await wait.edit_text(f"⏳ Đang nhập kho... 🔗 Giải {len(link_idx)} link FB → UID...")
+        await wait.edit_text(f"⏳ Đang {action_text}... 🔗 Giải {len(link_idx)} link FB → UID...")
         from .fb import resolve_fb_uid
         _cache = {}
         _sem = asyncio.Semaphore(4)
@@ -9219,6 +9219,18 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
     for i in link_idx:
         if rows[i]["uid"] and str(rows[i]["uid"]).isdigit():
             uid_to_link[rows[i]["uid"]] = (rows[i].get("_orig_link") or "")
+    return resolved, failed, failed_lines, uid_to_link
+
+
+async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx=None):
+    """Pipeline nhập kho dùng chung cho /themacc (file) và /nhapkhosheet (Google Sheet).
+    rows: list dict {uid,password,created_date,backup_mail,note,totp,cookie,token}.
+    sheet_ctx: None hoặc {"sheet_id","tab"} — ghi trạng thái ngược vào sheet."""
+    # Cột mk trống -> dùng mặc định "khai2006" (các cột khác giữ đúng vị trí)
+    for r in rows:
+        if not (r.get("password") or "").strip():
+            r["password"] = "khai2006"
+    resolved, failed, failed_lines, uid_to_link = await _resolve_stock_links(rows, wait)
     # Chống trùng: bỏ dòng trùng trong file và UID đang còn trong kho
     # (chỉ tính acc AVAILABLE/DIE; acc đã bán SOLD được nhập lại bình thường)
     _seen = set()
@@ -9372,43 +9384,23 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
                 log.warning("fulfill deposits: %s", e)
     asyncio.create_task(_scan(int(now()) - 600))
 
-@router.message(AccShopState.waiting_for_stock_file, F.document)
-async def on_stock_file(msg: Message, state: FSMContext):
-    if not _is_admin(msg.from_user.id):
-        await state.clear()
-        return
-    data = await state.get_data()
-    await state.clear()
-    cat_id = data.get("acc_cat_id")
-    ncc_id = int(data.get("acc_ncc_id") or 0)
-    cost = int(data.get("acc_cost") or 0)
-    c = db.acc_category_get(cat_id)
-    if not c:
-        await msg.answer("❌ Loại acc không tồn tại.")
-        return
-    doc = msg.document
-    file_name = (doc.file_name or "").lower()
-    if not (file_name.endswith(".txt") or file_name.endswith(".xlsx")):
-        await msg.answer("❌ Chỉ nhận file .txt hoặc .xlsx.")
-        return
-    wait = await msg.answer("⏳ Đang nhập kho...")
-    try:
-        file_info = await msg.bot.get_file(doc.file_id)
-        raw = await msg.bot.download_file(file_info.file_path)
-    except Exception as e:
-        await wait.edit_text(f"❌ Không đọc được file: {e}")
-        return
+def _parse_stock_file(raw: bytes, file_name: str):
+    """Đọc file .txt/.xlsx chứa acc → (rows, err).
+    rows: list dict {uid,password,created_date,backup_mail,note,totp,cookie,token}.
+    err: chuỗi lỗi hoặc None."""
+    fn = (file_name or "").lower()
+    if not (fn.endswith(".txt") or fn.endswith(".xlsx")):
+        return None, "❌ Chỉ nhận file .txt hoặc .xlsx."
     rows = []
-    if file_name.endswith(".xlsx"):
+    if fn.endswith(".xlsx"):
         # .xlsx: 8 cột đầu = uid/link|mk|ngày tạo|mail thay|ghi chú|2fa|cookie|token
         from openpyxl import load_workbook
         import io as _io
         try:
-            wb = load_workbook(_io.BytesIO(raw.getvalue()), read_only=True, data_only=True)
+            wb = load_workbook(_io.BytesIO(raw), read_only=True, data_only=True)
             ws = wb.active
         except Exception as e:
-            await wait.edit_text(f"❌ Không đọc được file Excel: {e}")
-            return
+            return None, f"❌ Không đọc được file Excel: {e}"
         first_row = True
         for vals in ws.iter_rows(values_only=True):
             cells = [(str(c).strip() if c is not None else "") for c in vals[:8]]
@@ -9428,7 +9420,7 @@ async def on_stock_file(msg: Message, state: FSMContext):
                 "cookie": cells[6], "token": cells[7],
             })
     else:
-        text = raw.getvalue().decode("utf-8", errors="ignore")
+        text = raw.decode("utf-8", errors="ignore")
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
@@ -9436,9 +9428,162 @@ async def on_stock_file(msg: Message, state: FSMContext):
             p = [x.strip() for x in line.split("|")]
             rows.append(_smart_stock_fields(p))
     if not rows:
-        await wait.edit_text("❌ File không có dòng acc nào hợp lệ.")
+        return None, "❌ File không có dòng acc nào hợp lệ."
+    return rows, None
+
+
+@router.message(AccShopState.waiting_for_stock_file, F.document)
+async def on_stock_file(msg: Message, state: FSMContext):
+    if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    await state.clear()
+    cat_id = data.get("acc_cat_id")
+    ncc_id = int(data.get("acc_ncc_id") or 0)
+    cost = int(data.get("acc_cost") or 0)
+    c = db.acc_category_get(cat_id)
+    if not c:
+        await msg.answer("❌ Loại acc không tồn tại.")
+        return
+    doc = msg.document
+    wait = await msg.answer("⏳ Đang nhập kho...")
+    try:
+        file_info = await msg.bot.get_file(doc.file_id)
+        raw = await msg.bot.download_file(file_info.file_path)
+    except Exception as e:
+        await wait.edit_text(f"❌ Không đọc được file: {e}")
+        return
+    rows, err = _parse_stock_file(raw.getvalue(), doc.file_name or "")
+    if err:
+        await wait.edit_text(err)
         return
     await _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait)
+
+
+# ================== CẬP NHẬT THÔNG TIN ACC (3 cách) ==================
+async def _update_stock_rows(rows, cat_id, c, msg, wait, source="file"):
+    """Cập nhật thông tin các acc ĐÃ CÓ trong kho theo UID (không nhập mới).
+
+    Ô trống trong dữ liệu mới = giữ nguyên giá trị cũ. Chỉ đụng acc còn hàng
+    (AVAILABLE/DIE); acc đã bán (SOLD) giữ nguyên làm lịch sử.
+    Trả về text báo cáo (đã tự edit vào wait)."""
+    _resolved, _failed, failed_lines, _ = await _resolve_stock_links(rows, wait, "cập nhật")
+    updated = unchanged = notfound = 0
+    changed_total = 0
+    notfound_uids, detail_lines = [], []
+    for r in rows:
+        uid = (r.get("uid") or "").strip()
+        if not uid:
+            continue
+        old = db.acc_stock_find(cat_id, uid)
+        if not old:
+            notfound += 1
+            if len(notfound_uids) < 15:
+                notfound_uids.append(uid)
+            continue
+        new_vals = {}
+        for f in db.STOCK_EDITABLE_FIELDS:
+            v = (r.get(f) or "").strip()
+            if v:  # ô trống = giữ nguyên
+                new_vals[f] = v
+        n = db.acc_stock_update_fields(old["id"], new_vals)
+        if n:
+            updated += 1
+            changed_total += n
+            if len(detail_lines) < 15:
+                labels = [db.STOCK_FIELD_LABELS.get(k, k) for k in new_vals
+                          if (old.get(k) or "") != new_vals[k]]
+                detail_lines.append(
+                    f"• <code>{html.escape(uid)}</code>: {html.escape(', '.join(labels))}")
+        else:
+            unchanged += 1
+    try:
+        u = msg.from_user
+        db.admin_audit_add(u.id, getattr(u, "full_name", ""),
+                           "cap_nhat_acc",
+                           f"{source} cat#{cat_id}: +{updated} acc/{changed_total} trường, "
+                           f"không đổi {unchanged}, lạ {notfound}")
+    except Exception:
+        pass
+    lines = [
+        f"🔄 <b>CẬP NHẬT XONG:</b> {html.escape(c['name'])}",
+        f"✅ Đã cập nhật: <b>{updated}</b> acc ({changed_total} trường thay đổi)",
+        f"⏭ Không thay đổi: <b>{unchanged}</b> acc",
+        f"❓ UID không có trong kho: <b>{notfound}</b>" + (" (không tự nhập mới)" if notfound else ""),
+    ]
+    if detail_lines:
+        lines += ["", "<b>Chi tiết:</b>"] + detail_lines
+        if updated > len(detail_lines):
+            lines.append(f"<i>... và {updated - len(detail_lines)} acc nữa</i>")
+    if notfound_uids:
+        lines += ["", "UID lạ: " + ", ".join(f"<code>{html.escape(x)}</code>" for x in notfound_uids)]
+        if notfound > len(notfound_uids):
+            lines.append(f"<i>... và {notfound - len(notfound_uids)} UID nữa</i>")
+    if failed_lines:
+        lines += ["", "⚠️ Link không giải được UID:"] + [html.escape(x) for x in failed_lines[:10]]
+    await wait.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("capnhatacc"))
+async def on_capnhatacc(msg: Message, state: FSMContext):
+    """Cập nhật thông tin acc từ file: /capnhatacc <id_loại> rồi gửi file .txt/.xlsx.
+    Đối chiếu theo UID — UID có trong kho thì update, UID lạ thì báo (không nhập mới)."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/capnhatacc &lt;id_loại&gt;</code> (xem id: /kho)",
+                         parse_mode="HTML")
+        return
+    try:
+        cat_id = int(parts[1])
+    except Exception:
+        await msg.answer("❌ ID loại phải là số.")
+        return
+    c = db.acc_category_get(cat_id)
+    if not c:
+        await msg.answer("❌ Không có loại acc này. Xem: /kho")
+        return
+    await state.update_data(acc_cat_id=cat_id)
+    await state.set_state(AccShopState.waiting_for_update_file)
+    await msg.answer(
+        f"🔄 <b>CẬP NHẬT KHO:</b> {html.escape(c['name'])}\n\n"
+        f"Gửi file <b>.txt</b> hoặc <b>.xlsx</b> (cùng format như file nhập kho):\n"
+        f"<code>uid|mk|ngày tạo|mail thay|ghi chú|2fa|cookie|token</code>\n\n"
+        f"• UID <b>có trong kho</b> → cập nhật các ô có giá trị\n"
+        f"• Ô <b>trống</b> → giữ nguyên giá trị cũ\n"
+        f"• UID <b>lạ</b> → báo danh sách, <b>không</b> tự nhập mới\n"
+        f"• Acc đã bán → không đụng",
+        parse_mode="HTML",
+    )
+
+
+@router.message(AccShopState.waiting_for_update_file, F.document)
+async def on_update_file(msg: Message, state: FSMContext):
+    if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    await state.clear()
+    cat_id = data.get("acc_cat_id")
+    c = db.acc_category_get(cat_id)
+    if not c:
+        await msg.answer("❌ Loại acc không tồn tại.")
+        return
+    doc = msg.document
+    wait = await msg.answer("⏳ Đang cập nhật...")
+    try:
+        file_info = await msg.bot.get_file(doc.file_id)
+        raw = await msg.bot.download_file(file_info.file_path)
+    except Exception as e:
+        await wait.edit_text(f"❌ Không đọc được file: {e}")
+        return
+    rows, err = _parse_stock_file(raw.getvalue(), doc.file_name or "")
+    if err:
+        await wait.edit_text(err)
+        return
+    await _update_stock_rows(rows, cat_id, c, msg, wait, source="file")
 
 
 
@@ -9494,6 +9639,311 @@ async def on_nhapkhosheet(msg: Message):
     await _run_sheet_import(msg, cat_id, ncc_id, cost)
 
 
+async def _run_sheet_update(msg, cat_id: int):
+    """Cập nhật thông tin acc từ Google Sheet (dùng chung cho /capnhatsheet và nút bấm).
+
+    Đọc các dòng ĐÃ đánh dấu (đã nhập kho trước đó), đối chiếu theo UID trong
+    từng loại, cập nhật ô nào khác — ô trống trên Sheet = giữ nguyên."""
+    c = db.acc_category_get(cat_id)
+    if not c:
+        await msg.answer("❌ Không có loại acc này. Xem: /kho")
+        return
+    sid = db.get_setting("sheet_import_id") or ""
+    default_tab = db.get_setting("sheet_import_tab") or "NhapKho"
+    if not sid:
+        await msg.answer("📊 Chưa cài đặt sheet nhập kho. Dùng: <code>/setsheet &lt;link&gt;</code>",
+                         parse_mode="HTML")
+        return
+    from . import sheet_import as _si
+    try:
+        stall = (c["stall"] if "stall" in c.keys() else "") or "Acc Facebook"
+    except Exception:
+        stall = "Acc Facebook"
+    tab = _si.tab_for_stall(stall, default_tab)
+    wait = await msg.answer("⏳ Đang đọc Google Sheet...")
+    try:
+        sheet_rows = await _si.read_marked(sid, tab)
+    except Exception as e:
+        await wait.edit_text(f"❌ Không đọc được sheet: {html.escape(str(e)[:200])}")
+        return
+    if not sheet_rows:
+        await wait.edit_text("📭 Sheet không có dòng nào đã nhập kho.\n"
+                             "<i>Sửa thông tin trực tiếp trên Sheet rồi chạy lại lệnh này.</i>",
+                             parse_mode="HTML")
+        return
+    await wait.edit_text(f"⏳ Đọc được <b>{len(sheet_rows)}</b> dòng đã nhập — đang so sánh với kho...",
+                         parse_mode="HTML")
+    keys = ["password", "created_date", "backup_mail", "note", "totp", "cookie", "token"]
+    updated = unchanged = skipped = 0
+    changed_total = 0
+    detail_lines, skip_lines = [], []
+    for rnum, cells in sheet_rows:
+        uid = (cells[0] or "").strip()
+        if not uid:
+            skipped += 1
+            continue
+        old = db.acc_stock_find(cat_id, uid)
+        if not old:
+            # Dòng TRÙNG/LỖI hoặc của loại khác trong cùng tab -> bỏ qua
+            skipped += 1
+            continue
+        new_vals = {}
+        for k, v in zip(keys, cells[1:8]):
+            v = (v or "").strip()
+            if v:  # ô trống = giữ nguyên
+                new_vals[k] = v
+        n = db.acc_stock_update_fields(old["id"], new_vals)
+        if n:
+            updated += 1
+            changed_total += n
+            if len(detail_lines) < 15:
+                labels = [db.STOCK_FIELD_LABELS.get(k, k) for k in new_vals
+                          if (old.get(k) or "") != new_vals[k]]
+                detail_lines.append(
+                    f"• dòng {rnum} <code>{html.escape(uid)}</code>: {html.escape(', '.join(labels))}")
+        else:
+            unchanged += 1
+    try:
+        u = msg.from_user
+        db.admin_audit_add(u.id, getattr(u, "full_name", ""),
+                           "cap_nhat_sheet",
+                           f"cat#{cat_id}: +{updated} acc/{changed_total} trường, "
+                           f"không đổi {unchanged}, bỏ qua {skipped}")
+    except Exception:
+        pass
+    lines = [
+        f"🔄 <b>CẬP NHẬT TỪ SHEET XONG:</b> {html.escape(c['name'])}",
+        f"✅ Đã cập nhật: <b>{updated}</b> acc ({changed_total} trường thay đổi)",
+        f"⏭ Không thay đổi: <b>{unchanged}</b> acc",
+        f"⏭ Bỏ qua: <b>{skipped}</b> dòng (không khớp kho / đã bán)",
+    ]
+    if detail_lines:
+        lines += ["", "<b>Chi tiết:</b>"] + detail_lines
+        if updated > len(detail_lines):
+            lines.append(f"<i>... và {updated - len(detail_lines)} acc nữa</i>")
+    await wait.edit_text("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("capnhatsheet"))
+async def on_capnhatsheet(msg: Message):
+    """Cập nhật thông tin acc từ Google Sheet: /capnhatsheet <id_loại>.
+    Sửa trực tiếp trên Sheet trước, bot sẽ đối chiếu theo UID và update ô khác."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/capnhatsheet &lt;id_loại&gt;</code> (xem id: /kho)",
+                         parse_mode="HTML")
+        return
+    try:
+        cat_id = int(parts[1])
+    except Exception:
+        await msg.answer("❌ ID loại phải là số.")
+        return
+    await _run_sheet_update(msg, cat_id)
+
+
+def _mask_stock_val(v: str, keep: int = 6) -> str:
+    """Che bớt giá trị nhạy cảm khi hiển thị (cookie/token dài)."""
+    v = v or ""
+    if len(v) <= keep + 3:
+        return v
+    return v[:keep] + "..."
+
+
+def _suaacc_cat_kb():
+    cats = db.acc_category_list(active_only=False, include_hidden=True)
+    rows = []
+    for i in range(0, len(cats), 2):
+        row = [InlineKeyboardButton(text=f"#{cats[i]['id']} {cats[i]['name']}",
+                                    callback_data=f"suaacc:cat:{cats[i]['id']}")]
+        if i + 1 < len(cats):
+            row.append(InlineKeyboardButton(text=f"#{cats[i+1]['id']} {cats[i+1]['name']}",
+                                            callback_data=f"suaacc:cat:{cats[i+1]['id']}"))
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _suaacc_field_kb(stock_id: int):
+    rows = []
+    fields = list(db.STOCK_EDITABLE_FIELDS)
+    for i in range(0, len(fields), 2):
+        row = [InlineKeyboardButton(
+            text=f"✏️ {db.STOCK_FIELD_LABELS[fields[i]]}",
+            callback_data=f"suaacc:field:{stock_id}:{fields[i]}")]
+        if i + 1 < len(fields):
+            row.append(InlineKeyboardButton(
+                text=f"✏️ {db.STOCK_FIELD_LABELS[fields[i+1]]}",
+                callback_data=f"suaacc:field:{stock_id}:{fields[i+1]}"))
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _suaacc_show_fields(target, cat_id: int, uid: str):
+    """Hiện thông tin acc + nút chọn trường cần sửa. target: Message hoặc (bot, chat_id)."""
+    old = db.acc_stock_find(cat_id, uid)
+    if not old:
+        text = (f"❌ Không tìm thấy acc còn hàng với UID <code>{html.escape(uid)}</code> "
+                f"trong loại #{cat_id}.\n<i>Có thể acc đã bán, hoặc bạn nhập sai UID.</i>")
+        if isinstance(target, Message):
+            await target.answer(text, parse_mode="HTML")
+        else:
+            bot, chat_id = target
+            await bot.send_message(chat_id, text, parse_mode="HTML")
+        return
+    c = db.acc_category_get(cat_id) or {}
+    lines = [f"✏️ <b>SỬA ACC</b> — {html.escape(c.get('name', ''))}",
+             f"👤 UID: <code>{html.escape(old['uid'])}</code>",
+             f"📦 Trạng thái: <b>{old['status']}</b>", ""]
+    for f in db.STOCK_EDITABLE_FIELDS:
+        v = _mask_stock_val(old.get(f) or "")
+        lines.append(f"• {db.STOCK_FIELD_LABELS[f]}: <code>{html.escape(v) or '—'}</code>")
+    lines += ["", "Chọn <b>trường</b> cần sửa bên dưới:"]
+    kb = _suaacc_field_kb(old["id"])
+    if isinstance(target, Message):
+        await target.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    else:
+        bot, chat_id = target
+        await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+@router.message(Command("suaacc"))
+async def on_suaacc(msg: Message, state: FSMContext):
+    """Sửa thông tin 1 acc: /suaacc [id_loại] [uid] — chọn trường bằng nút bấm."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) >= 3:
+        try:
+            cat_id = int(parts[1])
+        except Exception:
+            await msg.answer("❌ ID loại phải là số.")
+            return
+        await state.clear()
+        await _suaacc_show_fields(msg, cat_id, parts[2])
+        return
+    if len(parts) == 2:
+        try:
+            cat_id = int(parts[1])
+        except Exception:
+            await msg.answer("❌ ID loại phải là số.")
+            return
+        if not db.acc_category_get(cat_id):
+            await msg.answer("❌ Không có loại acc này. Xem: /kho")
+            return
+        await state.update_data(suaacc_cat_id=cat_id)
+        await state.set_state(AccShopState.waiting_for_edit_uid)
+        await msg.answer(f"✏️ <b>SỬA ACC</b> loại #{cat_id}\n\nGửi <b>UID</b> của acc cần sửa:",
+                         parse_mode="HTML")
+        return
+    await state.clear()
+    await msg.answer("✏️ <b>SỬA THÔNG TIN ACC</b>\n\nChọn <b>loại acc</b> bên dưới:",
+                     parse_mode="HTML", reply_markup=_suaacc_cat_kb())
+
+
+@router.callback_query(F.data.startswith("suaacc:cat:"))
+async def on_suaacc_pick_cat(cb: CallbackQuery, state: FSMContext):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    try:
+        cat_id = int(cb.data.split(":")[2])
+    except Exception:
+        await cb.answer("❌ Loại không hợp lệ.", show_alert=True)
+        return
+    if not db.acc_category_get(cat_id):
+        await cb.answer("❌ Không có loại acc này.", show_alert=True)
+        return
+    await state.update_data(suaacc_cat_id=cat_id)
+    await state.set_state(AccShopState.waiting_for_edit_uid)
+    await cb.message.answer(f"✏️ <b>SỬA ACC</b> loại #{cat_id}\n\nGửi <b>UID</b> của acc cần sửa:",
+                            parse_mode="HTML")
+    await cb.answer()
+
+
+@router.message(AccShopState.waiting_for_edit_uid, F.text)
+async def on_suaacc_uid(msg: Message, state: FSMContext):
+    if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    await state.clear()
+    cat_id = data.get("suaacc_cat_id")
+    uid = (msg.text or "").strip()
+    if not cat_id or not uid:
+        await msg.answer("❌ Thiếu thông tin. Thử lại: /suaacc")
+        return
+    await _suaacc_show_fields(msg, cat_id, uid)
+
+
+@router.callback_query(F.data.startswith("suaacc:field:"))
+async def on_suaacc_pick_field(cb: CallbackQuery, state: FSMContext):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer()
+        return
+    try:
+        _, _, stock_id, field = cb.data.split(":", 3)
+        stock_id = int(stock_id)
+    except Exception:
+        await cb.answer("❌ Dữ liệu không hợp lệ.", show_alert=True)
+        return
+    if field not in db.STOCK_EDITABLE_FIELDS:
+        await cb.answer("❌ Trường không hợp lệ.", show_alert=True)
+        return
+    old = db.acc_stock_get_by_id(stock_id)
+    if not old or old.get("status") not in ("AVAILABLE", "DIE"):
+        await cb.answer("❌ Acc này không còn sửa được (đã bán hoặc không tồn tại).",
+                        show_alert=True)
+        return
+    await state.update_data(suaacc_stock_id=stock_id, suaacc_field=field)
+    await state.set_state(AccShopState.waiting_for_edit_value)
+    cur = _mask_stock_val(old.get(field) or "", keep=20)
+    label = db.STOCK_FIELD_LABELS[field]
+    await cb.message.answer(
+        f"✏️ <b>SỬA {label.upper()}</b>\n"
+        f"👤 UID: <code>{html.escape(old['uid'])}</code>\n"
+        f"Giá trị hiện tại: <code>{html.escape(cur) or '—'}</code>\n\n"
+        f"Gửi <b>giá trị mới</b> (gửi <code>-</code> để xóa trắng). Gõ /huy để hủy.",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@router.message(AccShopState.waiting_for_edit_value, F.text)
+async def on_suaacc_value(msg: Message, state: FSMContext):
+    if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    await state.clear()
+    stock_id = data.get("suaacc_stock_id")
+    field = data.get("suaacc_field")
+    if not stock_id or field not in db.STOCK_EDITABLE_FIELDS:
+        await msg.answer("❌ Phiên sửa đã hết hạn. Thử lại: /suaacc")
+        return
+    val = (msg.text or "").strip()
+    if val.lower() in ("/huy", "/cancel", "hủy", "huỷ"):
+        await msg.answer("Đã hủy.")
+        return
+    if val == "-":
+        val = ""
+    n = db.acc_stock_update_fields(stock_id, {field: val})
+    old = db.acc_stock_get_by_id(stock_id) or {}
+    label = db.STOCK_FIELD_LABELS[field]
+    try:
+        db.admin_audit_add(msg.from_user.id, msg.from_user.full_name, "sua_acc",
+                           f"uid {old.get('uid')}: {field}")
+    except Exception:
+        pass
+    if n:
+        shown = _mask_stock_val(val, keep=20)
+        await msg.answer(
+            f"✅ Đã cập nhật <b>{label}</b> của UID <code>{html.escape(old.get('uid') or '')}</code>\n"
+            f"Giá trị mới: <code>{html.escape(shown) or '— (đã xóa trắng)'}</code>",
+            parse_mode="HTML")
+    else:
+        await msg.answer("⏭ Giá trị không thay đổi (giống giá trị cũ).")
+
+
 @router.message(Command("kho"))
 async def on_kho(msg: Message):
     if not _is_admin(msg.from_user.id):
@@ -9529,6 +9979,7 @@ async def on_kho(msg: Message):
               "Hộp mù: <code>/hopmu &lt;id&gt;</code> — giá: <code>/hopmugia &lt;giá|0&gt;</code>",
               "NCC: <code>/themncc</code> / <code>/ncc</code>",
               "Nhập hàng: <code>/themacc &lt;id&gt; [ncc_id] [giá_vốn]</code>",
+              "Cập nhật T.tin: <code>/capnhatacc &lt;id&gt;</code> (file) | <code>/capnhatsheet &lt;id&gt;</code> (Sheet) | <code>/suaacc</code> (sửa 1 acc)",
               "Sao lưu toàn kho: <code>/xuatkho [id_loại]</code>"]
     await msg.answer("\n".join(lines), parse_mode="HTML")
 

@@ -3274,6 +3274,93 @@ def acc_stock_sold_count(cat_id: int) -> int:
         return 0
 
 
+#: Các trường thông tin acc được phép cập nhật (cập nhật thông tin acc)
+STOCK_EDITABLE_FIELDS = ("password", "created_date", "backup_mail", "note",
+                         "totp", "cookie", "token")
+
+#: Nhãn hiển thị tiếng Việt cho từng trường
+STOCK_FIELD_LABELS = {
+    "password": "Mật khẩu", "created_date": "Ngày tạo",
+    "backup_mail": "Mail thay", "note": "Ghi chú", "totp": "2FA",
+    "cookie": "Cookie", "token": "Token",
+}
+
+
+def _stock_row_to_dict(r) -> dict | None:
+    return dict(r) if r else None
+
+
+def acc_stock_find(cat_id: int, uid: str) -> dict | None:
+    """Tìm 1 acc còn hàng (AVAILABLE/DIE) trong loại theo UID."""
+    try:
+        r = get_conn().execute(
+            "SELECT * FROM acc_stock WHERE cat_id=? AND uid=? "
+            "AND status IN ('AVAILABLE','DIE') LIMIT 1",
+            (cat_id, (uid or "").strip())).fetchone()
+        return _stock_row_to_dict(r)
+    except Exception:
+        return None
+
+
+def acc_stock_get_by_id(stock_id: int) -> dict | None:
+    """Lấy 1 dòng kho theo id (mọi trạng thái)."""
+    try:
+        r = get_conn().execute(
+            "SELECT * FROM acc_stock WHERE id=? LIMIT 1",
+            (int(stock_id),)).fetchone()
+        return _stock_row_to_dict(r)
+    except Exception:
+        return None
+
+
+def acc_stock_by_sheet_ref(sheet_ref: str) -> dict | None:
+    """Tìm acc theo vị trí dòng Sheet ('tab:dòng')."""
+    try:
+        r = get_conn().execute(
+            "SELECT * FROM acc_stock WHERE sheet_ref=? LIMIT 1",
+            ((sheet_ref or "").strip(),)).fetchone()
+        return _stock_row_to_dict(r)
+    except Exception:
+        return None
+
+
+def acc_stock_update_fields(stock_id: int, fields: dict) -> int:
+    """Cập nhật các trường thông tin của 1 acc còn hàng (AVAILABLE/DIE).
+
+    fields: dict {tên_trường: giá_trị_mới} — chỉ nhận các trường trong
+    STOCK_EDITABLE_FIELDS. Acc đã bán (SOLD) không được đụng.
+    Trả số trường thực sự thay đổi (so với giá trị cũ)."""
+    clean = {}
+    for k, v in (fields or {}).items():
+        if k in STOCK_EDITABLE_FIELDS:
+            clean[k] = "" if v is None else str(v)
+    if not clean:
+        return 0
+    try:
+        with _lock:
+            c = get_conn()
+            row = c.execute(
+                "SELECT * FROM acc_stock WHERE id=? "
+                "AND status IN ('AVAILABLE','DIE') LIMIT 1",
+                (int(stock_id),)).fetchone()
+            if not row:
+                return 0
+            row = dict(row)
+            sets, vals = [], []
+            for k, v in clean.items():
+                if (row.get(k) or "") != v:
+                    sets.append(f"{k}=?")
+                    vals.append(v)
+            if not sets:
+                return 0
+            vals.append(int(stock_id))
+            c.execute(f"UPDATE acc_stock SET {', '.join(sets)} WHERE id=?", vals)
+            c.commit()
+            return len(sets)
+    except Exception:
+        return 0
+
+
 def acc_sold_unmarked_sheet(limit: int = 200) -> list:
     """Các acc đã bán, nhập từ Google Sheet, chưa đẩy dấu 'đã bán' lên Sheet.
     Trả list dict {id, uid, tab, row, sold_at}."""
