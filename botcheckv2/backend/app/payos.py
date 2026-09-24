@@ -14,6 +14,7 @@ Ngoài ra có sẵn handler webhook đã verify chữ ký
 import asyncio
 import hashlib
 import hmac
+import html
 import json
 import logging
 import random
@@ -221,6 +222,16 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
         if not sender and manager.running:
             sender = manager.bot
         if sender:
+            try:
+                u = db.get_user(tg_id)
+                keys = u.keys() if u else []
+                uname = (u["username"] if u and "username" in keys and u["username"] else "").strip()
+                name = (u["name"] if u and "name" in keys and u["name"] else "").strip()
+            except Exception:
+                uname, name = "", ""
+            who = html.escape(name or (f"@{uname}" if uname else "—"))
+            if uname and name:
+                who = html.escape(f"{name} (@{uname})")
             admins = []
             for key in ("admin_tg_id", "admin_tg_group_id"):
                 try:
@@ -234,6 +245,7 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
                     await sender.send_message(
                         admin_id,
                         "💳 <b>PAYOS: KHÁCH NẠP TIỀN TỰ ĐỘNG</b>\n\n"
+                        f"👤 Khách: <b>{who}</b>\n"
                         f"🆔 ID: <code>{tg_id}</code>\n"
                         f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
                         f"🧾 Mã đơn: <code>{order_code}</code>",
