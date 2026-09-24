@@ -1332,16 +1332,17 @@ async def on_bank(msg: Message):
 @router.callback_query(F.data.startswith("use_code_"))
 async def on_use_code(cb: CallbackQuery):
     code = cb.data.replace("use_code_", "")
-    success, amount, msg_text = db.use_code(code, cb.fromuser.id) if hasattr(cb, 'fromuser') else db.use_code(code, cb.from_user.id)
+    success, amount, msg_text, wallet = db.use_code(code, cb.from_user.id)
     if success:
-        db.adjust_balance(cb.from_user.id, amount, f"Sử dụng Giftcode: {code}")
+        db.credit_wallet(cb.from_user.id, amount, f"Sử dụng Giftcode: {code}", wallet)
         try:
+            wlbl = db.wallet_label(wallet)
             msg_text_resp = (
                 f"✅ <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n"
-                f"Bạn đã sử dụng mã <code>{code}</code> và được cộng <b>{vnd(amount)}</b> vào tài khoản.\n"
+                f"Bạn đã sử dụng mã <code>{code}</code> và được cộng <b>{vnd(amount)}</b> vào {wlbl}.\n"
                 f"Cảm ơn bạn đã tin tưởng dịch vụ!"
             )
-            upgraded, new_vip, is_lifetime = db.check_vip_upgrade(cb.from_user.id)
+            upgraded, new_vip, is_lifetime = db.check_vip_upgrade(cb.from_user.id) if db.parse_wallet(wallet) == "main" else (False, 0, False)
             if upgraded and new_vip > 0:
                 limit = db.get_setting(f"vip{new_vip}_limit", "10")
                 msg_text_resp += (
@@ -1394,7 +1395,11 @@ async def on_mycodes(msg: Message):
         if expire_at > 0:
             expire_text = vn_time_str('%H:%M %d/%m', expire_at)
             
-        text += f"• <code>{code_str}</code>: <b>{vnd(amount)}</b> (Hạn: {expire_text})\n"
+        try:
+            wlbl = db.wallet_label(c["wallet"])
+        except Exception:
+            wlbl = "ví chính"
+        text += f"• <code>{code_str}</code>: <b>{vnd(amount)}</b> → {wlbl} (Hạn: {expire_text})\n"
         keyboard.append([InlineKeyboardButton(text=f"🎁 Dùng mã {vnd(amount)}", callback_data=f"use_code_{code_str}")])
         
     text += "\n<i>Bấm nút bên dưới để sử dụng:</i>"
@@ -3074,13 +3079,14 @@ async def on_tienich_giftcode(msg: Message, state: FSMContext):
     if not code:
         await msg.answer("❌ Mã trống, thử lại nhé.")
         return
-    success, amount, msg_text = db.use_code(code, msg.from_user.id)
+    success, amount, msg_text, wallet = db.use_code(code, msg.from_user.id)
     if success:
-        db.adjust_balance(msg.from_user.id, amount, f"Sử dụng Giftcode: {code}")
-        db.check_vip_upgrade(msg.from_user.id)
+        db.credit_wallet(msg.from_user.id, amount, f"Sử dụng Giftcode: {code}", wallet)
+        if db.parse_wallet(wallet) == "main":
+            db.check_vip_upgrade(msg.from_user.id)
         await msg.answer(
             f"✅ <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n"
-            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{vnd(amount)}</b> vào tài khoản.",
+            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{vnd(amount)}</b> vào {db.wallet_label(wallet)}.",
             parse_mode="HTML")
     else:
         await msg.answer(f"❌ {html.escape(msg_text)}", parse_mode="HTML")
@@ -5346,13 +5352,14 @@ async def on_code(msg: Message, command: CommandObject):
     if not code:
         await msg.answer("🎁 Nhập mã giftcode: <code>/code &lt;mã&gt;</code>", parse_mode="HTML")
         return
-    success, amount, msg_text = db.use_code(code, msg.from_user.id)
+    success, amount, msg_text, wallet = db.use_code(code, msg.from_user.id)
     if success:
-        db.adjust_balance(msg.from_user.id, amount, f"Sử dụng Giftcode: {code}")
-        db.check_vip_upgrade(msg.from_user.id)
+        db.credit_wallet(msg.from_user.id, amount, f"Sử dụng Giftcode: {code}", wallet)
+        if db.parse_wallet(wallet) == "main":
+            db.check_vip_upgrade(msg.from_user.id)
         await msg.answer(
             f"✅ <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n"
-            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{vnd(amount)}</b> vào tài khoản.",
+            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{vnd(amount)}</b> vào {db.wallet_label(wallet)}.",
             parse_mode="HTML",
         )
     else:
@@ -5460,7 +5467,14 @@ async def _send_credit_packs(target_msg, tg_id: int, edit: bool = False):
     if up:
         ok, _, row = db.promo_valid(up["code"])
         if ok:
-            promo_line = f"\n🎟️ Mã <b>{up['code']}</b> đang áp dụng: <b>giảm {int(row['pct'])}%</b> cho lần mua tới!\n"
+            try:
+                w = db.parse_wallet(row["wallet"])
+            except Exception:
+                w = "main"
+            if w == "main":
+                promo_line = f"\n🎟️ Mã <b>{up['code']}</b> đang áp dụng: <b>giảm {int(row['pct'])}%</b> cho lần mua tới!\n"
+            else:
+                promo_line = f"\n🎟️ Bạn đang giữ mã <b>{up['code']}</b> (giảm {int(row['pct'])}% khi mua acc ở /shop).\n"
     lines = [
         "⚡ <b>MUA GÓI CREDITS (lượt check)</b>",
         "━━━━━━━━━━━━━━━━━━━━",
@@ -5555,17 +5569,23 @@ async def on_promo(msg: Message):
         await msg.answer(f"❌ {why}")
         return
     db.set_user_promo(msg.from_user.id, code)
+    try:
+        w = db.parse_wallet(row["wallet"])
+    except Exception:
+        w = "main"
     exp_txt = ""
     if row["expires_at"]:
         exp_txt = f"\n⏳ Hết hạn: {time.strftime('%d/%m/%Y %H:%M', time.localtime(row['expires_at']))}"
     left_txt = ""
     if row["max_uses"]:
         left_txt = f"\n🎫 Còn lại: <b>{int(row['max_uses']) - int(row['used_count'])}</b> lượt"
+    scope_txt = "cho lần mua gói credit tiếp theo (trừ ví chính)" if w == "main" else "cho lần mua acc ở /shop tiếp theo (trừ ví shop)"
+    go_txt = "<i>Mở /muacredit để mua ngay.</i>" if w == "main" else "<i>Mở /shop để mua ngay.</i>"
     await msg.answer(
         f"✅ <b>Áp mã thành công!</b>\n\n"
         f"🎟️ Mã: <b>{code}</b>\n"
-        f"💸 Giảm: <b>{int(row['pct'])}%</b> cho lần mua gói credit tiếp theo{exp_txt}{left_txt}\n\n"
-        f"<i>Mở /muacredit để mua ngay.</i>",
+        f"💸 Giảm: <b>{int(row['pct'])}%</b> {scope_txt}{exp_txt}{left_txt}\n\n"
+        f"{go_txt}",
         parse_mode="HTML",
     )
 
@@ -5606,16 +5626,16 @@ async def on_setwebhook(msg: Message):
 
 @router.message(Command("taopromo"))
 async def on_taopromo(msg: Message):
-    """Admin tạo mã giảm giá flash sale. Cú pháp: /taopromo <CODE> <phần_trăm> [số_lượt] [số_giờ]"""
+    """Admin tạo mã giảm giá flash sale. Cú pháp: /taopromo <CODE> <phần_trăm> [số_lượt] [số_giờ] [ví]"""
     if not _is_admin(msg.from_user.id):
         await msg.answer("❌ Bạn không có quyền!")
         return
     parts = (msg.text or "").split()
     if len(parts) < 3:
         await msg.answer(
-            "🎟️ Cú pháp: <code>/taopromo &lt;CODE&gt; &lt;phần_trăm&gt; [số_lượt_dùng] [số_giờ_hiệu_lực]</code>\n"
-            "VD: <code>/taopromo SALE20 20 100 24</code> — giảm 20%, tối đa 100 lượt, hiệu lực 24h\n"
-            "VD: <code>/taopromo VIP50 50</code> — giảm 50%, không giới hạn",
+            "🎟️ Cú pháp: <code>/taopromo &lt;CODE&gt; &lt;phần_trăm&gt; [số_lượt_dùng] [số_giờ_hiệu_lực] [ví]</code>\n"
+            "VD: <code>/taopromo SALE20 20 100 24</code> — giảm 20% khi mua gói credit (ví chính)\n"
+            "VD: <code>/taopromo SHOP10 10 0 0 shop</code> — giảm 10% khi mua acc ở /shop (ví shop)",
             parse_mode="HTML",
         )
         return
@@ -5626,7 +5646,8 @@ async def on_taopromo(msg: Message):
         return
     max_uses = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     hours = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
-    ok, txt = db.create_promo(parts[1], pct, max_uses, hours)
+    wallet = db.parse_wallet(parts[5]) if len(parts) > 5 else "main"
+    ok, txt = db.create_promo(parts[1], pct, max_uses, hours, wallet)
     extra = ""
     if ok:
         if max_uses:
@@ -5666,7 +5687,11 @@ async def on_dspromo(msg: Message):
         d = dict(r)
         status = "✅" if db.promo_valid(d["code"])[0] else "⛔"
         lim = f"{int(d['used_count'])}/{int(d['max_uses'])}" if d["max_uses"] else f"{int(d['used_count'])}/∞"
-        lines.append(f"{status} <code>{d['code']}</code> — giảm {int(d['pct'])}% — đã dùng {lim}")
+        try:
+            wlbl = db.wallet_label(d["wallet"])
+        except Exception:
+            wlbl = "ví chính"
+        lines.append(f"{status} <code>{d['code']}</code> — giảm {int(d['pct'])}% ({wlbl}) — đã dùng {lim}")
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
@@ -7702,6 +7727,7 @@ async def on_acc_confirm(cb: CallbackQuery):
     final = total * (100 - bulk_pct) // 100
     final = final * (100 - tier_pct) // 100
     final = final * (100 - upsell_pct) // 100
+    final, promo_code = db.apply_user_promo(tg_id, final, wallet="shop")
     if db.acc_stock_count(cat_id) < qty:
         await cb.message.answer(
             f"⛔ Kho chỉ còn <b>{db.acc_stock_count(cat_id)}</b> acc, "
@@ -7718,6 +7744,8 @@ async def on_acc_confirm(cb: CallbackQuery):
             disc_txt.append(f"giảm {tier_pct}% hạng {tier['tier']}")
         if upsell_pct:
             disc_txt.append(f"giảm {upsell_pct}% mua thêm trong {wmin} phút")
+        if promo_code:
+            disc_txt.append(f"mã {promo_code}")
         await cb.message.answer(
             f"😢 <b>VÍ SHOP KHÔNG ĐỦ</b>\n"
             f"━━━━━━━━━━━━━━\n"
@@ -7731,7 +7759,7 @@ async def on_acc_confirm(cb: CallbackQuery):
         )
         return
     # Trừ tiền ví shop trước, giao acc sau (nguyên tử ở acc_sell_many)
-    if not db.adjust_shop_balance(tg_id, -final, f"mua_acc:{cat_id}x{qty}"):
+    if not db.adjust_shop_balance(tg_id, -final, f"mua_acc:{cat_id}x{qty}" + (f" (promo {promo_code})" if promo_code else "")):
         await cb.message.answer(
             "❌ <b>Ví shop không đủ!</b>\nNạp thêm bằng /napshop rồi mua lại nhé."
             + _SHOP_WALLET_HINT,
@@ -7904,14 +7932,17 @@ def _cart_render(tg_id: int):
         ])
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
+    grand_promo, promo_code = db.preview_user_promo(tg_id, grand, wallet="shop")
     lines += ["━━━━━━━━━━━━━━",
               f"🧾 <b>Tổng cộng: {vnd(grand)}</b>"]
     if saved > 0:
         lines.append(f"🎉 <i>Bạn tiết kiệm được {vnd(saved)}</i>")
+    if promo_code:
+        lines.append(f"🎟️ Mã <b>{promo_code}</b> sẽ được áp khi thanh toán → còn <b>{vnd(grand_promo)}</b>")
     lines.append(f"👛 Ví shop: <b>{vnd(balance)}</b>"
-                 + ("" if balance >= grand else f"  <i>(thiếu {vnd(grand - balance)})</i>"))
+                 + ("" if balance >= grand_promo else f"  <i>(thiếu {vnd(grand_promo - balance)})</i>"))
     kb_rows.append([InlineKeyboardButton(
-        text=f"💳 Thanh toán — {vnd(grand)}", callback_data="cartcheckout")])
+        text=f"💳 Thanh toán — {vnd(grand_promo)}", callback_data="cartcheckout")])
     kb_rows.append([
         InlineKeyboardButton(text="🗑 Xóa giỏ", callback_data="cartclear"),
         InlineKeyboardButton(text="🛍 Tiếp tục mua", callback_data="accshop_back"),
@@ -8126,6 +8157,7 @@ async def on_cart_confirm(cb: CallbackQuery):
         lp = _line_price(c, qty, tg_id)
         priced.append((c, qty, lp))
         grand += lp["final"]
+    grand, promo_code = db.apply_user_promo(tg_id, grand, wallet="shop")
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
     if balance < grand:
@@ -8133,7 +8165,7 @@ async def on_cart_confirm(cb: CallbackQuery):
             f"❌ Ví shop không đủ ({vnd(balance)} < {vnd(grand)}). "
             "Nạp thêm bằng /napshop nhé." + _SHOP_WALLET_HINT, parse_mode="HTML")
         return
-    if not db.adjust_shop_balance(tg_id, -grand, f"mua_giohang:{len(priced)}mon"):
+    if not db.adjust_shop_balance(tg_id, -grand, f"mua_giohang:{len(priced)}mon" + (f" (promo {promo_code})" if promo_code else "")):
         await cb.message.answer("❌ Ví shop không đủ. Nạp thêm bằng /napshop nhé."
                                 + _SHOP_WALLET_HINT,
                                 parse_mode="HTML")
@@ -8465,13 +8497,44 @@ async def on_hang(msg: Message):
 
 @router.message(Command("doiqua"))
 async def on_doiqua(msg: Message):
-    """Đổi điểm loyalty lấy acc miễn phí."""
+    """Đổi điểm loyalty lấy quà (acc hoặc tiền về ví)."""
     tg_id = msg.from_user.id
     try:
         need = int(db.get_setting("loyalty_redeem_points", "10") or 10)
     except Exception:
         need = 10
     pts = db.loyalty_get(tg_id)
+    mode = db.get_setting("loyalty_redeem_mode", "acc") or "acc"
+    if mode == "money":
+        try:
+            amt = int(db.get_setting("loyalty_redeem_amount", "0") or 0)
+        except Exception:
+            amt = 0
+        wallet = db.get_setting("loyalty_redeem_wallet", "main") or "main"
+        if amt <= 0:
+            await msg.answer(
+                "🎁 <b>ĐỔI QUÀ LOYALTY</b>\n\n"
+                "Shop chưa mở quà đổi điểm. Quay lại sau nhé!",
+                parse_mode="HTML")
+            return
+        if pts < need:
+            await msg.answer(
+                f"🎁 <b>ĐỔI QUÀ LOYALTY</b>\n\n"
+                f"Điểm của bạn: <b>{pts}</b> / cần <b>{need}</b> điểm.\n"
+                f"Quà: <b>{vnd(amt)}</b> vào {db.wallet_label(wallet)}.\n\n"
+                f"👉 Mua acc ở /shop để tích thêm điểm (1 điểm / 100k).",
+                parse_mode="HTML")
+            return
+        if not db.loyalty_consume(tg_id, need):
+            await msg.answer("😅 Điểm của bạn vừa thay đổi, thử lại nhé!")
+            return
+        db.credit_wallet(tg_id, amt, "Đổi điểm loyalty", wallet)
+        await msg.answer(
+            f"🎉 <b>ĐỔI QUÀ THÀNH CÔNG!</b> (−{need} điểm)\n"
+            f"🎁 Bạn nhận <b>{vnd(amt)}</b> vào {db.wallet_label(wallet)}.\n"
+            f"⭐ Điểm còn lại: <b>{db.loyalty_get(tg_id)}</b>",
+            parse_mode="HTML")
+        return
     cat_id = db.loyalty_redeem_cat()
     c = db.acc_category_get(cat_id) if cat_id else None
     if not c or not c["active"]:
@@ -9680,20 +9743,62 @@ async def on_creditbonus(msg: Message):
         await msg.answer("❌ Không tìm thấy loại này.")
 
 
+def _loyalty_gift_desc() -> str:
+    """Mô tả quà đổi điểm hiện tại (acc hoặc tiền về ví)."""
+    mode = db.get_setting("loyalty_redeem_mode", "acc") or "acc"
+    pts = db.get_setting("loyalty_redeem_points", "10") or "10"
+    if mode == "money":
+        amt = db.get_setting("loyalty_redeem_amount", "0") or "0"
+        w = db.wallet_label(db.get_setting("loyalty_redeem_wallet", "main"))
+        return f"<b>{vnd(int(amt))}</b> vào {w} — <b>{html.escape(str(pts))}</b> điểm"
+    cid = db.loyalty_redeem_cat()
+    c = db.acc_category_get(cid) if cid else None
+    return f"1 acc <b>{html.escape(c['name']) if c else 'chưa cài'}</b> — <b>{html.escape(str(pts))}</b> điểm"
+
+
 @router.message(Command("quadoi"))
 async def on_quadoi(msg: Message):
-    """Admin: chọn loại acc làm quà đổi điểm loyalty. /quadoi <id_loại> [số_điểm] | /quadoi 0 để tắt"""
+    """Admin: chọn quà đổi điểm loyalty.
+    /quadoi <id_loại> [số_điểm] — quà acc (xem id: /kho)
+    /quadoi tien <số_tiền> <chinh|shop> [số_điểm] — quà tiền về ví
+    /quadoi 0 — tắt"""
     if not _is_admin(msg.from_user.id):
         return
     parts = (msg.text or "").split()
     if len(parts) < 2:
-        cid = db.loyalty_redeem_cat()
-        c = db.acc_category_get(cid) if cid else None
-        pts = db.get_setting("loyalty_redeem_points", "10") or "10"
         await msg.answer(
-            f"🎁 Quà đổi điểm hiện tại: <b>{html.escape(c['name']) if c else 'chưa cài'}</b> — <b>{html.escape(str(pts))}</b> điểm.\n"
-            f"Cú pháp: <code>/quadoi &lt;id_loại&gt; [số_điểm]</code> (xem id: /kho)",
+            f"🎁 Quà đổi điểm hiện tại: {_loyalty_gift_desc()}.\n"
+            f"Cú pháp:<br>"
+            f"• <code>/quadoi &lt;id_loại&gt; [số_điểm]</code> — quà acc (xem id: /kho)<br>"
+            f"• <code>/quadoi tien &lt;số_tiền&gt; &lt;chinh|shop&gt; [số_điểm]</code> — quà tiền về ví<br>"
+            f"• <code>/quadoi 0</code> — tắt",
             parse_mode="HTML")
+        return
+    # Chế độ quà tiền: /quadoi tien <số_tiền> <chinh|shop> [số_điểm]
+    if parts[1].lower() == "tien":
+        if len(parts) < 4:
+            await msg.answer("❌ Cú pháp: <code>/quadoi tien &lt;số_tiền&gt; &lt;chinh|shop&gt; [số_điểm]</code>",
+                             parse_mode="HTML")
+            return
+        try:
+            amt = int(parts[2].replace(",", "").replace("k", "000").replace("K", "000"))
+            if amt <= 0:
+                raise ValueError
+        except ValueError:
+            await msg.answer("❌ Số tiền không hợp lệ.")
+            return
+        wallet = db.parse_wallet(parts[3])
+        db.set_setting("loyalty_redeem_mode", "money")
+        db.set_setting("loyalty_redeem_amount", str(amt))
+        db.set_setting("loyalty_redeem_wallet", wallet)
+        if len(parts) >= 5:
+            try:
+                pts = int(parts[4])
+                if pts > 0:
+                    db.set_setting("loyalty_redeem_points", str(pts))
+            except Exception:
+                pass
+        await msg.answer(f"✅ Quà đổi điểm: {_loyalty_gift_desc()}.", parse_mode="HTML")
         return
     try:
         cid = int(parts[1])
@@ -9703,6 +9808,7 @@ async def on_quadoi(msg: Message):
     if cid and not db.acc_category_get(cid):
         await msg.answer("❌ Không tìm thấy loại này.")
         return
+    db.set_setting("loyalty_redeem_mode", "acc")
     db.set_setting("loyalty_redeem_cat", str(cid))
     pts_txt = ""
     if len(parts) >= 3:
@@ -10336,6 +10442,7 @@ async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
     except Exception:
         dep_pct = 30
     amt = int(c["price"]) * dep_pct // 100
+    amt, promo_code = db.apply_user_promo(tg_id, amt, wallet="shop")
     u = db.get_user(tg_id)
     bal = int(u["shop_balance"] or 0) if u else 0
     if bal < amt:
@@ -10345,7 +10452,7 @@ async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
             + _SHOP_WALLET_HINT,
             parse_mode="HTML")
         return
-    if not db.adjust_shop_balance(tg_id, -amt, f"dat_coc:{cat_id}"):
+    if not db.adjust_shop_balance(tg_id, -amt, f"dat_coc:{cat_id}" + (f" (promo {promo_code})" if promo_code else "")):
         await msg.answer("❌ Ví shop không đủ đặt cọc." + _SHOP_WALLET_HINT, parse_mode="HTML")
         return
     dep_id = db.acc_deposit_create(tg_id, cat_id, amt)
@@ -10461,6 +10568,7 @@ async def on_mystery_buy(cb: CallbackQuery):
         m_price = 0
     if m_price <= 0:
         return
+    m_price, promo_code = db.apply_user_promo(tg_id, m_price, wallet="shop")
     u = db.get_user(tg_id)
     bal = int(u["shop_balance"] or 0) if u else 0
     if bal < m_price:
@@ -10469,7 +10577,7 @@ async def on_mystery_buy(cb: CallbackQuery):
             f"Nạp thêm bằng /napshop nhé." + _SHOP_WALLET_HINT,
             parse_mode="HTML")
         return
-    if not db.adjust_shop_balance(tg_id, -m_price, "mua_hop_mu"):
+    if not db.adjust_shop_balance(tg_id, -m_price, "mua_hop_mu" + (f" (promo {promo_code})" if promo_code else "")):
         await cb.message.answer("❌ Ví shop không đủ." + _SHOP_WALLET_HINT, parse_mode="HTML")
         return
     await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")

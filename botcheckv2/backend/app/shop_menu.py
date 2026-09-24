@@ -124,6 +124,7 @@ GROUPS = {
         ("set_warranty", "🛡️ Đổi bảo hành"),
         ("credit_bonus", "🎁 Combo tặng credits"),
         ("loyalty_gift", "🎁 Quà đổi điểm"),
+        ("loyalty_gift_money", "💵 Quà đổi điểm (tiền)"),
         ("loyalty_random", "🎲 Điểm ngẫu nhiên"),
         ("happy_hour", "⚡ Giờ vàng"),
         ("mystery_price", "🎲 Giá hộp mù"),
@@ -258,11 +259,24 @@ def _p_mystery_price():
 
 def _p_loyalty():
     from . import db
-    cid = db.get_setting("loyalty_redeem_cat", "0") or "0"
+    mode = db.get_setting("loyalty_redeem_mode", "acc") or "acc"
     pts = db.get_setting("loyalty_redeem_points", "10") or "10"
-    cur = "chưa cài" if cid == "0" else f"loại #{cid}"
+    if mode == "money":
+        amt = db.get_setting("loyalty_redeem_amount", "0") or "0"
+        try:
+            wlbl = db.wallet_label(db.get_setting("loyalty_redeem_wallet", "main"))
+        except Exception:
+            wlbl = "ví chính"
+        try:
+            amt_txt = f"{int(amt):,}đ".replace(",", ".")
+        except Exception:
+            amt_txt = str(amt)
+        cur = f"{amt_txt} vào {wlbl}"
+    else:
+        cid = db.get_setting("loyalty_redeem_cat", "0") or "0"
+        cur = "chưa cài" if cid == "0" else f"loại #{cid}"
     return (f"🎁 <b>QUÀ ĐỔI ĐIỂM LOYALTY</b> (bước 1/2)\n\nHiện tại: <b>{html.escape(cur)}</b> — <b>{html.escape(str(pts))}</b> điểm.\n\n"
-            f"Gửi <b>ID loại</b> làm quà (<code>0</code> để tắt).")
+            f"Gửi <b>ID loại acc</b> làm quà (<code>0</code> để tắt). Muốn đổi điểm lấy <b>tiền</b> thì dùng nút 💵 bên dưới.")
 
 
 def _p_loyalty_random():
@@ -418,6 +432,15 @@ FLOWS = {
         ],
         "build": lambda v: f"/quadoi {v[0]}" + (f" {v[1]}" if v[1] else ""),
     },
+    "loyalty_gift_money": {
+        "cat": "price", "handler": "on_quadoi",
+        "steps": [
+            ("💵 <b>QUÀ ĐỔI ĐIỂM (TIỀN)</b> (bước 1/3)\n\nGửi <b>số tiền</b> thưởng cho mỗi lần đổi (VD: 50000).", "price"),
+            ("💵 <b>QUÀ ĐỔI ĐIỂM (TIỀN)</b> (bước 2/3)\n\nTiền thưởng cộng vào ví nào? Gửi <b>chinh</b> (ví chính) hoặc <b>shop</b> (ví shop).", "wallet"),
+            ("💵 <b>QUÀ ĐỔI ĐIỂM (TIỀN)</b> (bước 3/3)\n\nGửi <b>số điểm</b> cần để đổi (<code>0</code> = giữ nguyên).", "opt_int"),
+        ],
+        "build": lambda v: f"/quadoi tien {v[0]} {v[1]}" + (f" {v[2]}" if v[2] else ""),
+    },
     "loyalty_random": {
         "cat": "price", "handler": "on_loyaltyrandom",
         "steps": [
@@ -570,6 +593,13 @@ def _parse_step(kind, raw):
             return True, int(t.replace(".", "").replace(",", "").replace(" ", "")), ""
         except Exception:
             return False, None, "⚠️ Giá phải là số (trống = bỏ qua), gửi lại nhé."
+    if kind == "wallet":
+        t2 = t.lower()
+        if t2 in ("main", "chinh", "ví chính", "vi chinh"):
+            return True, "main", ""
+        if t2 in ("shop", "vishop", "ví shop", "vi shop"):
+            return True, "shop", ""
+        return False, None, "⚠️ Gửi <b>chinh</b> (ví chính) hoặc <b>shop</b> (ví shop) nhé."
     return False, None, "⚠️ Lỗi nội bộ."
 
 

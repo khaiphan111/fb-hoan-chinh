@@ -469,6 +469,7 @@ class CodeGenerateIn(BaseModel):
     max_uses: int
     expire_days: int
     expire_hours: int
+    wallet: str = "main"
 
 @router.post("/codes/generate")
 def generate_code_api(body: CodeGenerateIn, _=Depends(auth)):
@@ -478,10 +479,11 @@ def generate_code_api(body: CodeGenerateIn, _=Depends(auth)):
         expire_at = int(time.time()) + total_seconds
         
     code = db.generate_code(
-        amount=body.amount, 
-        prefix="GLOBAL" if body.max_uses > 1 else "CODE", 
-        max_uses=body.max_uses, 
-        expire_at=expire_at
+        amount=body.amount,
+        prefix="GLOBAL" if body.max_uses > 1 else "CODE",
+        max_uses=body.max_uses,
+        expire_at=expire_at,
+        wallet=body.wallet,
     )
     return {"ok": True, "code": code}
 

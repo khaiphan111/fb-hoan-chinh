@@ -61,20 +61,23 @@ def parse_time_str(time_str: str) -> int:
 async def cmd_phatcode(msg: Message):
     if not is_admin(msg.chat.id, msg.from_user.id):
         return
-        
+
     parts = msg.text.split()
+    wallet = "main"
+    if parts and parts[-1].lower() in _WALLET_WORDS:
+        wallet = db.parse_wallet(parts.pop())
     if len(parts) < 2:
-        await msg.answer("❌ HDSD: /phatcode <số_tiền> [số_lượt_dùng=1] [hạn_sử_dụng=0]\nVí dụ: /phatcode 50000 10 12h (Mã 50k, 10 lượt, hạn 12 giờ)")
+        await msg.answer("❌ HDSD: /phatcode <số_tiền> [số_lượt_dùng=1] [hạn_sử_dụng=0] [ví]\nVí dụ: /phatcode 50000 10 12h (Mã 50k, 10 lượt, hạn 12 giờ)\nVí dụ: /phatcode 50000 10 12h shop (cộng vào ví shop)")
         return
-        
+
     try:
         amount = int(parts[1])
         max_uses = 1
         expire_at = 0
-        
+
         if len(parts) > 2:
             max_uses = int(parts[2])
-            
+
         if len(parts) > 3:
             time_str = parts[3].lower()
             seconds = parse_time_str(time_str)
@@ -83,18 +86,19 @@ async def cmd_phatcode(msg: Message):
             elif time_str.isdigit():
                 # fallback to days if just a number
                 expire_at = int(time.time()) + int(time_str) * 86400
-                
-        code = db.generate_code(amount=amount, prefix="GLOBAL" if max_uses > 1 else "CODE", max_uses=max_uses, expire_at=expire_at)
-        
+
+        code = db.generate_code(amount=amount, prefix="GLOBAL" if max_uses > 1 else "CODE", max_uses=max_uses, expire_at=expire_at, wallet=wallet)
+
         expire_text = "Vĩnh viễn"
         if expire_at > 0:
             from . import util
             expire_text = util.vn_time_str('%H:%M %d/%m/%Y', expire_at)
-            
+
         await msg.answer(
             f"✅ <b>TẠO MÃ THÀNH CÔNG</b>\n\n"
             f"🎁 Mã code: <code>{code}</code>\n"
             f"💰 Giá trị: <b>{amount:,.0f} VNĐ</b>\n"
+            f"👛 Cộng vào: <b>{db.wallet_label(wallet)}</b>\n"
             f"👥 Số lượt dùng: <b>{max_uses}</b>\n"
             f"⏳ Hạn sử dụng: <b>{expire_text}</b>",
             parse_mode="HTML"
@@ -109,8 +113,11 @@ async def cmd_phatcodeall(msg: Message):
         return
         
     parts = msg.text.split()
+    wallet = "main"
+    if parts and parts[-1].lower() in _WALLET_WORDS:
+        wallet = db.parse_wallet(parts.pop())
     if len(parts) < 2:
-        await msg.answer("❌ HDSD: /phatcodeall <số_tiền> [hạn_sử_dụng=0]\nVí dụ: /phatcodeall 50000 1d12h (Mã 50k, hạn 1 ngày 12 giờ)")
+        await msg.answer("❌ HDSD: /phatcodeall <số_tiền> [hạn_sử_dụng=0] [ví]\nVí dụ: /phatcodeall 50000 1d12h (Mã 50k, hạn 1 ngày 12 giờ)\nVí dụ: /phatcodeall 50000 1d12h shop (cộng vào ví shop)")
         return
         
     try:
@@ -134,13 +141,13 @@ async def cmd_phatcodeall(msg: Message):
             await msg.answer("❌ Hệ thống chưa có người dùng nào!")
             return
             
-        code = db.generate_code(amount=amount, prefix="GIFT", max_uses=total_users, expire_at=expire_at)
+        code = db.generate_code(amount=amount, prefix="GIFT", max_uses=total_users, expire_at=expire_at, wallet=wallet)
         
         # Tell the main bot manager to broadcast
         from .bot import manager as main_bot_manager
         asyncio.create_task(broadcast_code_to_all(main_bot_manager, code, amount, expire_at))
         
-        await msg.answer(f"✅ Đã tạo mã <code>{code}</code> và đang gửi thông báo tới {total_users} người dùng!", parse_mode="HTML")
+        await msg.answer(f"✅ Đã tạo mã <code>{code}</code> ({db.wallet_label(wallet)}) và đang gửi thông báo tới {total_users} người dùng!", parse_mode="HTML")
     except Exception as e:
         await msg.answer(f"❌ Lỗi: {e}")
 
@@ -665,8 +672,9 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     # ── /adm promo <prefix> <tiền> [lượt] [hạn] ──────────────────────────────
     elif subcmd == "promo":
         args = rest.split()
+        args, wallet = _pop_wallet(args)
         if len(args) < 2:
-            await msg.answer("❌ HDSD: /adm promo &lt;prefix&gt; &lt;tiền&gt; [lượt] [hạn]\nVD: /adm promo SALE 50000 100 24h", parse_mode="HTML"); return
+            await msg.answer("❌ HDSD: /adm promo &lt;prefix&gt; &lt;tiền&gt; [lượt] [hạn] [ví]\nVD: /adm promo SALE 50000 100 24h (cộng ví chính)\nVD: /adm promo SHOPGIFT 50000 10 24h shop (cộng ví shop)", parse_mode="HTML"); return
         try:
             prefix = args[0].upper()
             amount = int(args[1].replace(",","").replace("k","000").replace("K","000"))
@@ -678,12 +686,13 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
                     expire_at = int(time.time()) + secs
         except (ValueError, IndexError):
             await msg.answer("❌ Thông số không hợp lệ!"); return
-        code = db.generate_code(amount=amount, prefix=prefix, max_uses=max_uses, expire_at=expire_at)
+        code = db.generate_code(amount=amount, prefix=prefix, max_uses=max_uses, expire_at=expire_at, wallet=wallet)
         expire_text = "Vĩnh viễn" if not expire_at else util.vn_time_str('%H:%M %d/%m/%Y', expire_at)
         await msg.answer(
             f"✅ <b>TẠO MÃ KHUYẾN MÃI THÀNH CÔNG</b>\n\n"
             f"🎁 Mã: <code>{code}</code>\n"
             f"💰 Giá trị: <b>{util.vnd(amount)}</b>\n"
+            f"👛 Cộng vào: <b>{db.wallet_label(wallet)}</b>\n"
             f"👥 Số lượt dùng: <b>{max_uses}</b>\n"
             f"⏳ Hạn: <b>{expire_text}</b>",
             parse_mode="HTML")
@@ -691,15 +700,16 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     # ── /adm taopromo <CODE> <%> [lượt] [giờ] ─────────────────────────────
     elif subcmd == "taopromo":
         args = rest.split()
+        args, wallet = _pop_wallet(args)
         if len(args) < 2:
-            await msg.answer("❌ HDSD: <code>/adm taopromo &lt;CODE&gt; &lt;phần_trăm&gt; [số_lượt] [số_giờ]</code>\nVD: <code>/adm taopromo SALE20 20 100 24</code>", parse_mode="HTML"); return
+            await msg.answer("❌ HDSD: <code>/adm taopromo &lt;CODE&gt; &lt;phần_trăm&gt; [số_lượt] [số_giờ] [ví]</code>\nVD: <code>/adm taopromo SALE20 20 100 24</code> (giảm khi mua credit)\nVD: <code>/adm taopromo SHOP10 10 0 0 shop</code> (giảm khi mua acc ở /shop)", parse_mode="HTML"); return
         try:
             pct = int(args[1])
         except ValueError:
             await msg.answer("❌ Phần trăm phải là số (1-90)."); return
         max_uses = int(args[2]) if len(args) > 2 and args[2].isdigit() else 0
         hours = int(args[3]) if len(args) > 3 and args[3].isdigit() else 0
-        ok, txt = db.create_promo(args[0], pct, max_uses, hours)
+        ok, txt = db.create_promo(args[0], pct, max_uses, hours, wallet)
         extra = ""
         if ok:
             if max_uses: extra += f"\n🎫 Giới hạn: {max_uses} lượt"
@@ -717,7 +727,11 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
             d = dict(r)
             status = "✅" if db.promo_valid(d["code"])[0] else "⛔"
             lim = f"{int(d['used_count'])}/{int(d['max_uses'])}" if d["max_uses"] else f"{int(d['used_count'])}/∞"
-            lines.append(f"{status} <code>{d['code']}</code> — giảm {int(d['pct'])}% — đã dùng {lim}")
+            try:
+                wlbl = db.wallet_label(d.get("wallet"))
+            except Exception:
+                wlbl = "ví chính"
+            lines.append(f"{status} <code>{d['code']}</code> — giảm {int(d['pct'])}% ({wlbl}) — đã dùng {lim}")
         await msg.answer("\n".join(lines), parse_mode="HTML")
 
     # ── /adm xoapromo <CODE> ─────────────────────────────────────────────
@@ -741,13 +755,21 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
         d = dict(row)
         exp_txt = f"\n⏰ Kết thúc: {util.vn_time_str('%d/%m %H:%M', d['expires_at'])}" if d["expires_at"] else ""
         lim_txt = f"\n🎫 Chỉ {int(d['max_uses']) - int(d['used_count'])} suất" if d["max_uses"] else ""
+        try:
+            _w = db.parse_wallet(d.get("wallet"))
+        except Exception:
+            _w = "main"
+        if _w == "shop":
+            scope_title, scope_txt, go_txt = "MUA ACC Ở SHOP", "khi mua acc ở /shop", "🛒 Mua acc: /shop"
+        else:
+            scope_title, scope_txt, go_txt = "GÓI CREDITS", "khi mua gói credits", "⚡ Mua gói: /muacredit"
         text = (
-            f"🔥 <b>FLASH SALE — GIẢM {int(d['pct'])}% GÓI CREDITS!</b> 🔥\n"
+            f"🔥 <b>FLASH SALE — GIẢM {int(d['pct'])}% {scope_title}!</b> 🔥\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🎟️ Mã: <code>{d['code']}</code>\n"
-            f"💸 Giảm <b>{int(d['pct'])}%</b> khi mua gói credits{lim_txt}{exp_txt}\n\n"
+            f"💸 Giảm <b>{int(d['pct'])}%</b> {scope_txt}{lim_txt}{exp_txt}\n\n"
             f"👉 Áp mã ngay: <code>/promo {d['code']}</code>\n"
-            f"⚡ Mua gói: /muacredit"
+            f"{go_txt}"
         )
         import asyncio as _asyncio
         sent, failed = 0, 0
@@ -835,10 +857,12 @@ class AdmMenuState(StatesGroup):
     taopromo_pct = State()
     taopromo_uses = State()
     taopromo_hours = State()
+    taopromo_wallet = State()
     promo_prefix = State()
     promo_amount = State()
     promo_uses = State()
     promo_expire = State()
+    promo_wallet = State()
     xoapromo_code = State()
     flashsale_code = State()
     broadcast_text = State()
@@ -914,6 +938,24 @@ def _admm_confirm_kb():
         InlineKeyboardButton(text="✅ Xác nhận", callback_data="admm:confirm"),
         InlineKeyboardButton(text="❌ Huỷ", callback_data="admm:cancel"),
     ]])
+
+
+_WALLET_WORDS = {"main", "chinh", "shop", "vishop"}
+
+
+def _pop_wallet(args: list) -> tuple[list, str]:
+    """Tách tham số ví ở cuối lệnh (nếu có). Trả về (args còn lại, ví)."""
+    if args and args[-1].lower() in _WALLET_WORDS:
+        return args[:-1], db.parse_wallet(args[-1])
+    return args, "main"
+
+
+def _admm_wallet_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Ví chính (giảm khi mua credit)", callback_data="admm:wallet_main")],
+        [InlineKeyboardButton(text="🛒 Ví shop (giảm khi mua acc)", callback_data="admm:wallet_shop")],
+        [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+    ])
 
 
 def _admm_skip_kb(skip_text="⏭ Bỏ qua"):
@@ -1294,6 +1336,36 @@ def register_adm_menu(target_router):
             await cb.answer()
             return
 
+        # ── Chọn ví cho mã giảm giá / mã tiền ──
+        if action in ("wallet_main", "wallet_shop"):
+            st = await state.get_state()
+            wallet = "shop" if action == "wallet_shop" else "main"
+            d = await state.get_data()
+            from . import util as _util
+            if st == AdmMenuState.taopromo_wallet.state:
+                hours = d.get("hours") or 0
+                await _admm_show_confirm_cb(cb, state, "🎟️ <b>XÁC NHẬN TẠO MÃ</b>",
+                                           [f"🎫 Mã: <code>{html.escape(str(d.get('code')))}</code>",
+                                            f"💸 Giảm: <b>{d.get('pct')}%</b>",
+                                            f"👛 Áp dụng cho: <b>{db.wallet_label(wallet)}</b>",
+                                            f"👥 Lượt dùng: <b>{'không giới hạn' if not d.get('uses') else d.get('uses')}</b>",
+                                            f"⏳ Hiệu lực: <b>{'vĩnh viễn' if not hours else f'{hours} giờ'}</b>"],
+                                           f"/adm taopromo {d.get('code')} {d.get('pct')} {d.get('uses') or 0} {hours} {wallet}")
+                return
+            if st == AdmMenuState.promo_wallet.state:
+                expire = str(d.get("expire") or "0")
+                exp_txt = "vĩnh viễn" if expire == "0" else expire
+                await _admm_show_confirm_cb(cb, state, "💵 <b>XÁC NHẬN TẠO MÃ TIỀN</b>",
+                                           [f"🏷 Prefix: <b>{html.escape(str(d.get('prefix')))}</b>",
+                                            f"💰 Giá trị: <b>{_util.vnd(d.get('amount') or 0)}</b>",
+                                            f"👛 Cộng vào: <b>{db.wallet_label(wallet)}</b>",
+                                            f"👥 Lượt dùng: <b>{d.get('uses') or 1}</b>",
+                                            f"⏳ Hạn: <b>{html.escape(exp_txt)}</b>"],
+                                           f"/adm promo {d.get('prefix')} {d.get('amount')} {d.get('uses') or 1} {expire} {wallet}")
+                return
+            await cb.answer()
+            return
+
         if action == "help":
             await cb.answer()
             await _show_adm_help(cb.message)
@@ -1488,7 +1560,7 @@ def register_adm_menu(target_router):
             "go_unban": (AdmMenuState.unban_uid, "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>\n\nGửi <b>User ID</b> cần mở khoá."),
             "go_setvip": (AdmMenuState.setvip_uid, "⭐ <b>SET VIP</b> (bước 1/3)\n\nGửi <b>User ID</b> cần set VIP."),
             "go_find": (AdmMenuState.find_query, "🔎 <b>TÌM USER</b>\n\nGửi <b>@username</b>, <b>User ID</b> hoặc tên cần tìm."),
-            "go_taopromo": (AdmMenuState.taopromo_code, "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 1/4)\n\nGửi <b>mã</b> (VD: SALE20)."),
+            "go_taopromo": (AdmMenuState.taopromo_code, "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 1/5)\n\nGửi <b>mã</b> (VD: SALE20)."),
             "go_promo": (AdmMenuState.promo_prefix, "💵 <b>TẠO MÃ TIỀN</b> (bước 1/4)\n\nGửi <b>prefix</b> (VD: SALE)."),
             "go_xoapromo": (AdmMenuState.xoapromo_code, "❌ <b>XOÁ MÃ GIẢM GIÁ</b>\n\nGửi <b>mã</b> cần xoá."),
             "go_flashsale": (AdmMenuState.flashsale_code, "🔥 <b>FLASH SALE</b>\n\nGửi <b>mã</b> muốn thông báo tới toàn bộ user."),
@@ -1599,35 +1671,33 @@ def register_adm_menu(target_router):
                 await state.update_data(uses=0)
                 await state.set_state(AdmMenuState.taopromo_hours)
                 await cb.message.edit_text(
-                    "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 4/4)\n\nGửi <b>số giờ hiệu lực</b>, hoặc bấm Bỏ qua (vĩnh viễn).",
+                    "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 4/5)\n\nGửi <b>số giờ hiệu lực</b>, hoặc bấm Bỏ qua (vĩnh viễn).",
                     parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
                 await cb.answer()
                 return
             if st == AdmMenuState.taopromo_hours.state:
-                d = await state.get_data()
-                await _admm_show_confirm_cb(cb, state, "🎟️ <b>XÁC NHẬN TẠO MÃ</b>",
-                                           [f"🎫 Mã: <code>{html.escape(str(d['code']))}</code>",
-                                            f"💸 Giảm: <b>{d['pct']}%</b>",
-                                            f"👥 Lượt dùng: <b>{'không giới hạn' if not d.get('uses') else d['uses']}</b>",
-                                            "⏳ Hiệu lực: <b>vĩnh viễn</b>"],
-                                           f"/adm taopromo {d['code']} {d['pct']} {d.get('uses') or 0} 0")
+                await state.update_data(hours=0)
+                await state.set_state(AdmMenuState.taopromo_wallet)
+                await cb.message.edit_text(
+                    "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 5/5)\n\nMã này <b>giảm giá cho ví nào</b>?",
+                    parse_mode="HTML", reply_markup=_admm_wallet_kb())
+                await cb.answer()
                 return
             if st == AdmMenuState.promo_uses.state:
                 await state.update_data(uses=1)
                 await state.set_state(AdmMenuState.promo_expire)
                 await cb.message.edit_text(
-                    "💵 <b>TẠO MÃ TIỀN</b> (bước 4/4)\n\nGửi <b>hạn dùng</b> (VD: 24h, 2d), hoặc bấm Bỏ qua (vĩnh viễn).",
+                    "💵 <b>TẠO MÃ TIỀN</b> (bước 4/5)\n\nGửi <b>hạn dùng</b> (VD: 24h, 2d), hoặc bấm Bỏ qua (vĩnh viễn).",
                     parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
                 await cb.answer()
                 return
             if st == AdmMenuState.promo_expire.state:
-                d = await state.get_data()
-                await _admm_show_confirm_cb(cb, state, "💵 <b>XÁC NHẬN TẠO MÃ TIỀN</b>",
-                                           [f"🏷 Prefix: <b>{html.escape(str(d['prefix']))}</b>",
-                                            f"💰 Giá trị: <b>{_util.vnd(d['amount'])}</b>",
-                                            f"👥 Lượt dùng: <b>{d.get('uses') or 1}</b>",
-                                            "⏳ Hạn: <b>vĩnh viễn</b>"],
-                                           f"/adm promo {d['prefix']} {d['amount']} {d.get('uses') or 1} 0")
+                await state.update_data(expire="0")
+                await state.set_state(AdmMenuState.promo_wallet)
+                await cb.message.edit_text(
+                    "💵 <b>TẠO MÃ TIỀN</b> (bước 5/5)\n\nTiền thưởng cộng vào <b>ví nào</b>?",
+                    parse_mode="HTML", reply_markup=_admm_wallet_kb())
+                await cb.answer()
                 return
             await cb.answer()
             return
@@ -1848,7 +1918,7 @@ def register_adm_menu(target_router):
             return
         await state.update_data(code=code)
         await state.set_state(AdmMenuState.taopromo_pct)
-        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 2/4)\n\nGửi <b>phần trăm giảm</b> (1-90).",
+        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 2/5)\n\nGửi <b>phần trăm giảm</b> (1-90).",
                          parse_mode="HTML")
 
     @target_router.message(AdmMenuState.taopromo_pct)
@@ -1864,7 +1934,7 @@ def register_adm_menu(target_router):
             return
         await state.update_data(pct=pct)
         await state.set_state(AdmMenuState.taopromo_uses)
-        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 3/4)\n\nGửi <b>giới hạn lượt dùng</b>, hoặc bấm Bỏ qua (không giới hạn).",
+        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 3/5)\n\nGửi <b>giới hạn lượt dùng</b>, hoặc bấm Bỏ qua (không giới hạn).",
                          parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Không giới hạn"))
 
     @target_router.message(AdmMenuState.taopromo_uses)
@@ -1881,7 +1951,7 @@ def register_adm_menu(target_router):
             return
         await state.update_data(uses=uses)
         await state.set_state(AdmMenuState.taopromo_hours)
-        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 4/4)\n\nGửi <b>số giờ hiệu lực</b>, hoặc bấm Bỏ qua (vĩnh viễn).",
+        await msg.answer("🎟️ <b>TẠO MÃ GIẢM %</b> (bước 4/5)\n\nGửi <b>số giờ hiệu lực</b>, hoặc bấm Bỏ qua (vĩnh viễn).",
                          parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
 
     @target_router.message(AdmMenuState.taopromo_hours)
@@ -1897,13 +1967,11 @@ def register_adm_menu(target_router):
                              reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
             return
         data = await state.get_data()
-        await _admm_show_confirm_msg(
-            msg, state, "🎟️ <b>XÁC NHẬN TẠO MÃ</b>",
-            [f"🎫 Mã: <code>{html.escape(str(data['code']))}</code>",
-             f"💸 Giảm: <b>{data['pct']}%</b>",
-             f"👥 Lượt dùng: <b>{'không giới hạn' if not data.get('uses') else data['uses']}</b>",
-             f"⏳ Hiệu lực: <b>{'vĩnh viễn' if not hours else f'{hours} giờ'}</b>"],
-            f"/adm taopromo {data['code']} {data['pct']} {data.get('uses') or 0} {hours}")
+        await state.update_data(hours=hours)
+        await state.set_state(AdmMenuState.taopromo_wallet)
+        await msg.answer(
+            "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 5/5)\n\nMã này <b>giảm giá cho ví nào</b>?",
+            parse_mode="HTML", reply_markup=_admm_wallet_kb())
 
     @target_router.message(AdmMenuState.promo_prefix)
     async def _admm_promo_prefix(msg: Message, state: FSMContext):
@@ -1915,7 +1983,7 @@ def register_adm_menu(target_router):
             return
         await state.update_data(prefix=prefix)
         await state.set_state(AdmMenuState.promo_amount)
-        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 2/4)\n\nGửi <b>giá trị mã</b> (VD: 50000 hoặc 50k).",
+        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 2/5)\n\nGửi <b>giá trị mã</b> (VD: 50000 hoặc 50k).",
                          parse_mode="HTML")
 
     @target_router.message(AdmMenuState.promo_amount)
@@ -1928,7 +1996,7 @@ def register_adm_menu(target_router):
             return
         await state.update_data(amount=amount)
         await state.set_state(AdmMenuState.promo_uses)
-        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 3/4)\n\nGửi <b>số lượt dùng</b>, hoặc bấm Bỏ qua (1 lượt).",
+        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 3/5)\n\nGửi <b>số lượt dùng</b>, hoặc bấm Bỏ qua (1 lượt).",
                          parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ 1 lượt"))
 
     @target_router.message(AdmMenuState.promo_uses)
@@ -1945,7 +2013,7 @@ def register_adm_menu(target_router):
             return
         await state.update_data(uses=uses)
         await state.set_state(AdmMenuState.promo_expire)
-        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 4/4)\n\nGửi <b>hạn dùng</b> (VD: 24h, 2d), hoặc bấm Bỏ qua (vĩnh viễn).",
+        await msg.answer("💵 <b>TẠO MÃ TIỀN</b> (bước 4/5)\n\nGửi <b>hạn dùng</b> (VD: 24h, 2d), hoặc bấm Bỏ qua (vĩnh viễn).",
                          parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
 
     @target_router.message(AdmMenuState.promo_expire)
@@ -1959,13 +2027,11 @@ def register_adm_menu(target_router):
                              reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
             return
         data = await state.get_data()
-        await _admm_show_confirm_msg(
-            msg, state, "💵 <b>XÁC NHẬN TẠO MÃ TIỀN</b>",
-            [f"🏷 Prefix: <b>{html.escape(str(data['prefix']))}</b>",
-             f"💰 Giá trị: <b>{_util.vnd(data['amount'])}</b>",
-             f"👥 Lượt dùng: <b>{data['uses']}</b>",
-             f"⏳ Hạn: <b>{html.escape(expire)}</b>"],
-            f"/adm promo {data['prefix']} {data['amount']} {data['uses']} {expire}")
+        await state.update_data(expire=expire)
+        await state.set_state(AdmMenuState.promo_wallet)
+        await msg.answer(
+            "💵 <b>TẠO MÃ TIỀN</b> (bước 5/5)\n\nTiền thưởng cộng vào <b>ví nào</b>?",
+            parse_mode="HTML", reply_markup=_admm_wallet_kb())
 
     @target_router.message(AdmMenuState.xoapromo_code)
     async def _admm_xoapromo_code(msg: Message, state: FSMContext):
@@ -1998,7 +2064,7 @@ def register_adm_menu(target_router):
         await _admm_show_confirm_msg(
             msg, state, "🔥 <b>XÁC NHẬN FLASH SALE</b>",
             [f"🎟️ Mã: <code>{d['code']}</code>",
-             f"💸 Giảm <b>{int(d['pct'])}%</b> khi mua gói credits{lim_txt}{exp_txt}",
+             f"💸 Giảm <b>{int(d['pct'])}%</b> ({db.wallet_label(d.get('wallet'))}){lim_txt}{exp_txt}",
              f"👥 Sẽ gửi tới <b>{total}</b> user"],
             f"/adm flashsale {code}")
 
@@ -2529,9 +2595,9 @@ async def _show_adm_help(msg: Message):
         "• <code>/adm broadcast inactive &lt;tin_nhắn&gt;</code>\n"
         "  👉 <i>Gửi thông báo cho user không hoạt động 7 ngày qua.</i>\n\n"
 
-        "• <code>/adm promo &lt;prefix&gt; &lt;tiền&gt; [lượt] [hạn]</code>\n"
-        "  👉 <i>Tạo mã quà tặng/Giftcode cho user nhập qua /code.</i>\n"
-        "  💡 VD: <code>/adm promo SALE 50000 100 24h</code>\n\n"
+        "• <code>/adm promo &lt;prefix&gt; &lt;tiền&gt; [lượt] [hạn] [ví]</code>\n"
+        "  👉 <i>Tạo mã quà tặng/Giftcode cho user nhập qua /code (chọn ví chính/shop).</i>\n"
+        "  💡 VD: <code>/adm promo SALE 50000 100 24h</code> / <code>/adm promo SHOPGIFT 50000 10 24h shop</code>\n\n"
 
         "<b>🔑 API RESELLER</b>\n"
         "• <code>/taokey &lt;tên shop&gt; [credits]</code>\n"
@@ -2589,8 +2655,8 @@ async def _show_adm_help(msg: Message):
         "• <code>/nccauto &lt;url_file&gt; &lt;id_loại&gt; [ncc_id]</code> / <code>off</code> — Nhập kho tự động 6h sáng\n\n"
 
 "<b>🎟️ FLASH SALE (mã giảm giá)</b>\n"
-        "• <code>/adm taopromo &lt;CODE&gt; &lt;%&gt; [lượt] [giờ]</code>\n"
-        "  💡 VD: <code>/adm taopromo SALE20 20 100 24</code>\n\n"
+        "• <code>/adm taopromo &lt;CODE&gt; &lt;%&gt; [lượt] [giờ] [ví]</code>\n"
+        "  💡 VD: <code>/adm taopromo SALE20 20 100 24</code> (mua credit) / <code>/adm taopromo SHOP10 10 0 0 shop</code> (mua acc)\n\n"
         "• <code>/adm dspromo</code> — <i>Xem các mã đang có.</i>\n"
         "• <code>/adm xoapromo &lt;CODE&gt;</code> — <i>Xóa mã.</i>\n"
         "• <code>/adm flashsale &lt;CODE&gt;</code> — <i>Gửi thông báo sale cho toàn bộ user.</i>\n\n"
@@ -3232,10 +3298,14 @@ async def cmd_promo(msg: Message):
     if not is_admin(msg.chat.id, msg.from_user.id):
         return
     parts = msg.text.split()
+    wallet = "main"
+    if parts and parts[-1].lower() in _WALLET_WORDS:
+        wallet = db.parse_wallet(parts.pop())
     if len(parts) < 3:
         await msg.answer(
-            "❌ HDSD: /promo &lt;tên_prefix&gt; &lt;giá_trị&gt; [số_lần_dùng=1] [hạn=0]\n"
-            "Ví dụ: /promo SALE 50000 100 24h — Mã SALE-XXXXX, 50k, 100 lượt, hạn 24 giờ",
+            "❌ HDSD: /promo &lt;tên_prefix&gt; &lt;giá_trị&gt; [số_lần_dùng=1] [hạn=0] [ví]\n"
+            "Ví dụ: /promo SALE 50000 100 24h — Mã SALE-XXXXX, 50k, 100 lượt, hạn 24 giờ\n"
+            "Ví dụ: /promo SHOPGIFT 50000 10 24h shop — cộng vào ví shop",
             parse_mode="HTML"
         )
         return
@@ -3253,12 +3323,13 @@ async def cmd_promo(msg: Message):
         return
 
     from . import util
-    code = db.generate_code(amount=amount, prefix=prefix, max_uses=max_uses, expire_at=expire_at)
+    code = db.generate_code(amount=amount, prefix=prefix, max_uses=max_uses, expire_at=expire_at, wallet=wallet)
     expire_text = "Vĩnh viễn" if not expire_at else util.vn_time_str('%H:%M %d/%m/%Y', expire_at)
     await msg.answer(
         f"✅ <b>TẠO MÃ KHUYẾN MÃI THÀNH CÔNG</b>\n\n"
         f"🎁 Mã: <code>{code}</code>\n"
         f"💰 Giá trị: <b>{util.vnd(amount)}</b>\n"
+        f"👛 Cộng vào: <b>{db.wallet_label(wallet)}</b>\n"
         f"👥 Số lượt dùng: <b>{max_uses}</b>\n"
         f"⏳ Hạn sử dụng: <b>{expire_text}</b>",
         parse_mode="HTML"

@@ -348,6 +348,7 @@ def init_db() -> None:
                 id              BIGINT PRIMARY KEY AUTOINCREMENT,
                 code            TEXT    NOT NULL UNIQUE,
                 amount          BIGINT NOT NULL,
+                wallet          TEXT    NOT NULL DEFAULT 'main',
                 is_used         BIGINT DEFAULT 0,
                 used_by         BIGINT DEFAULT 0,
                 created_at      BIGINT NOT NULL,
@@ -502,7 +503,9 @@ def migrate_db():
             "ALTER TABLE acc_stock ADD COLUMN sold_at BIGINT DEFAULT 0",
             "ALTER TABLE acc_stock ADD COLUMN price_sold BIGINT DEFAULT 0",
             "ALTER TABLE acc_stock ADD COLUMN sheet_ref TEXT DEFAULT ''",
-            "ALTER TABLE acc_stock ADD COLUMN sheet_marked INTEGER DEFAULT 0"
+            "ALTER TABLE acc_stock ADD COLUMN sheet_marked INTEGER DEFAULT 0",
+            "ALTER TABLE giftcodes ADD COLUMN wallet TEXT DEFAULT 'main'",
+            "ALTER TABLE promo_codes ADD COLUMN wallet TEXT DEFAULT 'main'"
         ]:
             try:
                 c.execute(sql)
@@ -871,9 +874,29 @@ def activate_trial(tg_id: int, days: int) -> bool:
     return True
 
 # --- GIFTCODES ---
-def generate_code(amount: int, prefix: str = "CODE", max_uses: int = 1, expire_at: int = 0) -> str:
+# ─── VÍ (wallet): 'main' = ví chính, 'shop' = ví shop ──────────────────────────
+WALLET_LABEL = {"main": "ví chính", "shop": "ví shop"}
+
+def wallet_label(wallet: str) -> str:
+    return WALLET_LABEL.get((wallet or "main").strip().lower(), "ví chính")
+
+def parse_wallet(s: str) -> str:
+    """Chuẩn hoá lựa chọn ví của admin: 'shop' → 'shop', còn lại → 'main'."""
+    s = (s or "").strip().lower()
+    if s in ("shop", "vishop", "ví shop", "vi shop"):
+        return "shop"
+    return "main"
+
+def credit_wallet(tg_id: int, amount: int, reason: str, wallet: str = "main") -> bool:
+    """Cộng tiền vào ví đã chọn. Trả về True nếu cộng thành công."""
+    if parse_wallet(wallet) == "shop":
+        return adjust_shop_balance(tg_id, amount, reason)
+    return adjust_balance(tg_id, amount, reason)
+
+def generate_code(amount: int, prefix: str = "CODE", max_uses: int = 1, expire_at: int = 0, wallet: str = "main") -> str:
     import random
     import string
+    wallet = parse_wallet(wallet)
     with _lock:
         c = get_conn()
         while True:
@@ -882,8 +905,8 @@ def generate_code(amount: int, prefix: str = "CODE", max_uses: int = 1, expire_a
             exists = c.execute("SELECT id FROM giftcodes WHERE code=?", (code,)).fetchone()
             if not exists:
                 c.execute(
-                    "INSERT INTO giftcodes(code, amount, created_at, max_uses, expire_at) VALUES(?, ?, ?, ?, ?)", 
-                    (code, amount, int(time.time()), max_uses, expire_at)
+                    "INSERT INTO giftcodes(code, amount, wallet, created_at, max_uses, expire_at) VALUES(?, ?, ?, ?, ?, ?)",
+                    (code, amount, wallet, int(time.time()), max_uses, expire_at)
                 )
                 c.commit()
                 return code
@@ -899,20 +922,26 @@ def get_unused_code(amount: int) -> str:
 def get_code_info(code: str) -> Optional[Any]:
     return get_conn().execute("SELECT * FROM giftcodes WHERE code=?", (code,)).fetchone()
 
-def use_code(code: str, tg_id: int) -> tuple[bool, int, str]:
+def use_code(code: str, tg_id: int) -> tuple[bool, int, str, str]:
+    """Đổi giftcode. Trả về (thành_công, số_tiền, thông_báo, ví)."""
     now_ts = int(time.time())
     with _lock:
         c = get_conn()
-        row = c.execute("SELECT amount, is_used, max_uses, current_uses, expire_at FROM giftcodes WHERE code=?", (code,)).fetchone()
-        if not row: return False, 0, "Mã không tồn tại"
-        if row["is_used"] or (row["max_uses"] > 0 and row["current_uses"] >= row["max_uses"]): 
-            return False, 0, "Mã đã hết lượt sử dụng"
+        row = c.execute("SELECT amount, wallet, is_used, max_uses, current_uses, expire_at FROM giftcodes WHERE code=?", (code,)).fetchone()
+        if not row: return False, 0, "Mã không tồn tại", "main"
+        if row["is_used"] or (row["max_uses"] > 0 and row["current_uses"] >= row["max_uses"]):
+            return False, 0, "Mã đã hết lượt sử dụng", "main"
         if row["expire_at"] > 0 and now_ts > row["expire_at"]:
-            return False, 0, "Mã đã hết hạn"
-        
+            return False, 0, "Mã đã hết hạn", "main"
+
         # Check if user already used it
         used = c.execute("SELECT 1 FROM giftcode_uses WHERE code=? AND tg_id=?", (code, tg_id)).fetchone()
-        if used: return False, 0, "Bạn đã sử dụng mã này rồi"
+        if used: return False, 0, "Bạn đã sử dụng mã này rồi", "main"
+
+        try:
+            wallet = parse_wallet(row["wallet"])
+        except Exception:
+            wallet = "main"
         
         amount = row["amount"]
         new_uses = row["current_uses"] + 1
@@ -926,7 +955,7 @@ def use_code(code: str, tg_id: int) -> tuple[bool, int, str]:
         c.execute("DELETE FROM saved_codes WHERE tg_id=? AND code=?", (tg_id, code))
         
         c.commit()
-        return True, amount, "Thành công"
+        return True, amount, "Thành công", wallet
 
 def save_code_for_user(tg_id: int, code: str) -> tuple[bool, str]:
     now_ts = int(time.time())
@@ -951,7 +980,7 @@ def save_code_for_user(tg_id: int, code: str) -> tuple[bool, str]:
 
 def get_user_saved_codes(tg_id: int) -> list:
     q = """
-        SELECT s.code, g.amount, g.expire_at 
+        SELECT s.code, g.amount, g.expire_at, g.wallet 
         FROM saved_codes s
         JOIN giftcodes g ON s.code = g.code
         WHERE s.tg_id = ? 
@@ -1843,6 +1872,7 @@ def migrate_new_features():
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             code       TEXT NOT NULL UNIQUE,
             pct        BIGINT NOT NULL DEFAULT 10,
+            wallet     TEXT NOT NULL DEFAULT 'main',
             max_uses   BIGINT DEFAULT 0,
             used_count BIGINT DEFAULT 0,
             expires_at BIGINT DEFAULT 0,
@@ -2624,21 +2654,22 @@ def get_reseller_by_name_or_id(ref: str):
 
 # ─── PROMO CODES (flash sale giảm giá gói credit) ──────────────────────
 
-def create_promo(code: str, pct: int, max_uses: int = 0, hours: int = 0) -> tuple[bool, str]:
+def create_promo(code: str, pct: int, max_uses: int = 0, hours: int = 0, wallet: str = "main") -> tuple[bool, str]:
     code = (code or "").strip().upper()
     if not code or len(code) > 32:
         return False, "Mã không hợp lệ (1-32 ký tự)."
     pct = max(1, min(90, int(pct)))
+    wallet = parse_wallet(wallet)
     exp = int(time.time()) + int(hours) * 3600 if hours > 0 else 0
     with _lock:
         c = get_conn()
         try:
             c.execute(
-                "INSERT INTO promo_codes(code, pct, max_uses, used_count, expires_at, created_at) VALUES(?,?,?,?,?,?)",
-                (code, pct, int(max_uses), 0, exp, int(time.time())),
+                "INSERT INTO promo_codes(code, pct, wallet, max_uses, used_count, expires_at, created_at) VALUES(?,?,?,?,?,?,?)",
+                (code, pct, wallet, int(max_uses), 0, exp, int(time.time())),
             )
             c.commit()
-            return True, f"Đã tạo mã <b>{code}</b> giảm <b>{pct}%</b>."
+            return True, f"Đã tạo mã <b>{code}</b> giảm <b>{pct}%</b> ({wallet_label(wallet)})."
         except Exception:
             return False, f"Mã <b>{code}</b> đã tồn tại."
 
@@ -2705,8 +2736,10 @@ def consume_promo(code: str) -> None:
         c.commit()
 
 
-def apply_user_promo(tg_id: int, price: int) -> tuple[int, str]:
-    """Áp mã giảm giá đang giữ của user vào giá. Trả về (giá_mới, mã_đã_dùng)."""
+def apply_user_promo(tg_id: int, price: int, wallet: str = "main") -> tuple[int, str]:
+    """Áp mã giảm giá đang giữ của user vào giá — chỉ áp khi ví của mã khớp ví thanh toán.
+    Trả về (giá_mới, mã_đã_dùng)."""
+    wallet = parse_wallet(wallet)
     up = get_user_promo(tg_id)
     if not up:
         return price, ""
@@ -2714,11 +2747,36 @@ def apply_user_promo(tg_id: int, price: int) -> tuple[int, str]:
     if not ok:
         clear_user_promo(tg_id)
         return price, ""
+    try:
+        code_wallet = parse_wallet(row["wallet"])
+    except Exception:
+        code_wallet = "main"
+    if code_wallet != wallet:
+        return price, ""
     pct = int(row["pct"])
     new_price = int(price * (100 - pct) / 100)
     consume_promo(up["code"])
     clear_user_promo(tg_id)
     return new_price, up["code"]
+
+
+def preview_user_promo(tg_id: int, price: int, wallet: str = "main") -> tuple[int, str]:
+    """Xem trước giá sau khi áp mã giảm giá (KHÔNG trừ lượt dùng). Trả về (giá_mới, mã)."""
+    wallet = parse_wallet(wallet)
+    up = get_user_promo(tg_id)
+    if not up:
+        return price, ""
+    ok, _, row = promo_valid(up["code"])
+    if not ok:
+        return price, ""
+    try:
+        code_wallet = parse_wallet(row["wallet"])
+    except Exception:
+        code_wallet = "main"
+    if code_wallet != wallet:
+        return price, ""
+    pct = int(row["pct"])
+    return int(price * (100 - pct) / 100), up["code"]
 
 
 # ─── CHECK ACCURACY STATS ──────────────────────────────────────────────
