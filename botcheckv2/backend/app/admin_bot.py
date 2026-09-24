@@ -915,10 +915,74 @@ def _admm_skip_kb(skip_text="⏭ Bỏ qua"):
 # ------------------------------------------------- chọn user theo số thứ tự
 _USER_PICK_PAGE = 10
 
+# Flow /adm có bước chọn user bằng nút bấm: go_<action> → flow key
+_USER_PICK_ACTIONS = {
+    "go_topup": "topup",
+    "go_setbal": "setbal",
+    "go_ban": "ban",
+    "go_unban": "unban",
+    "go_setvip": "setvip",
+}
+_USER_PICK_FLOWS = {
+    "topup": "💰 <b>CỘNG TIỀN</b> (bước 1/2)",
+    "setbal": "✏️ <b>SET SỐ DƯ</b> (bước 1/2)",
+    "ban": "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)",
+    "unban": "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>",
+    "setvip": "⭐ <b>SET VIP</b> (bước 1/3)",
+}
 
-def _admm_user_pick_text(page: int):
-    """Danh sách user đánh số thứ tự để admin bấm chọn thay vì nhập ID."""
+
+async def _admm_sel_uid(cb, state, flow: str, uid: int):
+    """Admin bấm chọn user cho flow nhập liệu: làm đúng bước *_uid đã làm."""
+    if flow in ("topup", "setbal", "setvip") and not db.get_user(uid):
+        await cb.answer(f"❌ Không tìm thấy user {uid}!", show_alert=True)
+        return
+    if flow == "topup":
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.topup_amount)
+        await cb.message.edit_text(
+            "💰 <b>CỘNG TIỀN</b> (bước 2/2)\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
+            parse_mode="HTML", reply_markup=_admm_back_kb())
+    elif flow == "setbal":
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.setbal_amount)
+        await cb.message.edit_text(
+            "✏️ <b>SET SỐ DƯ</b> (bước 2/2)\n\nGửi <b>số dư mới</b> (VD: 100000 hoặc 100k).\nGõ /huy để huỷ.",
+            parse_mode="HTML", reply_markup=_admm_back_kb())
+    elif flow == "ban":
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.ban_reason)
+        await cb.message.edit_text(
+            "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 2/2)\n\nGửi <b>lý do</b> khoá, hoặc bấm Bỏ qua.",
+            parse_mode="HTML", reply_markup=_admm_skip_kb())
+    elif flow == "unban":
+        await _admm_show_confirm_msg(
+            cb.message, state, "🟢 <b>XÁC NHẬN MỞ KHOÁ</b>",
+            [f"👤 User: <code>{uid}</code>"], f"/adm unban {uid}")
+    elif flow == "setvip":
+        await state.update_data(uid=uid)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Thường (0)", callback_data="admm:setvip_lv_0"),
+             InlineKeyboardButton(text="VIP 1 🥉", callback_data="admm:setvip_lv_1")],
+            [InlineKeyboardButton(text="VIP 2 🥈", callback_data="admm:setvip_lv_2"),
+             InlineKeyboardButton(text="VIP 3 🥇", callback_data="admm:setvip_lv_3")],
+            [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+        ])
+        await cb.message.edit_text(
+            f"⭐ <b>SET VIP</b> (bước 2/3)\n\nChọn cấp VIP cho <code>{uid}</code>:",
+            parse_mode="HTML", reply_markup=kb)
+
+
+def _admm_user_pick_text(page: int, pick_cb: str = None, title: str = None):
+    """Danh sách user đánh số thứ tự để admin bấm chọn thay vì nhập ID.
+
+    pick_cb=None → bấm để xem chi tiết (admm:picku_/pickp_).
+    pick_cb='admm:sel_<flow>_' → bấm để chọn user cho flow nhập liệu
+    (callback chọn user admm:sel_<flow>_<tg_id>, phân trang admm:selp_<flow>_<page>).
+    """
     from . import util
+    cb_u = pick_cb or "admm:picku_"
+    cb_p = pick_cb.replace(":sel_", ":selp_") if pick_cb else "admm:pickp_"
     c = db.get_conn()
     try:
         total = c.execute("SELECT COUNT(*) n FROM tg_users").fetchone()["n"]
@@ -930,8 +994,9 @@ def _admm_user_pick_text(page: int):
         return "❌ Không đọc được danh sách user.", _admm_back_kb()
     if not rows:
         return "👥 Chưa có user nào.", _admm_back_kb()
-    lines = ["🔍 <b>XEM THÔNG TIN USER</b>",
-             f"👥 Tổng: <b>{total}</b> user — bấm <b>số thứ tự</b> để xem chi tiết,",
+    lines = [title or "🔍 <b>XEM THÔNG TIN USER</b>",
+             f"👥 Tổng: <b>{total}</b> user — bấm <b>số thứ tự</b>"
+             + (" để chọn," if pick_cb else " để xem chi tiết,"),
              "hoặc gửi <b>User ID</b> trực tiếp.",
              "━━━━━━━━━━━━"]
     base = page * _USER_PICK_PAGE
@@ -944,7 +1009,7 @@ def _admm_user_pick_text(page: int):
         flag = " 🔴" if r.get("is_blocked") else ""
         lines.append(f"<b>{stt}.</b> {nm}{un} — {bal}{flag}")
         btns.append(InlineKeyboardButton(text=str(stt),
-                                         callback_data=f"admm:picku_{r['tg_id']}"))
+                                         callback_data=f"{cb_u}{r['tg_id']}"))
         if len(btns) == 5:
             kb_rows.append(btns)
             btns = []
@@ -952,9 +1017,9 @@ def _admm_user_pick_text(page: int):
         kb_rows.append(btns)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="⏮ Trước", callback_data=f"admm:pickp_{page - 1}"))
+        nav.append(InlineKeyboardButton(text="⏮ Trước", callback_data=f"{cb_p}{page - 1}"))
     if (page + 1) * _USER_PICK_PAGE < total:
-        nav.append(InlineKeyboardButton(text="⏭ Tiếp", callback_data=f"admm:pickp_{page + 1}"))
+        nav.append(InlineKeyboardButton(text="⏭ Tiếp", callback_data=f"{cb_p}{page + 1}"))
     if nav:
         kb_rows.append(nav)
     kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")])
@@ -1319,6 +1384,39 @@ def register_adm_menu(target_router):
             await _admm_exec_via_cb(cb, state, "/adm dspromo")
             return
 
+        # ── Chọn user cho flow nhập liệu (cộng tiền, set số dư, khoá, mở khoá, set VIP) ──
+        if action.startswith("selp_") or action.startswith("sel_"):
+            is_page = action.startswith("selp_")
+            rest = action[5:] if is_page else action[4:]
+            flow, _, tail = rest.partition("_")
+            if flow not in _USER_PICK_FLOWS:
+                await cb.answer()
+                return
+            need = _perms.cmd_perm_for_text(f"/adm {flow} 0")
+            if need and not _perms.has_perm(cb.from_user.id, need):
+                await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
+                                show_alert=True)
+                return
+            if is_page:
+                try:
+                    page = int(tail)
+                except ValueError:
+                    page = 0
+                text, kb = _admm_user_pick_text(max(page, 0),
+                                                pick_cb=f"admm:sel_{flow}_",
+                                                title=_USER_PICK_FLOWS[flow])
+                await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+                await cb.answer()
+                return
+            try:
+                uid = int(tail)
+            except ValueError:
+                await cb.answer("ID không hợp lệ.", show_alert=True)
+                return
+            await _admm_sel_uid(cb, state, flow, uid)
+            await cb.answer()
+            return
+
         # ── Chọn user theo số thứ tự (xem thông tin) ──
         if action.startswith("pickp_") or action.startswith("picku_"):
             need = _perms.cmd_perm_for_text("/adm info 0")
@@ -1385,8 +1483,14 @@ def register_adm_menu(target_router):
         if action in prompts:
             st, prompt = prompts[action]
             await state.set_state(st)
-            await cb.message.edit_text(prompt + "\n\nGõ /huy để huỷ.",
-                                      parse_mode="HTML", reply_markup=_admm_back_kb())
+            flow = _USER_PICK_ACTIONS.get(action)
+            if flow:
+                text, kb = _admm_user_pick_text(0, pick_cb=f"admm:sel_{flow}_",
+                                                title=_USER_PICK_FLOWS[flow])
+                await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+            else:
+                await cb.message.edit_text(prompt + "\n\nGõ /huy để huỷ.",
+                                          parse_mode="HTML", reply_markup=_admm_back_kb())
             await cb.answer()
             return
 

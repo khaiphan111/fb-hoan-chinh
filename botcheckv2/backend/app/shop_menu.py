@@ -408,7 +408,7 @@ FLOWS = {
     "warranty_list": {"cat": "orders", "handler": "on_bhdon", "run": "/bhdon"},
     "warranty_done": {
         "cat": "orders", "handler": "on_bhdone",
-        "steps": [("✅ <b>DUYỆT BH XONG</b>\n\nGửi <b>ID khiếu nại</b> (xem ở mục BH chờ duyệt).", "int")],
+        "steps": [("✅ <b>DUYỆT BH XONG</b>\n\nChọn <b>khiếu nại đang chờ</b> bên dưới (⚠️ = cần xem lại, hoặc gõ ID).", "pick_claim")],
         "build": lambda v: f"/bhdone {v[0]}",
     },
     "acc_info": {
@@ -561,6 +561,36 @@ def _cat_pick_kb(flow_key: str, step_idx: int, cat: str,
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _claim_pick_kb(flow_key: str, step_idx: int, cat: str):
+    """Bàn phím chọn khiếu nại BH đang chờ (theo thứ tự ID tăng dần)."""
+    try:
+        claims = [dict(r) for r in db.acc_warranty_pending(30)]
+    except Exception:
+        return None
+    rows = []
+    for r in sorted(claims, key=lambda x: int(x.get("id") or 0)):
+        try:
+            cid = int(r["id"])
+        except Exception:
+            continue
+        cn = (r.get("cat_name") or "").strip()[:26]
+        uid = r.get("uid") or ""
+        label = f"#{cid} {cn} — UID {uid}".strip()
+        if r.get("status") == "NEEDS_REVIEW":
+            label = "⚠️ " + label
+        rows.append([InlineKeyboardButton(
+            text=label[:60],
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{cid}")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="📭 Không có khiếu nại đang chờ",
+                                          callback_data="shopm:noop")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data=f"shopm:back_{cat}")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _sup_pick_kb(flow_key: str, step_idx: int, cat: str,
                  optional: bool = False):
     """Bàn phím chọn NCC (theo thứ tự ID) cho bước pick_supplier*."""
@@ -607,6 +637,8 @@ def _step_kb(flow, flow_key: str, step_idx: int):
     if kind == "pick_supplier_opt":
         return (_sup_pick_kb(flow_key, step_idx, flow["cat"], optional=True)
                 or _back_kb(flow["cat"]))
+    if kind == "pick_claim":
+        return _claim_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
     return _back_kb(flow["cat"])
 
 
