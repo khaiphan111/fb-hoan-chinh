@@ -7701,7 +7701,7 @@ async def on_acc_confirm(cb: CallbackQuery):
         await cb.message.answer(
             f"🎉 <b>MUA THÀNH CÔNG!</b>\n"
             f"━━━━━━━━━━━━━━\n"
-            f"{icon} <b>{html.escape(order['cat_name'])}</b>\n"
+            f"{_cat_icon(order['cat_name'])} <b>{html.escape(order['cat_name'])}</b>\n"
             f"🧾 Đơn hàng: <b>#{order_id}</b>\n"
             f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
             f"💰 Đã thanh toán: <b>{vnd(order['price'])}</b>\n"
