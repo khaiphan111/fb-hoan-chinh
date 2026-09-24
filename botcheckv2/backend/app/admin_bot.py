@@ -4,7 +4,8 @@ import logging
 import os
 import time
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
+                           InlineKeyboardButton, FSInputFile)
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -875,7 +876,17 @@ def _admm_main_kb(tg_id=None):
                                           callback_data="admm:noop")])
     rows.append([InlineKeyboardButton(text="📖 Hướng dẫn đầy đủ",
                                       callback_data="admm:help")])
+    rows.append([InlineKeyboardButton(text="📥 File hướng dẫn cài đặt (SETUP.md)",
+                                      callback_data="admm:setupfile")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _setup_file_path() -> str:
+    """Đường dẫn file SETUP.md ở thư mục gốc repo."""
+    p = os.path.abspath(__file__)  # .../fb-hoan-chinh/botcheckv2/backend/app/admin_bot.py
+    for _ in range(4):              # app -> backend -> botcheckv2 -> fb-hoan-chinh/
+        p = os.path.dirname(p)
+    return os.path.join(p, "SETUP.md")
 
 
 def _admm_text_main() -> str:
@@ -1286,6 +1297,20 @@ def register_adm_menu(target_router):
         if action == "help":
             await cb.answer()
             await _show_adm_help(cb.message)
+            return
+
+        if action == "setupfile":
+            await cb.answer()
+            fp = _setup_file_path()
+            if os.path.isfile(fp):
+                await cb.message.answer_document(
+                    document=FSInputFile(fp, filename="SETUP.md"),
+                    caption="📥 <b>File hướng dẫn cài đặt & vận hành bot</b>\n"
+                            "Tải về đọc kỹ từng bước trước khi dựng máy mới.",
+                    parse_mode="HTML",
+                )
+            else:
+                await cb.message.answer("⚠️ Không tìm thấy file SETUP.md trên máy chủ.")
             return
 
         # ── Nhóm Tiền tệ ──
