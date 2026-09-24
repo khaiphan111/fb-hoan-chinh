@@ -21,6 +21,7 @@ from . import db
 class ShopMenuState(StatesGroup):
     input = State()    # đang chờ admin nhập liệu từng bước
     confirm = State()  # đang chờ xác nhận thao tác nguy hiểm
+    autoimp = State()  # đang chờ nhập cấu hình nhập kho tự động (chu kỳ/NCC/vốn)
 
 
 def _is_admin_sync(tg_id: int) -> bool:
@@ -106,6 +107,7 @@ GROUPS = {
         ("add_stall", "🏪 Thêm gian hàng mới"),
         ("import_file", "📥 Nhập kho (gửi file)"),
         ("import_sheet", "📊 Nhập kho từ Sheet"),
+        ("auto_import", "⏰ Nhập kho tự động"),
         ("set_sheet", "🔗 Cài đặt Sheet"),
         ("view_stock", "📦 Xem tồn kho"),
         ("export_stock", "📤 Xuất kho (.xlsx)"),
@@ -341,6 +343,8 @@ FLOWS = {
         ],
         "build": lambda v: f"/setsheet {v[0]}" + (f" {v[1]}" if v[1] else ""),
     },
+    # Màn hình cấu hình riêng (không theo flow tuyến tính): nhập kho tự động từng sạp
+    "auto_import": {"cat": "kho", "custom": "autoimp"},
     "view_stock": {"cat": "kho", "handler": "on_kho", "run": "/kho"},
     "export_stock": {
         "cat": "kho", "handler": "on_xuatkho",
@@ -729,6 +733,114 @@ async def _exec_via_msg(msg: Message, state: FSMContext, flow, cmd_text: str):
 
 # ------------------------------------------------------------------ đăng ký
 
+# ================== NHẬP KHO TỰ ĐỘNG THEO GIAN HÀNG ==================
+def _autoimp_fmt_ts(ts: int) -> str:
+    import time as _t
+    try:
+        ts = int(ts or 0)
+        if ts <= 0:
+            return "—"
+        return _t.strftime("%d/%m %H:%M", _t.localtime(ts))
+    except Exception:
+        return "—"
+
+
+def _autoimp_detail_text(stall: str) -> str:
+    from . import sheet_import as _si
+    cfg = db.stall_import_cfg_get(stall)
+    iv = max(5, min(10080, int(cfg.get("interval_min") or 60)))
+    on = int(cfg.get("enabled") or 0) == 1
+    cat_id = int(cfg.get("cat_id") or 0)
+    sup_id = int(cfg.get("supplier_id") or 0)
+    cost = int(cfg.get("cost") or 0)
+    cat_txt = "⚠️ <i>chưa chọn</i>"
+    if cat_id:
+        c = db.acc_category_get(cat_id)
+        cat_txt = (f"<b>{html.escape(c['name'])}</b> (#{cat_id})" if c
+                   else f"⚠️ loại #{cat_id} không còn")
+    sup_txt = "—"
+    if sup_id:
+        s = db.supplier_get(sup_id)
+        sup_txt = f"#{sup_id} {html.escape(s['name'])}" if s else f"⚠️ #{sup_id} không còn"
+    try:
+        tab = _si.tab_for_stall(stall, db.get_setting("sheet_import_tab") or "NhapKho")
+    except Exception:
+        tab = stall
+    last = int(cfg.get("last_run") or 0)
+    nxt = last + iv * 60 if (on and last) else 0
+    lines = [
+        "⏰ <b>NHẬP KHO TỰ ĐỘNG</b>",
+        f"🏪 <b>{html.escape(stall)}</b> <i>(tab Sheet: <code>{html.escape(tab)}</code>)</i>",
+        "━━━━━━━━━━━━━━",
+        f"🔄 Trạng thái: {'🟢 <b>BẬT</b>' if on else '🔴 <b>TẮT</b>'}",
+        f"⏱️ Chu kỳ quét: mỗi <b>{iv}</b> phút",
+        f"📦 Loại acc: {cat_txt}",
+        f"🏭 NCC: {sup_txt}",
+        f"💰 Giá vốn: <b>{cost:,}</b>đ/acc".replace(",", "."),
+        f"🕐 Quét cuối: {_autoimp_fmt_ts(last)}",
+        f"⏭️ Quét tiếp: ~{_autoimp_fmt_ts(nxt)}" if nxt else "⏭️ Quét tiếp: —",
+        "",
+        "<i>Bot tự đọc các dòng chưa đánh dấu trong tab Sheet của sạp "
+        "rồi nhập kho (chống trùng, ghi trạng thái ngược như nhập tay).</i>",
+    ]
+    return "\n".join(lines)
+
+
+def _autoimp_detail_kb(stall: str):
+    cfg = db.stall_import_cfg_get(stall)
+    on = int(cfg.get("enabled") or 0) == 1
+    rows = [
+        [InlineKeyboardButton(
+            text="🔴 Tắt nhập tự động" if on else "🟢 Bật nhập tự động",
+            callback_data=f"shopm:autoimp:toggle:{stall}")],
+        [InlineKeyboardButton(text="⏱️ Đổi chu kỳ",
+                              callback_data=f"shopm:autoimp:int:{stall}"),
+         InlineKeyboardButton(text="📦 Loại acc",
+                              callback_data=f"shopm:autoimp:cat:{stall}")],
+        [InlineKeyboardButton(text="🏭 NCC",
+                              callback_data=f"shopm:autoimp:sup:{stall}"),
+         InlineKeyboardButton(text="💰 Giá vốn",
+                              callback_data=f"shopm:autoimp:cost:{stall}")],
+        [InlineKeyboardButton(text="▶️ Chạy ngay 1 lần",
+                              callback_data=f"shopm:autoimp:run:{stall}")],
+        [InlineKeyboardButton(text="◀️ Danh sách sạp",
+                              callback_data="shopm:autoimp"),
+         InlineKeyboardButton(text="🏠 Menu shop acc",
+                              callback_data="shopm:main")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _autoimp_list_kb():
+    rows = []
+    try:
+        stalls = db.acc_stall_list()
+    except Exception:
+        stalls = []
+    for s in stalls:
+        st = s.get("stall") or "Acc Facebook"
+        cfg = db.stall_import_cfg_get(st)
+        on = int(cfg.get("enabled") or 0) == 1
+        iv = max(5, min(10080, int(cfg.get("interval_min") or 60)))
+        mark = f"🟢 {iv}p" if on else "🔴 tắt"
+        rows.append([InlineKeyboardButton(
+            text=f"🏪 {st} ({mark})",
+            callback_data=f"shopm:autoimp:stall:{st}")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data="shopm:back_kho")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _autoimp_list_text():
+    return ("⏰ <b>NHẬP KHO TỰ ĐỘNG THEO GIAN HÀNG</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "Mỗi sạp có tab Sheet riêng — bot sẽ tự quét tab đó theo chu kỳ "
+            "bạn đặt, nhập các dòng mới vào kho.\n\n"
+            "Chọn sạp để cấu hình:")
+
+
 def register_shop_menu(target_router):
     """Gắn toàn bộ menu nút /shopadm (callback + nhập liệu FSM) vào router cho trước."""
 
@@ -797,6 +909,150 @@ def register_shop_menu(target_router):
             return
         await _exec_via_cb(cb, state, flow, cmd_text)
 
+    @target_router.callback_query(F.data.startswith("shopm:autoimp"))
+    async def _on_shopm_autoimp(cb: CallbackQuery, state: FSMContext):
+        # Màn hình cấu hình nhập kho tự động từng gian hàng.
+        # Đăng ký TRƯỚC handler "shopm:" để không bị nuốt callback.
+        if not _is_admin_sync(cb.from_user.id):
+            await cb.answer("🚫 Không có quyền.", show_alert=True)
+            return
+        if not _perms.has_perm(cb.from_user.id, "kho"):
+            await cb.answer("🚫 Bạn không có quyền 📦 Kho & loại acc.", show_alert=True)
+            return
+        body = (cb.data or "")[len("shopm:autoimp"):]
+        parts = body.strip(":").split(":") if body.strip(":") else []
+        sub = parts[0] if parts else ""
+        stall = ":".join(parts[1:]) if len(parts) > 1 else ""
+
+        async def _show_detail(st):
+            await cb.message.edit_text(_autoimp_detail_text(st), parse_mode="HTML",
+                                       reply_markup=_autoimp_detail_kb(st))
+
+        def _audit(action, detail):
+            try:
+                db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                                   action, detail)
+            except Exception:
+                pass
+
+        if not sub:
+            await state.clear()
+            await cb.message.edit_text(_autoimp_list_text(), parse_mode="HTML",
+                                       reply_markup=_autoimp_list_kb())
+            await cb.answer()
+            return
+        if sub == "stall" and stall:
+            await _show_detail(stall)
+            await cb.answer()
+            return
+        if sub == "toggle" and stall:
+            cfg = db.stall_import_cfg_get(stall)
+            new = 0 if int(cfg.get("enabled") or 0) else 1
+            db.stall_import_cfg_set(stall, enabled=new)
+            _audit("auto_import", f"{stall}: {'BẬT' if new else 'TẮT'} nhập tự động")
+            if new and not int(cfg.get("cat_id") or 0):
+                await cb.answer("⚠️ Đã bật — nhớ chọn loại acc mặc định nhé!",
+                                show_alert=True)
+            else:
+                await cb.answer("🟢 Đã bật nhập tự động" if new else "🔴 Đã tắt")
+            await _show_detail(stall)
+            return
+        if sub == "int" and stall:
+            await state.update_data(ai_field="int", ai_stall=stall)
+            await state.set_state(ShopMenuState.autoimp)
+            await cb.message.edit_text(
+                f"⏱️ <b>CHU KỲ QUÉT — {html.escape(stall)}</b>\n\n"
+                "Gửi số <b>phút</b> giữa 2 lần quét "
+                "(tối thiểu 5, tối đa 10080 = 7 ngày).\n"
+                "Gõ /huy để huỷ.", parse_mode="HTML")
+            await cb.answer()
+            return
+        if sub == "sup" and stall:
+            await state.update_data(ai_field="sup", ai_stall=stall)
+            await state.set_state(ShopMenuState.autoimp)
+            await cb.message.edit_text(
+                f"🏭 <b>NCC MẶC ĐỊNH — {html.escape(stall)}</b>\n\n"
+                "Gửi <b>ID NCC</b> (xem: /ncc) — gửi <b>0</b> = không gắn NCC.\n"
+                "Gõ /huy để huỷ.", parse_mode="HTML")
+            await cb.answer()
+            return
+        if sub == "cost" and stall:
+            await state.update_data(ai_field="cost", ai_stall=stall)
+            await state.set_state(ShopMenuState.autoimp)
+            await cb.message.edit_text(
+                f"💰 <b>GIÁ VỐN MẶC ĐỊNH — {html.escape(stall)}</b>\n\n"
+                "Gửi <b>giá vốn</b>/acc (vd 5000) — dùng để tính lãi theo lô.\n"
+                "Gõ /huy để huỷ.", parse_mode="HTML")
+            await cb.answer()
+            return
+        if sub == "cat" and stall:
+            cats = [c for c in db.acc_category_list(active_only=False,
+                                                   include_hidden=True)
+                    if (((c["stall"] if "stall" in c.keys() else "")
+                         or "Acc Facebook")) == stall]
+            if not cats:
+                await cb.answer("Sạp này chưa có loại acc nào.", show_alert=True)
+                return
+            rows = []
+            for cc in cats:
+                dd = dict(cc)
+                name = (dd.get("name") or f"Loại {dd['id']}")[:24]
+                rows.append([InlineKeyboardButton(
+                    text=f"#{dd['id']} {name}",
+                    callback_data=f"shopm:autoimp:catset:{stall}:{dd['id']}")])
+            rows.append([InlineKeyboardButton(
+                text="◀️ Quay lại",
+                callback_data=f"shopm:autoimp:stall:{stall}")])
+            await cb.message.edit_text(
+                f"📦 <b>LOẠI ACC MẶC ĐỊNH — {html.escape(stall)}</b>\n\n"
+                "Các dòng mới trong tab Sheet sẽ được nhập vào loại này:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+            await cb.answer()
+            return
+        if sub == "catset" and len(parts) >= 3:
+            try:
+                cat_id = int(parts[-1])
+            except Exception:
+                await cb.answer()
+                return
+            st = ":".join(parts[1:-1])
+            c = db.acc_category_get(cat_id)
+            if not c:
+                await cb.answer("❌ Loại acc không còn.", show_alert=True)
+                return
+            db.stall_import_cfg_set(st, cat_id=cat_id)
+            _audit("auto_import", f"{st}: loại mặc định -> #{cat_id}")
+            await cb.answer(f"✅ Loại mặc định: {c['name']}")
+            await _show_detail(st)
+            return
+        if sub == "run" and stall:
+            cfg = db.stall_import_cfg_get(stall)
+            cat_id = int(cfg.get("cat_id") or 0)
+            if not cat_id:
+                await cb.answer("⚠️ Chưa chọn loại acc mặc định.", show_alert=True)
+                return
+            await cb.answer("⏳ Đang quét Sheet...")
+            try:
+                fn = _get_handler("auto_import_stall")
+                res = await fn(stall, cat_id, int(cfg.get("supplier_id") or 0),
+                               int(cfg.get("cost") or 0), cb.bot)
+            except Exception as e:
+                res = {"error": str(e)[:200]}
+            if res.get("error"):
+                head = f"❌ {html.escape(str(res['error']))}"
+            elif int(res.get("added") or 0) > 0:
+                head = (f"✅ <b>Đã nhập {res['added']} acc mới</b> vào kho "
+                        f"(đọc {res.get('rows') or 0} dòng).")
+                _audit("auto_import", f"{stall}: chạy tay, +{res['added']} acc")
+            else:
+                head = "📭 Sheet không có dòng mới nào."
+            await cb.message.edit_text(
+                head + "\n\n" + _autoimp_detail_text(stall), parse_mode="HTML",
+                reply_markup=_autoimp_detail_kb(stall))
+            return
+        await cb.answer()
+
     @target_router.callback_query(F.data.startswith("shopm:"))
     async def _on_shopm_cb(cb: CallbackQuery, state: FSMContext):
         if not _is_admin_sync(cb.from_user.id):
@@ -842,6 +1098,12 @@ def register_shop_menu(target_router):
                 return
             if "run" in flow:
                 await _exec_via_cb(cb, state, flow, flow["run"])
+                return
+            if flow.get("custom") == "autoimp":
+                await state.clear()
+                await cb.message.edit_text(_autoimp_list_text(), parse_mode="HTML",
+                                           reply_markup=_autoimp_list_kb())
+                await cb.answer()
                 return
             await state.update_data(shopm_flow=action[3:], shopm_step=0,
                                     shopm_vals=[], shopm_cat=flow["cat"])
@@ -927,5 +1189,71 @@ def register_shop_menu(target_router):
             await cb.answer("🚫 Bạn không có quyền thao tác này.", show_alert=True)
             return
         await _exec_via_cb(cb, state, flow, cmd)
+
+    @target_router.message(ShopMenuState.autoimp)
+    async def _on_shopm_autoimp_input(msg: Message, state: FSMContext):
+        # Nhập liệu cho cấu hình nhập kho tự động: chu kỳ / NCC / giá vốn.
+        if not _is_admin_sync(msg.from_user.id):
+            await state.clear()
+            return
+        if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+            await state.clear()
+            await msg.answer("Đã huỷ.")
+            return
+        if not _perms.has_perm(msg.from_user.id, "kho"):
+            await state.clear()
+            await msg.answer("🚫 Bạn không có quyền 📦 Kho & loại acc.")
+            return
+        data = await state.get_data()
+        field, stall = data.get("ai_field"), data.get("ai_stall")
+        if not field or not stall or not msg.text:
+            await state.clear()
+            return
+        t = msg.text.strip()
+        if field == "int":
+            try:
+                iv = int(t)
+            except Exception:
+                await msg.answer("⚠️ Phải là số phút, gửi lại nhé.")
+                return
+            iv = max(5, min(10080, iv))
+            db.stall_import_cfg_set(stall, interval_min=iv)
+            saved = f"⏱️ Chu kỳ quét: mỗi <b>{iv}</b> phút"
+        elif field == "sup":
+            try:
+                sid = int(t)
+            except Exception:
+                await msg.answer("⚠️ NCC phải là ID số (0 = không chọn), gửi lại nhé.")
+                return
+            if sid < 0:
+                await msg.answer("⚠️ ID NCC không hợp lệ, gửi lại nhé.")
+                return
+            if sid and not db.supplier_get(sid):
+                await msg.answer("❌ Không có NCC này. Xem: /ncc")
+                return
+            db.stall_import_cfg_set(stall, supplier_id=sid)
+            saved = "🏭 NCC mặc định: —" if not sid else f"🏭 NCC mặc định: #{sid}"
+        elif field == "cost":
+            try:
+                cost = int(t.replace(".", "").replace(",", "").replace(" ", ""))
+                if cost < 0:
+                    raise ValueError
+            except Exception:
+                await msg.answer("⚠️ Giá vốn phải là số, gửi lại nhé.")
+                return
+            db.stall_import_cfg_set(stall, cost=cost)
+            saved = f"💰 Giá vốn: <b>{cost:,}</b>đ/acc".replace(",", ".")
+        else:
+            await state.clear()
+            return
+        await state.clear()
+        try:
+            db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                               "auto_import", f"{stall}: {field} -> {t}")
+        except Exception:
+            pass
+        await msg.answer(f"✅ Đã lưu — {saved}\n\n{_autoimp_detail_text(stall)}",
+                         parse_mode="HTML",
+                         reply_markup=_autoimp_detail_kb(stall))
 
 

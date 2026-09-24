@@ -313,6 +313,11 @@ class FollowerPoller:
                     await self._push_sold_to_sheet()
                 except Exception as e:
                     log.warning("sheet sold push: %s", e)
+                # Nhập kho tự động từng gian hàng theo chu kỳ riêng (/shopadm)
+                try:
+                    await self._auto_import_stalls()
+                except Exception as e:
+                    log.warning("stall auto import: %s", e)
                 # Thu hồi quyền admin phụ hết hạn tạm thời
                 try:
                     await self._sweep_expired_admins()
@@ -344,6 +349,56 @@ class FollowerPoller:
             db.acc_mark_sheet_done(done + skip)
             log.info("sheet sold push: %d đã ghi, %d bỏ qua (không khớp UID)",
                      len(done), len(skip))
+
+    async def _auto_import_stalls(self):
+        """Nhập kho tự động từng gian hàng theo chu kỳ riêng.
+
+        Cấu hình ở /shopadm → 📦 KHO → ⏰ Nhập kho tự động (mỗi sạp: bật/tắt,
+        chu kỳ phút, loại acc/NCC/giá vốn mặc định). Chạy trong _maintenance_loop
+        (mỗi 5 phút) nên chu kỳ thực tế tối thiểu là 5 phút.
+        """
+        now_ts = int(time.time())
+        cfgs = db.stall_import_cfg_due(now_ts)
+        if not cfgs:
+            return
+        from . import perms as _perms
+        owner = 0
+        try:
+            owner = int(_perms.super_id() or 0)
+        except Exception:
+            pass
+        for cfg in cfgs:
+            stall = cfg.get("stall") or ""
+            cat_id = int(cfg.get("cat_id") or 0)
+            # Đánh dấu đã chạy TRƯỚC để lần quét sau không chạy chồng
+            db.stall_import_cfg_set(stall, last_run=now_ts)
+            if not stall or not cat_id:
+                continue
+            try:
+                res = await botmod.auto_import_stall(
+                    stall, cat_id, int(cfg.get("supplier_id") or 0),
+                    int(cfg.get("cost") or 0), self._bot)
+            except Exception as e:
+                log.warning("auto import stall %s: %s", stall, e)
+                continue
+            err = res.get("error")
+            if err:
+                log.warning("auto import stall %s lỗi: %s", stall, err)
+                continue
+            added = int(res.get("added") or 0)
+            if added > 0 and self._bot and owner:
+                try:
+                    c = db.acc_category_get(cat_id) or {}
+                    cname = c.get("name") or f"#{cat_id}"
+                    await self._bot.send_message(
+                        int(owner),
+                        f"⏰ <b>Nhập kho tự động</b>\n"
+                        f"🏪 {html.escape(stall)}\n"
+                        f"➕ Đã thêm <b>{added}</b> acc vào loại "
+                        f"<b>{html.escape(str(cname))}</b>.",
+                        parse_mode="HTML")
+                except Exception as e:
+                    log.warning("auto import notify: %s", e)
 
     async def _sweep_expired_admins(self):
         """Thu hồi quyền admin phụ đã hết hạn tạm thời, báo cả 2 bên."""

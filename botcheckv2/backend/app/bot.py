@@ -316,6 +316,65 @@ async def _run_sheet_import(msg, cat_id: int, ncc_id: int, cost: int):
                             sheet_ctx={"sheet_id": sid, "tab": tab})
 
 
+async def auto_import_stall(stall: str, cat_id: int, ncc_id: int, cost: int, bot) -> dict:
+    """Nhập kho tự động 1 gian hàng từ tab Sheet riêng của nó (headless, chạy nền).
+
+    Tái dùng pipeline _import_stock_rows (chống trùng, giải link FB, ghi trạng thái
+    ngược cột I, quét chất lượng nền, trả đơn đặt trước...).
+    Trả về {'added': int, 'rows': int} hoặc {'error': str}.
+    """
+    from types import SimpleNamespace
+    c = db.acc_category_get(cat_id)
+    if not c:
+        return {"error": f"Loại acc #{cat_id} không tồn tại"}
+    if ncc_id and not db.supplier_get(ncc_id):
+        return {"error": f"NCC #{ncc_id} không tồn tại"}
+    sid = (db.get_setting("sheet_import_id") or "").strip()
+    if not sid:
+        return {"error": "Chưa cài đặt Google Sheet (/setsheet)"}
+    default_tab = db.get_setting("sheet_import_tab") or "NhapKho"
+    from . import sheet_import as _si
+    tab = _si.tab_for_stall(stall, default_tab)
+    try:
+        if not await _si.ensure_tab(sid, tab):
+            return {"error": f"Không tạo/kiểm tra được tab '{tab}'"}
+        sheet_rows = await _si.read_unmarked(sid, tab)
+    except Exception as e:
+        return {"error": f"Không đọc được sheet: {str(e)[:150]}"}
+    if not sheet_rows:
+        return {"added": 0, "rows": 0}
+    rows = [{
+        "uid": cells[0], "password": cells[1], "created_date": cells[2],
+        "backup_mail": cells[3], "note": cells[4], "totp": cells[5],
+        "cookie": cells[6], "token": cells[7], "_sheet_row": rnum,
+    } for rnum, cells in sheet_rows]
+
+    async def _noop(*a, **k):
+        return None
+
+    class _Wait:
+        async def edit_text(self, *a, **k):
+            return None
+
+    owner_id = 0
+    try:
+        owner_id = int(_perms.super_id() or 0)
+    except Exception:
+        pass
+    shim = SimpleNamespace(bot=bot, document=None,
+                           from_user=SimpleNamespace(id=owner_id),
+                           answer=_noop)
+    before = db.acc_stock_count(cat_id)
+    try:
+        await _import_stock_rows(rows, cat_id, ncc_id, cost, c, shim, _Wait(),
+                                sheet_ctx={"sheet_id": sid, "tab": tab})
+    except Exception as e:
+        log.warning("auto_import_stall %s: %s", stall, e)
+        return {"error": f"Lỗi nhập kho: {str(e)[:150]}"}
+    after = db.acc_stock_count(cat_id)
+    return {"added": max(0, after - before), "rows": len(rows)}
+
+
 @router.message(F.text == "\U0001f4ca Nhập kho Sheet")
 async def on_sheet_button(msg: Message, state: FSMContext):
     """Nút bấm cố định trên bàn phím admin: mở flow nhập kho từ Sheet."""

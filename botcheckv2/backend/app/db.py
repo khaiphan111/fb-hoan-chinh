@@ -2039,6 +2039,16 @@ def migrate_new_features():
             added_at   BIGINT NOT NULL,
             PRIMARY KEY (tg_id, cat_id)
         )""",
+        # 2026-09-24: cấu hình nhập kho tự động từng gian hàng (từ tab Sheet riêng)
+        """CREATE TABLE IF NOT EXISTS stall_import_cfg (
+            stall        TEXT PRIMARY KEY,
+            enabled      INTEGER NOT NULL DEFAULT 0,
+            interval_min INTEGER NOT NULL DEFAULT 60,
+            last_run     BIGINT NOT NULL DEFAULT 0,
+            cat_id       INTEGER NOT NULL DEFAULT 0,
+            supplier_id  INTEGER NOT NULL DEFAULT 0,
+            cost         INTEGER NOT NULL DEFAULT 0
+        )""",
     ]:
         try:
             c.execute(sql)
@@ -3011,6 +3021,55 @@ def acc_stock_count_stall(stall: str) -> int:
         return 0
 
 
+# ================== NHẬP KHO TỰ ĐỘNG THEO GIAN HÀNG ==================
+def stall_import_cfg_get(stall: str) -> dict:
+    """Cấu hình nhập kho tự động của 1 gian hàng (mặc định: tắt, 60 phút/lần)."""
+    c = get_conn()
+    try:
+        r = c.execute("SELECT * FROM stall_import_cfg WHERE stall=?", (stall,)).fetchone()
+        if r:
+            return dict(r)
+    except Exception:
+        pass
+    return {"stall": stall, "enabled": 0, "interval_min": 60, "last_run": 0,
+            "cat_id": 0, "supplier_id": 0, "cost": 0}
+
+
+def stall_import_cfg_set(stall: str, **kw) -> None:
+    """Lưu cấu hình nhập tự động: enabled, interval_min, last_run, cat_id, supplier_id, cost."""
+    allowed = {"enabled", "interval_min", "last_run", "cat_id", "supplier_id", "cost"}
+    vals = {k: int(kw[k]) for k in allowed if k in kw}
+    if not vals:
+        return
+    with _lock:
+        c = get_conn()
+        try:
+            c.execute("INSERT INTO stall_import_cfg(stall) VALUES(?) "
+                      "ON CONFLICT(stall) DO NOTHING", (stall,))
+            sets = ", ".join(f"{k}=?" for k in vals)
+            c.execute(f"UPDATE stall_import_cfg SET {sets} WHERE stall=?",
+                      (*vals.values(), stall))
+            c.commit()
+        except Exception:
+            pass
+
+
+def stall_import_cfg_due(now: int) -> list:
+    """Các gian hàng đang BẬT nhập tự động và đã đến giờ quét."""
+    c = get_conn()
+    try:
+        rows = c.execute("SELECT * FROM stall_import_cfg WHERE enabled=1").fetchall()
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        d = dict(r)
+        iv = max(5, min(10080, int(d.get("interval_min") or 60)))
+        if now - int(d.get("last_run") or 0) >= iv * 60:
+            out.append(d)
+    return out
+
+
 def acc_category_list(active_only: bool = True, include_hidden: bool = False) -> list:
     c = get_conn()
     q = "SELECT * FROM acc_categories"
@@ -3121,8 +3180,6 @@ def acc_stock_add_batch(cat_id: int, rows: list[dict], batch: str = "",
             )
             added += 1
         if added:
-            # Có hàng về -> tự hiện lại danh mục (5.7)
-            c.execute("UPDATE acc_categories SET hidden=0 WHERE id=?", (cat_id,))
             if batch:
                 try:
                     c.execute(
@@ -3246,7 +3303,6 @@ def acc_sell_one(cat_id: int, tg_id: int, price: int):
             return None
         order_id = _acc_order_create(c, tg_id, row, cat_id, price, now)
         c.commit()
-        _acc_autohide(c, cat_id)
         return order_id, row
 
 
@@ -3276,7 +3332,6 @@ def acc_sell_many(cat_id: int, tg_id: int, price_total: int, qty: int):
             p = each if i < len(rows) - 1 else price_total - each * (len(rows) - 1)
             out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
         c.commit()
-        _acc_autohide(c, cat_id)
         return out
 
 
@@ -3375,21 +3430,7 @@ def acc_sell_stock_ids(cat_id: int, tg_id: int, price_total: int, stock_ids):
             p = each if i < qty - 1 else price_total - each * (qty - 1)
             out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
         c.commit()
-        _acc_autohide(c, cat_id)
         return out
-
-
-def _acc_autohide(c, cat_id: int):
-    """5.7 Tự ẩn danh mục khi hết hàng. Gọi trong transaction bán hàng."""
-    try:
-        r = c.execute(
-            "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
-            (cat_id,)).fetchone()
-        if r and r["n"] == 0:
-            c.execute("UPDATE acc_categories SET hidden=1 WHERE id=?", (cat_id,))
-            c.commit()
-    except Exception:
-        pass
 
 
 # ============================ GIỎ HÀNG SHOP ACC ============================
@@ -4194,7 +4235,6 @@ def acc_mystery_sell(tg_id: int, price: int):
             return None
         order_id = _acc_order_create(c, tg_id, row, ct["id"], price, now)
         c.commit()
-        _acc_autohide(c, ct["id"])
         return order_id, row, ct["name"]
 
 
