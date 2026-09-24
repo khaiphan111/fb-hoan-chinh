@@ -497,7 +497,10 @@ def migrate_db():
             "ALTER TABLE acc_restock_subs ADD COLUMN auto_buy INTEGER DEFAULT 0",
             "ALTER TABLE extra_admins ADD COLUMN expires_at BIGINT DEFAULT 0",
             "ALTER TABLE acc_categories ADD COLUMN stall TEXT DEFAULT 'Acc Facebook'",
-            "ALTER TABLE acc_categories ADD COLUMN live_check INTEGER DEFAULT 1"
+            "ALTER TABLE acc_categories ADD COLUMN live_check INTEGER DEFAULT 1",
+            "ALTER TABLE acc_stock ADD COLUMN sold_to BIGINT DEFAULT 0",
+            "ALTER TABLE acc_stock ADD COLUMN sold_at BIGINT DEFAULT 0",
+            "ALTER TABLE acc_stock ADD COLUMN price_sold BIGINT DEFAULT 0"
         ]:
             try:
                 c.execute(sql)
@@ -3140,6 +3143,17 @@ def acc_sold_count(cat_id: int) -> int:
         return 0
 
 
+def acc_stock_sold_count(cat_id: int) -> int:
+    """Số acc trong kho đã được đánh dấu SOLD (đã bán, giữ lại lịch sử)."""
+    try:
+        r = get_conn().execute(
+            "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='SOLD'",
+            (cat_id,)).fetchone()
+        return int(r["n"] or 0)
+    except Exception:
+        return 0
+
+
 def acc_stock_count(cat_id: int) -> int:
     r = get_conn().execute(
         "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
@@ -3157,7 +3171,8 @@ def _rv(row, key: str) -> str:
 
 
 def _acc_order_create(c, tg_id: int, row, cat_id: int, price: int, now: int) -> int:
-    """Tạo đơn hàng kèm TOÀN BỘ thông tin acc, rồi XÓA acc khỏi kho.
+    """Tạo đơn hàng kèm TOÀN BỘ thông tin acc, rồi ĐÁNH DẤU acc đã bán
+    (status='SOLD') thay vì xóa — giữ lại lịch sử trong kho.
     Trả order_id."""
     cur = c.execute(
         "INSERT INTO acc_orders(tg_id, stock_id, cat_id, price, created_at, delivered_at,"
@@ -3168,12 +3183,16 @@ def _acc_order_create(c, tg_id: int, row, cat_id: int, price: int, now: int) -> 
          _rv(row, "backup_mail"), _rv(row, "note"), _rv(row, "totp"),
          _rv(row, "cookie"), _rv(row, "token"), _rv(row, "batch")))
     order_id = cur.lastrowid
-    c.execute("DELETE FROM acc_stock WHERE id=?", (row["id"],))
+    c.execute(
+        "UPDATE acc_stock SET status='SOLD', sold_to=?, sold_at=?, price_sold=? "
+        "WHERE id=?",
+        (tg_id, now, price, row["id"]))
     return order_id
 
 
 def acc_sell_one(cat_id: int, tg_id: int, price: int):
-    """Bán 1 acc: lấy acc AVAILABLE cũ nhất, lưu chi tiết vào đơn rồi XÓA khỏi kho.
+    """Bán 1 acc: lấy acc AVAILABLE cũ nhất, lưu chi tiết vào đơn rồi
+    ĐÁNH DẤU SOLD trong kho (không xóa).
     Trả (order_id, stock_row) hoặc None nếu hết hàng."""
     now = int(time.time())
     with _lock:
@@ -3193,6 +3212,7 @@ def acc_sell_many(cat_id: int, tg_id: int, price_total: int, qty: int):
     """Bán nhiều acc cùng lúc, nguyên tử: lấy qty acc AVAILABLE cũ nhất, xóa khỏi kho.
     price_total là TỔNG tiền khách trả (đã giảm giá) — chia đều từng đơn, đơn cuối
     nhận phần dư để tổng doanh thu khớp số tiền thực thu.
+    Acc bán xong được ĐÁNH DẤU SOLD trong kho (không xóa).
     Trả list [(order_id, stock_row)] hoặc None nếu không đủ hàng."""
     qty = max(1, int(qty))
     now = int(time.time())

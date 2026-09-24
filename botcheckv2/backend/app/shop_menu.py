@@ -191,13 +191,15 @@ def _kho_summary():
             hidden = " 🙈" if ("hidden" in keys and c["hidden"]) else ""
             stall = (c["stall"] if "stall" in keys and c["stall"] else "Acc Facebook")
             n = db.acc_stock_count(cid)
+            n_sold = db.acc_stock_sold_count(cid)
         except Exception:
             continue
         total += n
         if stall != last_stall:
             lines.append(f"🏪 <b>{stall}</b>")
             last_stall = stall
-        lines.append(f"• <b>#{cid}</b> {name}{hidden}: {n} acc")
+        sold_txt = f" • 🛒{n_sold} đã bán" if n_sold else ""
+        lines.append(f"• <b>#{cid}</b> {name}{hidden}: {n} acc{sold_txt}")
     head = (f"\n━━━━━━━━━━━━━━━\n"
             f"📊 Tổng: <b>{len(lines)} loại • {total} acc tồn</b>")
     return head + "\n" + "\n".join(lines)

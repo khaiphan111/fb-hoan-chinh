@@ -9033,11 +9033,13 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
     for i in link_idx:
         if rows[i]["uid"] and str(rows[i]["uid"]).isdigit():
             uid_to_link[rows[i]["uid"]] = (rows[i].get("_orig_link") or "")
-    # Chống trùng: bỏ dòng trùng trong file và UID đã có trong kho (chỉ nhập acc mới)
+    # Chống trùng: bỏ dòng trùng trong file và UID đang còn trong kho
+    # (chỉ tính acc AVAILABLE/DIE; acc đã bán SOLD được nhập lại bình thường)
     _seen = set()
     try:
         _existing = {r[0] for r in db.get_conn().execute(
-            "SELECT uid FROM acc_stock WHERE cat_id=?", (cat_id,)).fetchall()}
+            "SELECT uid FROM acc_stock WHERE cat_id=? AND status IN ('AVAILABLE','DIE')",
+            (cat_id,)).fetchall()}
     except Exception:
         _existing = set()
     _uniq, empty, dup_in_file, dup_in_stock = [], 0, 0, 0
@@ -9316,6 +9318,7 @@ async def on_kho(msg: Message):
         c = dict(c)
         n = db.acc_stock_count(c["id"])
         n_die = db.acc_stock_die_count(c["id"])
+        n_sold = db.acc_stock_sold_count(c["id"])
         st = "✅ đang bán" if c["active"] else "⏸ đã ẩn"
         if int(c.get("hidden") or 0):
             st += " [ẨN KHỎI SHOP]"
@@ -9325,6 +9328,7 @@ async def on_kho(msg: Message):
             f"#{c['id']} <b>{html.escape(c['name'])}</b> — {vnd(c['price'])} — "
             f"BH {_fmt_warranty(c['warranty_hours'])} — kho: <b>{n}</b>"
             + (f" 🗑<b>{n_die}</b> die" if n_die else "")
+            + (f" 🛒<b>{n_sold}</b> đã bán" if n_sold else "")
             + f"{bonus_txt} — {st}"
         )
     lines += ["", "Đổi giá: <code>/gia &lt;id&gt; &lt;giá&gt;</code>",
@@ -10684,6 +10688,7 @@ async def on_chamdiem(msg: Message):
         return
     bnames = [b["batch"] for b in batches]
     q = ("SELECT uid, batch FROM acc_stock WHERE batch IN (%s) AND uid != '' "
+         "AND status='AVAILABLE' "
          "ORDER BY RANDOM() LIMIT 20" % ",".join("?" * len(bnames)))
     sample = db.get_conn().execute(q, tuple(bnames)).fetchall()
     if not sample:
