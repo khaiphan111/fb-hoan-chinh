@@ -9596,7 +9596,7 @@ async def on_hienloai(msg: Message):
 
 @router.message(Command("recheck"))
 async def on_recheck(msg: Message):
-    """Admin: chạy re-check LIVE toàn bộ kho ngay (không đợi lịch 3 ngày).
+    """Admin: chạy re-check LIVE toàn bộ kho ngay (không đợi lịch định kỳ).
     Acc DIE → cách ly + báo cáo. Đổi chu kỳ: /setrecheck <số_ngày>."""
     if not _is_admin(msg.from_user.id):
         return
