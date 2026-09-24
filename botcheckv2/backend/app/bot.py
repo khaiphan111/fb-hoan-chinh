@@ -8535,6 +8535,36 @@ async def on_doiqua(msg: Message):
             f"⭐ Điểm còn lại: <b>{db.loyalty_get(tg_id)}</b>",
             parse_mode="HTML")
         return
+    scope = db.get_setting("loyalty_redeem_scope", "cat") or "cat"
+    if scope == "stall":
+        # Khách tự chọn 1 loại acc bất kỳ trong gian hàng Acc Facebook
+        cats = _fb_stall_gift_cats()
+        if not cats:
+            await msg.answer(
+                "🎁 <b>ĐỔI QUÀ LOYALTY</b>\n\n"
+                "Gian hàng Acc Facebook hiện hết hàng, bạn quay lại sau nhé!",
+                parse_mode="HTML")
+            return
+        if pts < need:
+            await msg.answer(
+                f"🎁 <b>ĐỔI QUÀ LOYALTY</b>\n\n"
+                f"Điểm của bạn: <b>{pts}</b> / cần <b>{need}</b> điểm.\n"
+                f"Quà: 1 acc <b>bất kỳ trong gian hàng Acc Facebook</b> miễn phí.\n\n"
+                f"👉 Mua acc ở /shop để tích thêm điểm (1 điểm / 100k).",
+                parse_mode="HTML")
+            return
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🎁 {c['name']} ({n} acc)",
+                callback_data=f"doiqua_stall:{c['id']}")]
+            for c, n in cats
+        ])
+        await msg.answer(
+            f"🎁 <b>ĐỔI QUÀ LOYALTY</b>\n\n"
+            f"Điểm của bạn: <b>{pts}</b> / cần <b>{need}</b> điểm.\n"
+            f"Chọn <b>1 loại acc</b> trong gian hàng Acc Facebook để đổi:",
+            parse_mode="HTML", reply_markup=kb)
+        return
     cat_id = db.loyalty_redeem_cat()
     c = db.acc_category_get(cat_id) if cat_id else None
     if not c or not c["active"]:
@@ -8552,34 +8582,68 @@ async def on_doiqua(msg: Message):
             f"👉 Mua acc ở /shop để tích thêm điểm (1 điểm / 100k).",
             parse_mode="HTML")
         return
-    if db.acc_stock_count(cat_id) <= 0:
-        await msg.answer("😅 Quà đổi điểm hiện hết hàng, bạn quay lại sau nhé!")
+    ok, order, reason = await _doiqua_redeem_acc(msg.bot, tg_id, c["id"], need)
+    if not ok:
+        await msg.answer(_doiqua_fail_text(reason), parse_mode="HTML")
         return
-    if not db.loyalty_consume(tg_id, need):
-        await msg.answer("😅 Điểm của bạn vừa thay đổi, thử lại nhé!")
-        return
-    sold_orders, _sell_fail = await _sell_live_stock(
-        msg.bot, tg_id, 0, 1,
-        lambda seen: db.acc_stock_pick_candidates(cat_id, 5, seen),
-        check_live=_cat_live_check(cat_id))
-    if not sold_orders:
-        db.loyalty_add(tg_id, need, "hoan_diem_khong_du_hang_live")
-        await msg.answer(
-            "😔 Quà đổi điểm hiện hết acc <b>LIVE</b> (shop vừa kiểm tra lại), "
-            "điểm đã được hoàn lại. Bạn quay lại sau nhé!",
-            parse_mode="HTML")
-        return
-    order = sold_orders[0]
+    await _doiqua_success(msg.bot, msg, msg.from_user, tg_id, order, c["id"], need)
+
+
+def _doiqua_fail_text(reason: str) -> str:
+    if reason == "out_of_stock":
+        return "😅 Quà đổi điểm hiện hết hàng, bạn quay lại sau nhé!"
+    if reason == "points_changed":
+        return "😅 Điểm của bạn vừa thay đổi, thử lại nhé!"
+    return ("😔 Quà đổi điểm hiện hết acc <b>LIVE</b> (shop vừa kiểm tra lại), "
+            "điểm đã được hoàn lại. Bạn quay lại sau nhé!")
+
+
+async def _doiqua_success(bot, answer_target, user, tg_id: int, order, cat_id: int, need: int):
+    """Tin MUA THÀNH CÔNG sau khi đổi quà (dùng chung cho /doiqua và nút chọn)."""
     order_id = order["id"]
     tickets = db.spin_add_tickets(tg_id, 1)
-    await msg.answer(
+    text = (
         f"🎉 <b>ĐỔI QUÀ THÀNH CÔNG!</b> (−{need} điểm)\n"
         f"🎡 +1 vé quay may mắn (đang có {tickets} vé — gõ /quay)\n"
         f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
         f"{_live_line(cat_id)}\n"
-        f"{_pickup_suffix()}",
-        parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
-    await _notify_purchase_admin(msg.bot, msg.from_user, [order])
+        f"{_pickup_suffix()}"
+    )
+    await answer_target.answer(text, parse_mode="HTML",
+                               reply_markup=_acc_delivery_kb(order_id))
+    await _notify_purchase_admin(bot, user, [order])
+
+
+@router.callback_query(F.data.startswith("doiqua_stall:"))
+async def on_doiqua_stall(cb: CallbackQuery):
+    """Khách đã chọn loại acc trong gian hàng FB để đổi quà."""
+    tg_id = cb.from_user.id
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer("❌ Loại không hợp lệ.", show_alert=True)
+        return
+    scope = db.get_setting("loyalty_redeem_scope", "cat") or "cat"
+    mode = db.get_setting("loyalty_redeem_mode", "acc") or "acc"
+    c = db.acc_category_get(cat_id)
+    if scope != "stall" or mode != "acc" or not c or not c["active"] \
+            or (dict(c).get("stall") or "Acc Facebook") != "Acc Facebook":
+        await cb.answer("😅 Quà đổi điểm đã thay đổi, thử lại nhé!", show_alert=True)
+        return
+    try:
+        need = int(db.get_setting("loyalty_redeem_points", "10") or 10)
+    except Exception:
+        need = 10
+    if db.loyalty_get(tg_id) < need:
+        await cb.answer(f"😅 Bạn cần {need} điểm để đổi quà.", show_alert=True)
+        return
+    ok, order, reason = await _doiqua_redeem_acc(cb.bot, tg_id, cat_id, need)
+    if not ok:
+        await cb.message.answer(_doiqua_fail_text(reason), parse_mode="HTML")
+        await cb.answer()
+        return
+    await _doiqua_success(cb.bot, cb.message, cb.from_user, tg_id, order, cat_id, need)
+    await cb.answer("🎉 Đổi quà thành công!")
 
 
 @router.message(Command("damua"))
@@ -9751,15 +9815,49 @@ def _loyalty_gift_desc() -> str:
         amt = db.get_setting("loyalty_redeem_amount", "0") or "0"
         w = db.wallet_label(db.get_setting("loyalty_redeem_wallet", "main"))
         return f"<b>{vnd(int(amt))}</b> vào {w} — <b>{html.escape(str(pts))}</b> điểm"
+    scope = db.get_setting("loyalty_redeem_scope", "cat") or "cat"
+    if scope == "stall":
+        return f"1 acc <b>bất kỳ trong gian hàng Acc Facebook</b> — <b>{html.escape(str(pts))}</b> điểm"
     cid = db.loyalty_redeem_cat()
     c = db.acc_category_get(cid) if cid else None
     return f"1 acc <b>{html.escape(c['name']) if c else 'chưa cài'}</b> — <b>{html.escape(str(pts))}</b> điểm"
 
 
+def _fb_stall_gift_cats() -> list:
+    """Các loại acc còn hàng trong gian hàng Acc Facebook (để đổi quà)."""
+    out = []
+    for c in db.acc_category_list():
+        c = dict(c)
+        if (c.get("stall") or "Acc Facebook") != "Acc Facebook":
+            continue
+        n = db.acc_stock_count(c["id"])
+        if n > 0:
+            out.append((c, n))
+    return out
+
+
+async def _doiqua_redeem_acc(bot, tg_id: int, cat_id: int, need: int):
+    """Trừ điểm + giao 1 acc live. Trả về (ok, order|None, reason)."""
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"] or db.acc_stock_count(cat_id) <= 0:
+        return False, None, "out_of_stock"
+    if not db.loyalty_consume(tg_id, need):
+        return False, None, "points_changed"
+    sold_orders, _sell_fail = await _sell_live_stock(
+        bot, tg_id, 0, 1,
+        lambda seen: db.acc_stock_pick_candidates(cat_id, 5, seen),
+        check_live=_cat_live_check(cat_id))
+    if not sold_orders:
+        db.loyalty_add(tg_id, need, "hoan_diem_khong_du_hang_live")
+        return False, None, "no_live"
+    return True, sold_orders[0], ""
+
+
 @router.message(Command("quadoi"))
 async def on_quadoi(msg: Message):
     """Admin: chọn quà đổi điểm loyalty.
-    /quadoi <id_loại> [số_điểm] — quà acc (xem id: /kho)
+    /quadoi <id_loại> [số_điểm] — quà acc cố định (xem id: /kho)
+    /quadoi stall [số_điểm] — quà acc bất kỳ trong gian hàng Acc Facebook
     /quadoi tien <số_tiền> <chinh|shop> [số_điểm] — quà tiền về ví
     /quadoi 0 — tắt"""
     if not _is_admin(msg.from_user.id):
@@ -9769,7 +9867,8 @@ async def on_quadoi(msg: Message):
         await msg.answer(
             f"🎁 Quà đổi điểm hiện tại: {_loyalty_gift_desc()}.\n"
             f"Cú pháp:<br>"
-            f"• <code>/quadoi &lt;id_loại&gt; [số_điểm]</code> — quà acc (xem id: /kho)<br>"
+            f"• <code>/quadoi &lt;id_loại&gt; [số_điểm]</code> — quà acc cố định (xem id: /kho)<br>"
+            f"• <code>/quadoi stall [số_điểm]</code> — quà acc bất kỳ trong gian hàng Acc Facebook<br>"
             f"• <code>/quadoi tien &lt;số_tiền&gt; &lt;chinh|shop&gt; [số_điểm]</code> — quà tiền về ví<br>"
             f"• <code>/quadoi 0</code> — tắt",
             parse_mode="HTML")
@@ -9800,15 +9899,29 @@ async def on_quadoi(msg: Message):
                 pass
         await msg.answer(f"✅ Quà đổi điểm: {_loyalty_gift_desc()}.", parse_mode="HTML")
         return
+    if parts[1].lower() == "stall":
+        db.set_setting("loyalty_redeem_mode", "acc")
+        db.set_setting("loyalty_redeem_scope", "stall")
+        db.set_setting("loyalty_redeem_cat", "0")
+        if len(parts) >= 3:
+            try:
+                pts = int(parts[2])
+                if pts > 0:
+                    db.set_setting("loyalty_redeem_points", str(pts))
+            except Exception:
+                pass
+        await msg.answer(f"✅ Quà đổi điểm: {_loyalty_gift_desc()}.", parse_mode="HTML")
+        return
     try:
         cid = int(parts[1])
     except Exception:
-        await msg.answer("❌ ID phải là số.")
+        await msg.answer("❌ ID phải là số hoặc <code>stall</code>.")
         return
     if cid and not db.acc_category_get(cid):
         await msg.answer("❌ Không tìm thấy loại này.")
         return
     db.set_setting("loyalty_redeem_mode", "acc")
+    db.set_setting("loyalty_redeem_scope", "cat")
     db.set_setting("loyalty_redeem_cat", str(cid))
     pts_txt = ""
     if len(parts) >= 3:

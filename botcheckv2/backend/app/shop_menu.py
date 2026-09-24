@@ -273,10 +273,14 @@ def _p_loyalty():
             amt_txt = str(amt)
         cur = f"{amt_txt} vào {wlbl}"
     else:
-        cid = db.get_setting("loyalty_redeem_cat", "0") or "0"
-        cur = "chưa cài" if cid == "0" else f"loại #{cid}"
+        scope = db.get_setting("loyalty_redeem_scope", "cat") or "cat"
+        if scope == "stall":
+            cur = "acc bất kỳ (gian hàng Acc Facebook)"
+        else:
+            cid = db.get_setting("loyalty_redeem_cat", "0") or "0"
+            cur = "chưa cài" if cid == "0" else f"loại #{cid}"
     return (f"🎁 <b>QUÀ ĐỔI ĐIỂM LOYALTY</b> (bước 1/2)\n\nHiện tại: <b>{html.escape(cur)}</b> — <b>{html.escape(str(pts))}</b> điểm.\n\n"
-            f"Gửi <b>ID loại acc</b> làm quà (<code>0</code> để tắt). Muốn đổi điểm lấy <b>tiền</b> thì dùng nút 💵 bên dưới.")
+            f"Gửi <b>ID loại acc</b> làm quà (<code>0</code> để tắt), hoặc gửi <b>stall</b> để khách được chọn acc bất kỳ trong gian hàng Acc Facebook. Muốn đổi điểm lấy <b>tiền</b> thì dùng nút 💵 bên dưới.")
 
 
 def _p_loyalty_random():
@@ -427,7 +431,7 @@ FLOWS = {
     "loyalty_gift": {
         "cat": "price", "handler": "on_quadoi",
         "steps": [
-            (_p_loyalty, "int"),
+            (_p_loyalty, "text"),
             ("🎁 <b>QUÀ ĐỔI ĐIỂM LOYALTY</b> (bước 2/2)\n\nGửi <b>số điểm</b> cần để đổi quà (<code>0</code> = giữ nguyên).", "opt_int"),
         ],
         "build": lambda v: f"/quadoi {v[0]}" + (f" {v[1]}" if v[1] else ""),
