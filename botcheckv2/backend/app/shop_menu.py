@@ -169,9 +169,38 @@ def _group_kb(cat, tg_id=None):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _kho_summary():
+    """Tóm tắt tồn kho cho menu KHO & LOẠI ACC: tổng + từng loại kèm ID
+    (tiện khi admin không nhớ ID kho)."""
+    from . import db
+    try:
+        cats = db.acc_category_list(active_only=False, include_hidden=True)
+    except Exception:
+        return ""
+    if not cats:
+        return "\n<i>Chưa có loại acc nào.</i>"
+    lines = []
+    total = 0
+    for c in cats:
+        try:
+            keys = c.keys()
+            cid = int(c["id"])
+            name = c["name"] if "name" in keys else f"#{cid}"
+            hidden = " 🙈" if ("hidden" in keys and c["hidden"]) else ""
+            n = db.acc_stock_count(cid)
+        except Exception:
+            continue
+        total += n
+        lines.append(f"• <b>#{cid}</b> {name}{hidden}: {n} acc")
+    head = (f"\n━━━━━━━━━━━━━━━\n"
+            f"📊 Tổng: <b>{len(lines)} loại • {total} acc tồn</b>")
+    return head + "\n" + "\n".join(lines)
+
+
 def _group_text(cat):
     title, _ = GROUPS[cat]
-    return title + "\n\nChọn thao tác:"
+    extra = _kho_summary() if cat == "kho" else ""
+    return title + extra + "\n\nChọn thao tác:"
 
 
 # ------------------------------------------------- prompt động (kèm hd + giá trị hiện tại)
