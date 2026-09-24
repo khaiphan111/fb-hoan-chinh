@@ -629,10 +629,12 @@ class FollowerPoller:
         cat = db.acc_category_get(cat_id) if cat_id else None
         if not cat:
             return
-        import urllib.request
-        import socket
-        from urllib.parse import urlparse
-        try:
+        # GĐ2: urlopen/gethostbyname là sync, chặn event loop tới 30s
+        # (watchdog kill -9 khi health > 8s) -> chạy trong thread riêng.
+        def _fetch_supplier_file():
+            import urllib.request
+            import socket
+            from urllib.parse import urlparse
             host = urlparse(url).hostname or ""
             ip = socket.gethostbyname(host)
             oc = [int(x) for x in ip.split(".")]
@@ -641,7 +643,9 @@ class FollowerPoller:
                 raise ValueError("blocked private ip")
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                raw = resp.read(5 * 1024 * 1024)
+                return resp.read(5 * 1024 * 1024)
+        try:
+            raw = await asyncio.to_thread(_fetch_supplier_file)
             text = raw.decode("utf-8", errors="ignore")
         except Exception as e:
             await self._send_admin_report(

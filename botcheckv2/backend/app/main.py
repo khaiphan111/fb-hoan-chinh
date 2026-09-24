@@ -38,10 +38,22 @@ app.include_router(miniapp_router)
 
 import asyncio
 import time
+import resource
+import faulthandler
+import signal
 
+# BẪY CHẨN ĐOÁN (tạm): khi backend đơ, gửi `kill -USR1 <pid>` để dump stack
+# toàn bộ threads ra file mà KHÔNG kill process → biết chính xác dòng nào treo.
+_fault_f = open("/tmp/fb-loop-dump.txt", "w")
+faulthandler.register(signal.SIGUSR1, file=_fault_f, all_threads=True)
+
+_APP_START_TS = time.monotonic()
 
 _STARTUP_NOTIFY_STAMP = os.path.expanduser("~/workspace/fb-hoan-chinh/watchdog/last_startup_notify")
 _STARTUP_NOTIFY_MIN_INTERVAL = 3600  # giây: tối đa 1 tin "kết nối thành công" mỗi 60 phút
+
+_HEARTBEAT_FILE = os.path.expanduser("~/workspace/fb-hoan-chinh/watchdog/backend_heartbeat")
+_heartbeat_task = None
 
 
 def _startup_notify_allowed() -> bool:
@@ -60,8 +72,43 @@ def _startup_notify_allowed() -> bool:
         pass
     return True
 
+
+def _check_prev_shutdown():
+    """GĐ2 quan trắc: phát hiện lần tắt trước là clean (SIGTERM) hay
+    bất thường (kill -9 / crash / mất điện) qua heartbeat file.
+    Không đụng tới watchdog.sh."""
+    try:
+        raw = open(_HEARTBEAT_FILE).read().strip()
+    except Exception:
+        print("DEBUG: no heartbeat file (first run?)", flush=True)
+        return
+    if raw.startswith("clean:"):
+        print(f"DEBUG: previous shutdown was CLEAN at {raw[6:]}", flush=True)
+        return
+    try:
+        age = time.time() - float(raw)
+    except Exception:
+        return
+    if age > 120:
+        print(f"WARNING: previous shutdown UNCLEAN (heartbeat {int(age)}s old) "
+              f"-> likely kill -9 / crash / reboot, NOT a clean SIGTERM", flush=True)
+    else:
+        print(f"DEBUG: previous heartbeat {int(age)}s ago (quick restart)", flush=True)
+
+
+async def _heartbeat_loop():
+    """Ghi heartbeat mỗi 30s để lần khởi động sau biết lần tắt trước có clean không."""
+    while True:
+        try:
+            with open(_HEARTBEAT_FILE, "w") as f:
+                f.write(str(int(time.time())))
+        except Exception:
+            pass
+        await asyncio.sleep(30)
+
 @app.on_event("startup")
 async def on_startup():
+    _check_prev_shutdown()
     print("DEBUG: Start init_db", flush=True)
     db.init_db()
     print("DEBUG: Start migrate_db", flush=True)
@@ -127,28 +174,90 @@ async def on_startup():
     asyncio.create_task(start_services())
     print("DEBUG: Finish on_startup", flush=True)
 
+    # GĐ2 quan trắc: heartbeat để phát hiện kill -9 / crash ở lần khởi động sau
+    global _heartbeat_task
+    _heartbeat_task = asyncio.create_task(_heartbeat_loop())
+
     # Giữ server Render luôn hoạt động - tự ping mỗi 14 phút
     start_keep_alive()
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    await poller.stop()
+    # GĐ2 quan trắc: dừng heartbeat TRƯỚC để nó không ghi đè marker,
+    # rồi mới đánh dấu tắt clean (SIGTERM) ở CUỐI để phân biệt với kill -9.
+    global _heartbeat_task
     try:
-        from . import payos as payos_mod
-        await payos_mod.stop()
+        if _heartbeat_task:
+            _heartbeat_task.cancel()
     except Exception:
         pass
-    await manager.stop()
-    await zalo_manager.stop()
-    await admin_manager.stop()
-    await notify_manager.stop()
-    await stop_keep_alive()
+
+    async def _stop_step(name, coro, timeout=15):
+        # GĐ2 fix: shutdown từng treo vĩnh viễn ở đây (chờ await không bao giờ xong).
+        # wait_for đảm bảo shutdown luôn kết thúc và log rõ bước nào treo.
+        try:
+            await asyncio.wait_for(coro, timeout=timeout)
+            print(f"DEBUG: shutdown step '{name}' ok", flush=True)
+        except asyncio.TimeoutError:
+            print(f"WARNING: shutdown step '{name}' TIMEOUT after {timeout}s (skipped)", flush=True)
+        except Exception as e:
+            print(f"WARNING: shutdown step '{name}' error: {e}", flush=True)
+
+    await _stop_step("poller.stop", poller.stop())
+    try:
+        from . import payos as payos_mod
+        await _stop_step("payos.stop", payos_mod.stop())
+    except Exception:
+        pass
+    await _stop_step("manager.stop", manager.stop())
+    await _stop_step("zalo_manager.stop", zalo_manager.stop())
+    await _stop_step("admin_manager.stop", admin_manager.stop())
+    await _stop_step("notify_manager.stop", notify_manager.stop())
+    await _stop_step("stop_keep_alive", stop_keep_alive())
+    try:
+        with open(_HEARTBEAT_FILE, "w") as f:
+            f.write(f"clean:{int(time.time())}")
+    except Exception:
+        pass
+    print("DEBUG: on_shutdown complete", flush=True)
 
 
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": config.APP_NAME, "version": config.APP_VERSION}
+
+
+@app.get("/api/debug/status")
+async def debug_status():
+    """GĐ2 quan trắc: uptime, RAM, độ trễ event loop, số task asyncio.
+    Chỉ bind 127.0.0.1 nên không cần auth."""
+    t0 = time.monotonic()
+    await asyncio.sleep(0.05)
+    lag_ms = (time.monotonic() - t0 - 0.05) * 1000
+    try:
+        rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    except Exception:
+        rss_mb = None
+    try:
+        n_tasks = sum(1 for t in asyncio.all_tasks() if not t.done())
+    except Exception:
+        n_tasks = None
+    hb_age = None
+    try:
+        raw = open(_HEARTBEAT_FILE).read().strip()
+        if not raw.startswith("clean:"):
+            hb_age = int(time.time() - float(raw))
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "uptime_s": int(time.monotonic() - _APP_START_TS),
+        "rss_mb": round(rss_mb, 1) if rss_mb is not None else None,
+        "loop_lag_ms": round(lag_ms, 1),
+        "async_tasks": n_tasks,
+        "heartbeat_age_s": hb_age,
+    }
 
 
 @app.post("/payos/webhook")

@@ -426,6 +426,8 @@ COMMANDS = [
     BotCommand(command="nap",         description="Nạp tiền tự động qua PayOS (chọn ví)"),
     BotCommand(command="napshop",     description="Nạp tiền vào ví shop mua acc"),
     BotCommand(command="balance",     description="Xem số dư hiện tại"),
+    BotCommand(command="sodu",        description="Xem tất cả số dư: ví, credits, điểm"),
+    BotCommand(command="huongdan",    description="Hướng dẫn nhanh theo từng mục"),
     BotCommand(command="vip",         description="Xem cấp độ VIP và đặc quyền"),
     BotCommand(command="checkfile",   description="Check UID Facebook qua file .txt/.xlsx"),
     BotCommand(command="checkcookie", description="Check dàn Cookie format UID|PASS|COOKIE|2FA"),
@@ -572,8 +574,14 @@ _WELCOME_NEW = (
     "🛒 <b>Mua acc FB:</b> gõ /shop — chọn loại acc, thanh toán là nhận acc ngay\n"
     "💳 <b>Nạp tiền:</b> gõ /nap &lt;số tiền&gt; — quét mã QR là tiền vào ví\n"
     "🎁 <b>Tân thủ</b> được tặng ngày dùng thử miễn phí (nếu đang bật)\n"
-    "❓ Cần hỗ trợ? Gõ /tienich để xem tiện ích\n"
+    "❓ Cần hỗ trợ? Gõ /huongdan để xem hướng dẫn theo từng mục\n"
     "━━━━━━━━━━━━━━━\n\n"
+)
+
+# Gợi ý ví đúng lúc: chỉ hiện khi thiếu tiền ví shop (đỡ rối cho khách mới)
+_SHOP_WALLET_HINT = (
+    "\n<i>💡 Ví shop là ví riêng để mua acc (khác ví chính dùng để check UID/mua gói)."
+    " Nạp bằng /napshop nhé.</i>"
 )
 
 
@@ -668,10 +676,87 @@ async def on_start(msg: Message):
         f"Gói FB: <b>{_sub_text(user)}</b>\n\n"
         f"{trial_msg}"
         + (_WELCOME_NEW if is_new else "") +
-        "Gõ /help để xem hướng dẫn đầy đủ.\n"
+        "Gõ /huongdan để xem hướng dẫn theo từng mục.\n"
         "Gõ /ref để lấy link giới thiệu nhận 10% hoa hồng.",
         reply_markup=(ADMIN_MENU if _is_admin(u.id) else MENU),
     )
+    # Khách mới: gửi thêm tin hướng dẫn 3 bước mua acc đầu tiên (nút bấm)
+    if is_new:
+        try:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛒 Mua acc đầu tiên (3 bước)",
+                                      callback_data="guide_firstbuy:1")],
+                [InlineKeyboardButton(text="📖 Hướng dẫn nhanh",
+                                      callback_data="guide_hd")],
+            ])
+            await msg.answer(
+                "🆕 <b>Bạn là khách mới?</b>\n"
+                "Bấm nút bên dưới để được dẫn từng bước mua acc đầu tiên nhé 👇",
+                parse_mode="HTML", reply_markup=kb,
+            )
+        except Exception:
+            pass
+
+# ─── Hướng dẫn 3 bước mua acc đầu tiên (cho khách mới) ───
+_GUIDE_STEPS = {
+    "1": (
+        "🛒 <b>MUA ACC ĐẦU TIÊN — Bước 1/3: Nạp tiền</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "Acc mua bằng <b>ví shop</b> (riêng với ví chính).\n\n"
+        "👉 Gõ <b>/napshop &lt;số tiền&gt;</b> (VD: /napshop 50000)\n"
+        "→ quét mã QR → tiền vào ví shop ngay.\n\n"
+        "Nạp xong bấm Tiếp nhé 👇"
+    ),
+    "2": (
+        "🛒 <b>MUA ACC ĐẦU TIÊN — Bước 2/3: Chọn acc</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "👉 Gõ <b>/shop</b> → chọn loại acc → nhập số lượng\n"
+        "→ bấm xác nhận.\n\n"
+        "Bot tự <b>kiểm tra LIVE</b> từng acc trước khi giao —\n"
+        "acc chết được đổi/cách ly, bạn chỉ nhận acc sống.\n\n"
+        "Xong bước này bấm Tiếp nhé 👇"
+    ),
+    "3": (
+        "🛒 <b>MUA ACC ĐẦU TIÊN — Bước 3/3: Nhận acc</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "Sau khi mua, bạn nhận acc theo 1 trong 3 cách:\n"
+        "• 📋 <b>Hiện thông tin</b> — xem ngay trong chat\n"
+        "• 📄 <b>Tải file .txt</b> — lưu về máy\n"
+        "• 📊 <b>Tải file .xlsx</b> — mở bằng Excel\n\n"
+        "Acc lỗi trong thời gian bảo hành? Gõ <b>/damua</b>\n"
+        "→ chọn đơn → yêu cầu bảo hành.\n\n"
+        "🎉 Xong! Chúc bạn mua sắm vui vẻ."
+    ),
+}
+
+
+@router.callback_query(F.data.startswith("guide_firstbuy:"))
+async def on_guide_firstbuy(cb: CallbackQuery):
+    await cb.answer()
+    step = cb.data.split(":", 1)[1]
+    text = _GUIDE_STEPS.get(step, _GUIDE_STEPS["1"])
+    buttons = []
+    if step == "1":
+        buttons.append([InlineKeyboardButton(text="Tiếp: chọn acc →",
+                                             callback_data="guide_firstbuy:2")])
+    elif step == "2":
+        buttons.append([InlineKeyboardButton(text="Tiếp: nhận acc →",
+                                             callback_data="guide_firstbuy:3")])
+    else:
+        buttons.append([InlineKeyboardButton(text="← Xem lại từ đầu",
+                                             callback_data="guide_firstbuy:1")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "guide_hd")
+async def on_guide_hd(cb: CallbackQuery):
+    await cb.answer()
+    await _send_huongdan(cb.message, edit=True)
+
 
 @router.message(Command("ref"))
 async def on_ref(msg: Message):
@@ -2359,6 +2444,119 @@ async def on_wal_nap(cb: CallbackQuery, state: FSMContext):
 async def on_wal_hist(cb: CallbackQuery):
     await cb.answer()
     await cb.message.answer("📜 Xem lịch sử giao dịch bằng lệnh /lichsu nhé.")
+
+# ─── /sodu: tất cả số dư + giải thích từng loại (cho khách mới đỡ rối) ───
+@router.message(Command("sodu"))
+async def on_sodu(msg: Message):
+    user = db.get_user(msg.chat.id)
+    if not user:
+        await msg.answer("Bạn chưa /start. Gõ /start trước nhé.")
+        return
+    credits = db.get_credits(msg.from_user.id)
+    shop_bal = int(user["shop_balance"] or 0) if "shop_balance" in user.keys() else 0
+    main_bal = int(user["balance"] or 0)
+    points = db.loyalty_get(msg.from_user.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Nạp ví chính", callback_data="wal_nap:main"),
+         InlineKeyboardButton(text="🛒 Nạp ví shop", callback_data="wal_nap:shop")],
+    ])
+    await msg.answer(
+        "👛 <b>SỐ DƯ CỦA BẠN</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"💰 <b>Ví chính:</b> {vnd(main_bal)}\n"
+        "      <i>→ Check UID, mua gói/VIP, mua credits</i>\n\n"
+        f"🛒 <b>Ví shop:</b> {vnd(shop_bal)}\n"
+        "      <i>→ Mua acc, đặt cọc, hộp mù (nạp bằng /napshop)</i>\n\n"
+        f"⚡ <b>Credits:</b> {credits} lượt\n"
+        "      <i>→ Check UID hàng loạt (/checkfile, /muacredit để mua thêm)</i>\n\n"
+        f"🎁 <b>Điểm:</b> {points} điểm\n"
+        "      <i>→ Nhận sau mỗi đơn mua acc, đổi quà bằng /doiqua</i>\n"
+        "━━━━━━━━━━━━━━",
+        parse_mode="HTML", reply_markup=kb,
+    )
+
+# ─── /huongdan: menu nút gọn theo từng mục ───
+_HUONGDAN_TEXTS = {
+    "shop": (
+        "🛒 <b>MUA ACC FACEBOOK</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "1️⃣ Gõ <b>/shop</b> → chọn loại acc\n"
+        "2️⃣ Nhập số lượng (hoặc bấm nút nhập số tùy ý)\n"
+        "3️⃣ Xác nhận → bot <b>tự check LIVE</b> trước khi giao\n"
+        "4️⃣ Nhận acc: 📋 hiện thông tin / 📄 file .txt / 📊 file .xlsx\n\n"
+        "💡 Mua bằng <b>ví shop</b> — nạp bằng /napshop.\n"
+        "🛒 Mua nhiều loại 1 lần: dùng /giohang."
+    ),
+    "nap": (
+        "💳 <b>NẠP TIỀN</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• <b>/nap &lt;số tiền&gt;</b> — nạp tự động (quét QR), chọn ví chính/shop\n"
+        "• <b>/napshop &lt;số tiền&gt;</b> — nạp thẳng vào ví shop để mua acc\n"
+        "• <b>/bank &lt;số tiền&gt;</b> — lấy thông tin chuyển khoản tay\n\n"
+        "💡 <b>Ví chính</b>: check UID, mua gói/VIP.\n"
+        "💡 <b>Ví shop</b>: mua acc, đặt cọc, hộp mù."
+    ),
+    "bh": (
+        "🛡️ <b>BẢO HÀNH ACC</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "1️⃣ Gõ <b>/damua</b> → chọn đơn hàng\n"
+        "2️⃣ Bấm yêu cầu bảo hành, ghi rõ lỗi\n"
+        "3️⃣ Admin duyệt → được đổi acc hoặc hoàn tiền\n\n"
+        "⏱ Mỗi loại acc có thời gian bảo hành riêng\n"
+        "(xem trong chi tiết loại acc ở /shop)."
+    ),
+    "check": (
+        "🔍 <b>KIỂM TRA ACC (LIVE/DIE)</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• <b>/fb &lt;uid&gt;</b> — check 1 acc Facebook\n"
+        "• <b>/checkfile</b> — check hàng loạt từ file .txt/.xlsx\n"
+        "• <b>/tiktok &lt;username&gt;</b> / <b>/ig &lt;username&gt;</b> — check TikTok/IG\n"
+        "• <b>/theodoi</b> — theo dõi UID tự động, die báo ngay\n\n"
+        "💡 Check lẻ trừ ví chính, check hàng loạt dùng credits."
+    ),
+}
+
+_HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🛒 Mua acc", callback_data="hd:shop"),
+     InlineKeyboardButton(text="💳 Nạp tiền", callback_data="hd:nap")],
+    [InlineKeyboardButton(text="🛡️ Bảo hành", callback_data="hd:bh"),
+     InlineKeyboardButton(text="🔍 Kiểm tra acc", callback_data="hd:check")],
+])
+
+
+async def _send_huongdan(target, edit: bool = False):
+    text = "📖 <b>HƯỚNG DẪN NHANH</b>\nChọn mục bạn cần 👇"
+    if edit:
+        try:
+            await target.edit_text(text, parse_mode="HTML",
+                                   reply_markup=_HUONGDAN_MENU_KB)
+        except Exception:
+            pass
+    else:
+        await target.answer(text, parse_mode="HTML",
+                            reply_markup=_HUONGDAN_MENU_KB)
+
+
+@router.message(Command("huongdan"))
+async def on_huongdan(msg: Message):
+    await _send_huongdan(msg)
+
+
+@router.callback_query(F.data.startswith("hd:"))
+async def on_hd(cb: CallbackQuery):
+    await cb.answer()
+    topic = cb.data.split(":", 1)[1]
+    text = _HUONGDAN_TEXTS.get(topic)
+    if not text:
+        await _send_huongdan(cb.message, edit=True)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← Quay lại", callback_data="hd:back")],
+    ])
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
@@ -7405,7 +7603,8 @@ async def on_acc_confirm(cb: CallbackQuery):
     # Trừ tiền ví shop trước, giao acc sau (nguyên tử ở acc_sell_many)
     if not db.adjust_shop_balance(tg_id, -final, f"mua_acc:{cat_id}x{qty}"):
         await cb.message.answer(
-            "❌ <b>Ví shop không đủ!</b>\nNạp thêm bằng /napshop rồi mua lại nhé.",
+            "❌ <b>Ví shop không đủ!</b>\nNạp thêm bằng /napshop rồi mua lại nhé."
+            + _SHOP_WALLET_HINT,
             parse_mode="HTML")
         return
     # Check LIVE trước khi giao: chỉ bán acc đã check live, acc die bị cách ly
@@ -7763,7 +7962,7 @@ async def on_cart_checkout(cb: CallbackQuery):
         txt += [f"<i>{html.escape(n)}</i>" for n in notes]
     if balance < grand:
         txt.append(f"\n❌ <b>Ví shop không đủ!</b> Còn thiếu <b>{vnd(grand - balance)}</b>.\n"
-                   "Nạp thêm bằng /napshop rồi quay lại nhé.")
+                   "Nạp thêm bằng /napshop rồi quay lại nhé." + _SHOP_WALLET_HINT)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🔙 Sửa giỏ hàng", callback_data="cartview")]])
     else:
@@ -7800,10 +7999,11 @@ async def on_cart_confirm(cb: CallbackQuery):
     if balance < grand:
         await cb.message.answer(
             f"❌ Ví shop không đủ ({vnd(balance)} < {vnd(grand)}). "
-            "Nạp thêm bằng /napshop nhé.", parse_mode="HTML")
+            "Nạp thêm bằng /napshop nhé." + _SHOP_WALLET_HINT, parse_mode="HTML")
         return
     if not db.adjust_shop_balance(tg_id, -grand, f"mua_giohang:{len(priced)}mon"):
-        await cb.message.answer("❌ Ví shop không đủ. Nạp thêm bằng /napshop nhé.",
+        await cb.message.answer("❌ Ví shop không đủ. Nạp thêm bằng /napshop nhé."
+                                + _SHOP_WALLET_HINT,
                                 parse_mode="HTML")
         return
     await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
@@ -9916,11 +10116,12 @@ async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
     if bal < amt:
         await msg.answer(
             f"❌ Ví shop không đủ đặt cọc.\nCọc {dep_pct}% = <b>{vnd(amt)}</b>, "
-            f"ví shop bạn: <b>{vnd(bal)}</b>.\nNạp thêm bằng /napshop nhé.",
+            f"ví shop bạn: <b>{vnd(bal)}</b>.\nNạp thêm bằng /napshop nhé."
+            + _SHOP_WALLET_HINT,
             parse_mode="HTML")
         return
     if not db.adjust_shop_balance(tg_id, -amt, f"dat_coc:{cat_id}"):
-        await msg.answer("❌ Ví shop không đủ đặt cọc.", parse_mode="HTML")
+        await msg.answer("❌ Ví shop không đủ đặt cọc." + _SHOP_WALLET_HINT, parse_mode="HTML")
         return
     dep_id = db.acc_deposit_create(tg_id, cat_id, amt)
     await msg.answer(
@@ -10040,11 +10241,11 @@ async def on_mystery_buy(cb: CallbackQuery):
     if bal < m_price:
         await cb.message.answer(
             f"❌ Ví shop không đủ! Hộp mù {vnd(m_price)}, bạn có {vnd(bal)}.\n"
-            f"Nạp thêm bằng /napshop nhé.",
+            f"Nạp thêm bằng /napshop nhé." + _SHOP_WALLET_HINT,
             parse_mode="HTML")
         return
     if not db.adjust_shop_balance(tg_id, -m_price, "mua_hop_mu"):
-        await cb.message.answer("❌ Ví shop không đủ.", parse_mode="HTML")
+        await cb.message.answer("❌ Ví shop không đủ." + _SHOP_WALLET_HINT, parse_mode="HTML")
         return
     await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
     sold_orders, _sell_fail = await _sell_live_stock(
