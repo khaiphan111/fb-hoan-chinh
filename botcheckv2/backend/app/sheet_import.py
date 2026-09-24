@@ -2,16 +2,81 @@
 
 Dùng hatch_gws_cli (auth đã có sẵn qua connector), chạy trong executor
 để không block event loop của backend.
+
+Mỗi gian hàng (stall) có 1 tab riêng trong sheet; tab được tự tạo khi
+tạo gian hàng mới (ensure_tab).
 """
 import asyncio
 import json
 import logging
+import re
 import shutil
 import subprocess
 
 log = logging.getLogger(__name__)
 
 CLI = shutil.which("hatch_gws_cli") or "/opt/hatch/bin/hatch_gws_cli"
+
+#: Hàng tiêu đề chuẩn ghi khi tự tạo tab mới
+SHEET_HEADERS = ["UID", "Mật khẩu", "Ngày tạo", "Mail thay", "Ghi chú",
+                 "2FA", "Cookie", "Token", "Trạng thái"]
+
+#: Gian hàng mặc định (acc Facebook) dùng tab chung cũ
+DEFAULT_STALL = "Acc Facebook"
+
+
+def sanitize_tab_name(name: str) -> str:
+    """Làm sạch tên tab: bỏ ký tự Google cấm ( / \\ ? * [ ] ), cắt 90 ký tự."""
+    t = re.sub(r"[\/\\?*\[\]]", " ", (name or "").strip())
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:90] or "Sheet"
+
+
+def tab_for_stall(stall: str, default_tab: str = "NhapKho") -> str:
+    """Tên tab Sheet của 1 gian hàng. Sạp FB mặc định dùng tab chung cũ."""
+    s = (stall or "").strip() or DEFAULT_STALL
+    if s == DEFAULT_STALL:
+        return default_tab or "NhapKho"
+    return sanitize_tab_name(s)
+
+
+async def tab_exists(spreadsheet_id: str, tab: str) -> bool:
+    """Kiểm tra tab đã có trong spreadsheet chưa."""
+    try:
+        d = await _cli(["sheets", "spreadsheets", "get", "--params",
+                        json.dumps({"spreadsheetId": spreadsheet_id,
+                                    "fields": "sheets.properties.title"})])
+        titles = [s.get("properties", {}).get("title", "")
+                  for s in (d.get("sheets") or [])]
+        return tab in titles
+    except Exception as e:
+        log.warning("tab_exists lỗi: %s", e)
+        return False
+
+
+async def ensure_tab(spreadsheet_id: str, tab: str) -> bool:
+    """Đảm bảo tab tồn tại; chưa có thì tạo mới + ghi hàng tiêu đề.
+    Trả True nếu tab sẵn sàng dùng, False nếu lỗi."""
+    if not spreadsheet_id or not tab:
+        return False
+    try:
+        if await tab_exists(spreadsheet_id, tab):
+            return True
+        # Tạo tab mới
+        await _cli(["sheets", "spreadsheets", "batchUpdate", "--params",
+                    json.dumps({"spreadsheetId": spreadsheet_id})],
+                   {"requests": [{"addSheet": {"properties": {"title": tab}}}]})
+        # Ghi hàng tiêu đề A1:I1
+        await _cli(["sheets", "spreadsheets", "values", "update", "--params",
+                    json.dumps({"spreadsheetId": spreadsheet_id,
+                                "range": f"{tab}!A1:I1",
+                                "valueInputOption": "USER_ENTERED"})],
+                   {"values": [SHEET_HEADERS]})
+        log.info("ensure_tab: đã tạo tab '%s'", tab)
+        return True
+    except Exception as e:
+        log.warning("ensure_tab lỗi (tab=%s): %s", tab, e)
+        return False
 
 
 def _run_cli(args, payload=None):

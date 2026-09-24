@@ -495,7 +495,9 @@ def migrate_db():
             "ALTER TABLE payos_orders ADD COLUMN target TEXT DEFAULT 'main'",
             "ALTER TABLE acc_restock_subs ADD COLUMN qty INTEGER DEFAULT 1",
             "ALTER TABLE acc_restock_subs ADD COLUMN auto_buy INTEGER DEFAULT 0",
-            "ALTER TABLE extra_admins ADD COLUMN expires_at BIGINT DEFAULT 0"
+            "ALTER TABLE extra_admins ADD COLUMN expires_at BIGINT DEFAULT 0",
+            "ALTER TABLE acc_categories ADD COLUMN stall TEXT DEFAULT 'Acc Facebook'",
+            "ALTER TABLE acc_categories ADD COLUMN live_check INTEGER DEFAULT 1"
         ]:
             try:
                 c.execute(sql)
@@ -2956,22 +2958,50 @@ def payos_stats_today() -> dict:
 
 # ============================ SHOP ACC FB ============================
 def acc_category_add(name: str, price: int, warranty_hours: int,
-                     description: str = "") -> int:
+                     description: str = "", stall: str = "Acc Facebook",
+                     live_check: int = 1) -> int:
     """Thêm loại acc. Trả id, -1 nếu tên đã tồn tại."""
     now = int(time.time())
     with _lock:
         c = get_conn()
         try:
             cur = c.execute(
-                "INSERT INTO acc_categories(name, price, warranty_hours, description, active, created_at) "
-                "VALUES(?,?,?,?,1,?)",
-                (name.strip(), int(price), int(warranty_hours), description or "", now),
+                "INSERT INTO acc_categories(name, price, warranty_hours, description, active, created_at, stall, live_check) "
+                "VALUES(?,?,?,?,1,?,?,?)",
+                (name.strip(), int(price), int(warranty_hours), description or "", now,
+                 (stall or "Acc Facebook").strip(), int(live_check)),
             )
             cid = cur.lastrowid
             c.commit()
             return cid
         except Exception:
             return -1
+
+
+def acc_stall_list() -> list:
+    """Danh sách gian hàng (distinct stall), kèm số loại acc."""
+    c = get_conn()
+    try:
+        rows = c.execute(
+            "SELECT COALESCE(stall,'Acc Facebook') AS stall, COUNT(*) n "
+            "FROM acc_categories WHERE active=1 GROUP BY stall ORDER BY MIN(id)"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return [{"stall": "Acc Facebook", "n": 0}]
+
+
+def acc_stock_count_stall(stall: str) -> int:
+    """Tổng acc AVAILABLE của 1 gian hàng."""
+    c = get_conn()
+    try:
+        r = c.execute(
+            "SELECT COUNT(*) n FROM acc_stock s JOIN acc_categories c ON c.id=s.cat_id "
+            "WHERE s.status='AVAILABLE' AND COALESCE(c.stall,'Acc Facebook')=?",
+            (stall,)).fetchone()
+        return int(r["n"]) if r else 0
+    except Exception:
+        return 0
 
 
 def acc_category_list(active_only: bool = True, include_hidden: bool = False) -> list:

@@ -103,6 +103,7 @@ def _confirm_kb():
 GROUPS = {
     "kho": ("📦 <b>KHO & LOẠI ACC</b>", [
         ("add_cat", "➕ Thêm loại acc"),
+        ("add_stall", "🏪 Thêm gian hàng mới"),
         ("import_file", "📥 Nhập kho (gửi file)"),
         ("import_sheet", "📊 Nhập kho từ Sheet"),
         ("set_sheet", "🔗 Cài đặt Sheet"),
@@ -181,16 +182,21 @@ def _kho_summary():
         return "\n<i>Chưa có loại acc nào.</i>"
     lines = []
     total = 0
+    last_stall = None
     for c in cats:
         try:
             keys = c.keys()
             cid = int(c["id"])
             name = c["name"] if "name" in keys else f"#{cid}"
             hidden = " 🙈" if ("hidden" in keys and c["hidden"]) else ""
+            stall = (c["stall"] if "stall" in keys and c["stall"] else "Acc Facebook")
             n = db.acc_stock_count(cid)
         except Exception:
             continue
         total += n
+        if stall != last_stall:
+            lines.append(f"🏪 <b>{stall}</b>")
+            last_stall = stall
         lines.append(f"• <b>#{cid}</b> {name}{hidden}: {n} acc")
     head = (f"\n━━━━━━━━━━━━━━━\n"
             f"📊 Tổng: <b>{len(lines)} loại • {total} acc tồn</b>")
@@ -295,6 +301,17 @@ FLOWS = {
             ("➕ <b>THÊM LOẠI ACC</b> (bước 4/4)\n\nGửi <b>mô tả</b> (gõ <code>-</code> để bỏ qua).", "opt_text"),
         ],
         "build": lambda v: f"/themloai {v[0]} | {v[1]} | {v[2]} | {'' if v[3] == '-' else v[3]}",
+    },
+    "add_stall": {
+        "cat": "kho", "handler": "on_themstall",
+        "steps": [
+            ("🏪 <b>THÊM GIAN HÀNG</b> (bước 1/5)\n\nGửi <b>tên gian hàng</b> (VD: Gmail).", "text"),
+            ("🏪 <b>THÊM GIAN HÀNG</b> (bước 2/5)\n\nGửi <b>tên loại hàng đầu tiên</b> trong gian hàng (VD: Gmail Edu).", "text"),
+            ("🏪 <b>THÊM GIAN HÀNG</b> (bước 3/5)\n\nGửi <b>giá bán</b> (VD: 15000).", "price"),
+            ("🏪 <b>THÊM GIAN HÀNG</b> (bước 4/5)\n\nGửi <b>bảo hành</b>: <code>30p</code> | <code>24h</code> | <code>2 ngày</code> | <code>1 tuần</code>.", "text"),
+            ("🏪 <b>THÊM GIAN HÀNG</b> (bước 5/5)\n\nGửi <b>mô tả</b> (gõ <code>-</code> để bỏ qua).", "opt_text"),
+        ],
+        "build": lambda v: f"/themstall {v[0]} | {v[1]} | {v[2]} | {v[3]} | {'' if v[4] == '-' else v[4]}",
     },
     "import_file": {
         "cat": "kho", "handler": "on_themacc", "needs_state": True,

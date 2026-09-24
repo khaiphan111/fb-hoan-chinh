@@ -377,12 +377,14 @@ class FollowerPoller:
         await self._run_stock_recheck()
 
     async def _run_stock_recheck(self, manual=False):
-        """Quét LIVE toàn bộ acc AVAILABLE trong kho.
+        """Quét LIVE toàn bộ acc AVAILABLE trong kho (chỉ sạp Acc Facebook).
         Acc DIE → cách ly khỏi kho bán + báo admin. Lỗi hạ tầng → bỏ qua."""
         try:
             rows = [dict(r) for r in db.get_conn().execute(
-                "SELECT id, uid, cat_id FROM acc_stock WHERE status='AVAILABLE' "
-                "ORDER BY id").fetchall()]
+                "SELECT s.id, s.uid, s.cat_id FROM acc_stock s "
+                "JOIN acc_categories c ON c.id=s.cat_id "
+                "WHERE s.status='AVAILABLE' AND COALESCE(c.live_check,1)=1 "
+                "ORDER BY s.id").fetchall()]
         except Exception as e:
             log.warning("stock recheck: không đọc được kho: %s", e)
             return

@@ -147,6 +147,13 @@ Tạo 1 Google Sheet, trong đó có tab tên **`NhapKho`** (hoặc tên khác, 
 - **Cột I (Trạng thái):** để **trống**. Sau khi nhập, bot tự ghi vào: `✅ OK` (nhập thành công), `🗑 TRÙNG` (UID đã có trong kho), `🔗 LỖI LINK` (không giải được UID), `⏭ BỎ QUA` (dòng trống), `☠️ DIE` (acc chết khi quét nền).
 - Mỗi lần chạy chỉ đọc những dòng **chưa có đánh dấu** ở cột I.
 
+### 8.1b. Gian hàng mới → tab mới tự động
+
+- Mỗi **gian hàng** (sạp) có **1 tab riêng** trong sheet. Sạp `Acc Facebook` dùng tab `NhapKho` chung như trên.
+- Khi admin tạo gian hàng mới (`/themstall` hoặc /shopadm → 🏪 Thêm gian hàng mới), bot **tự tạo tab** tên = tên gian hàng và ghi sẵn hàng tiêu đề 9 cột — không cần tạo tay.
+- Khi nhập kho (`/nhapkhosheet` hoặc nút 📊 Nhập kho Sheet), bot tự đọc đúng tab của gian hàng đã chọn.
+- Nếu ai xóa nhầm tab, lần nhập kho tiếp theo bot tự tạo lại.
+
 ### 8.2. Kết nối bot với sheet
 
 **⚠️ QUAN TRỌNG — đọc kỹ:**
