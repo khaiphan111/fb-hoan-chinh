@@ -500,7 +500,9 @@ def migrate_db():
             "ALTER TABLE acc_categories ADD COLUMN live_check INTEGER DEFAULT 1",
             "ALTER TABLE acc_stock ADD COLUMN sold_to BIGINT DEFAULT 0",
             "ALTER TABLE acc_stock ADD COLUMN sold_at BIGINT DEFAULT 0",
-            "ALTER TABLE acc_stock ADD COLUMN price_sold BIGINT DEFAULT 0"
+            "ALTER TABLE acc_stock ADD COLUMN price_sold BIGINT DEFAULT 0",
+            "ALTER TABLE acc_stock ADD COLUMN sheet_ref TEXT DEFAULT ''",
+            "ALTER TABLE acc_stock ADD COLUMN sheet_marked INTEGER DEFAULT 0"
         ]:
             try:
                 c.execute(sql)
@@ -1889,6 +1891,8 @@ def migrate_new_features():
             sold_to      BIGINT DEFAULT 0,
             sold_at      BIGINT DEFAULT 0,
             price_sold   BIGINT DEFAULT 0,
+            sheet_ref    TEXT DEFAULT '',
+            sheet_marked INTEGER DEFAULT 0,
             added_at     BIGINT NOT NULL
         )""",
         "CREATE INDEX IF NOT EXISTS idx_acc_stock_cat_status ON acc_stock(cat_id, status)",
@@ -3108,11 +3112,12 @@ def acc_stock_add_batch(cat_id: int, rows: list[dict], batch: str = "",
                 continue
             c.execute(
                 "INSERT INTO acc_stock(cat_id, uid, password, created_date, backup_mail, "
-                "note, totp, cookie, token, status, added_at, batch) "
-                "VALUES(?,?,?,?,?,?,?,?,?,'AVAILABLE',?,?)",
+                "note, totp, cookie, token, status, added_at, batch, sheet_ref) "
+                "VALUES(?,?,?,?,?,?,?,?,?,'AVAILABLE',?,?,?)",
                 (cat_id, uid, r.get("password", ""), r.get("created_date", ""),
                  r.get("backup_mail", ""), r.get("note", ""), r.get("totp", ""),
-                 r.get("cookie", ""), r.get("token", ""), now, batch or ""),
+                 r.get("cookie", ""), r.get("token", ""), now, batch or "",
+                 r.get("_sheet_ref") or ""),
             )
             added += 1
         if added:
@@ -3152,6 +3157,43 @@ def acc_stock_sold_count(cat_id: int) -> int:
         return int(r["n"] or 0)
     except Exception:
         return 0
+
+
+def acc_sold_unmarked_sheet(limit: int = 200) -> list:
+    """Các acc đã bán, nhập từ Google Sheet, chưa đẩy dấu 'đã bán' lên Sheet.
+    Trả list dict {id, uid, tab, row, sold_at}."""
+    out = []
+    try:
+        rows = get_conn().execute(
+            "SELECT id, uid, sheet_ref, sold_at FROM acc_stock "
+            "WHERE status='SOLD' AND sheet_ref != '' AND sheet_marked=0 "
+            "ORDER BY id LIMIT ?", (int(limit),)).fetchall()
+    except Exception:
+        return out
+    for r in rows:
+        try:
+            ref = str(r["sheet_ref"] or "")
+            tab, row = ref.rsplit(":", 1)
+            out.append({"id": int(r["id"]), "uid": str(r["uid"]),
+                        "tab": tab, "row": int(row),
+                        "sold_at": int(r["sold_at"] or 0)})
+        except Exception:
+            continue
+    return out
+
+
+def acc_mark_sheet_done(ids) -> int:
+    """Đánh dấu các acc đã xử lý đẩy 'đã bán' lên Sheet (xong hoặc bỏ qua)."""
+    ids = [int(i) for i in (ids or [])]
+    if not ids:
+        return 0
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "UPDATE acc_stock SET sheet_marked=1 WHERE id IN (%s)" %
+            ",".join("?" * len(ids)), ids)
+        c.commit()
+        return len(ids)
 
 
 def acc_stock_count(cat_id: int) -> int:

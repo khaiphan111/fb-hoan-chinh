@@ -9067,6 +9067,9 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
     if sheet_ctx is not None:
         for r in _uniq:
             r["_sheet_status"] = "✅ OK"
+            # Giữ lại vị trí dòng trên Sheet để sau này đẩy dấu "đã bán" ngược
+            if r.get("_sheet_row"):
+                r["_sheet_ref"] = f"{sheet_ctx['tab']}:{r['_sheet_row']}"
         sheet_ctx["uid_to_row"] = {
             str(r["uid"]): r.get("_sheet_row")
             for r in _uniq if str(r.get("uid") or "").isdigit() and r.get("_sheet_row")

@@ -308,6 +308,11 @@ class FollowerPoller:
                     await self._maybe_stock_recheck(now_t, today)
                 except Exception as e:
                     log.warning("stock recheck schedule: %s", e)
+                # Đẩy dấu "đã bán" ngược lên Google Sheet (cột J) cho acc bán ra
+                try:
+                    await self._push_sold_to_sheet()
+                except Exception as e:
+                    log.warning("sheet sold push: %s", e)
                 # Thu hồi quyền admin phụ hết hạn tạm thời
                 try:
                     await self._sweep_expired_admins()
@@ -316,6 +321,29 @@ class FollowerPoller:
             except Exception as e:
                 log.warning("maintenance loop: %s", e)
             await asyncio.sleep(300)
+
+    async def _push_sold_to_sheet(self):
+        """Đẩy dấu 'đã bán' lên cột J Google Sheet cho acc vừa bán.
+
+        Chạy mỗi 5 phút (trong _maintenance_loop): gom các acc SOLD có sheet_ref
+        chưa đẩy, kiểm tra UID ở cột A khớp mới ghi '🛒 ĐÃ BÁN ...' vào cột J.
+        Không chặn luồng bán hàng (ghi sau, theo lô)."""
+        from . import sheet_import as _si
+        sheet_id = (db.get_setting("sheet_import_id", "") or "").strip()
+        if not sheet_id:
+            return
+        items = db.acc_sold_unmarked_sheet(200)
+        if not items:
+            return
+        try:
+            done, skip = await _si.push_sold_marks(sheet_id, items)
+        except Exception as e:
+            log.warning("push sold to sheet: %s", e)
+            return
+        if done or skip:
+            db.acc_mark_sheet_done(done + skip)
+            log.info("sheet sold push: %d đã ghi, %d bỏ qua (không khớp UID)",
+                     len(done), len(skip))
 
     async def _sweep_expired_admins(self):
         """Thu hồi quyền admin phụ đã hết hạn tạm thời, báo cả 2 bên."""

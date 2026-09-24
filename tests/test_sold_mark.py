@@ -126,3 +126,68 @@ def test_accinfo_sees_sold_row(tdb):
     orders = db.acc_stock_orders(s["id"])
     assert orders and orders[0]["id"] == oid
     assert int(orders[0]["tg_id"]) == 777
+
+
+def test_sheet_ref_stored_and_pending(tdb):
+    db = tdb
+    cid = _mkcat(db)
+    rows = [{"uid": "s1", "password": "p", "_sheet_ref": "NhapKho:5"},
+            {"uid": "s2", "password": "p", "_sheet_ref": "Gmail:9"},
+            {"uid": "s3", "password": "p"}]
+    added, _ = db.acc_stock_add_batch(cid, rows, batch="test")
+    assert added == 3
+    db.acc_sell_one(cid, 111, 10000)  # bán s1 (cũ nhất)
+    db.acc_sell_one(cid, 111, 10000)  # bán s2
+    pend = db.acc_sold_unmarked_sheet()
+    assert len(pend) == 2
+    assert pend[0]["tab"] == "NhapKho" and pend[0]["row"] == 5
+    assert pend[1]["tab"] == "Gmail" and pend[1]["row"] == 9
+    assert pend[0]["uid"] == "s1"
+    # s3 chưa bán -> không có trong pending
+    db.acc_mark_sheet_done([p["id"] for p in pend])
+    assert db.acc_sold_unmarked_sheet() == []
+
+
+def test_push_sold_marks_uid_check(tdb):
+    """Chỉ ghi cột J khi UID ở cột A khớp (mock CLI)."""
+    import asyncio
+    from app import sheet_import as si
+
+    calls = []
+
+    async def fake_cli(args, payload=None):
+        calls.append((args, payload))
+        if "batchGet" in args:
+            # dòng 5 khớp UID, dòng 9 không khớp
+            return {"valueRanges": [
+                {"range": "NhapKho!A5", "values": [["s1"]]},
+                {"range": "NhapKho!A9", "values": [["other"]]},
+            ]}
+        return {}
+
+    si._cli = fake_cli
+    try:
+        items = [
+            {"id": 1, "uid": "s1", "tab": "NhapKho", "row": 5, "sold_at": 1700000000},
+            {"id": 2, "uid": "s2", "tab": "NhapKho", "row": 9, "sold_at": 1700000000},
+        ]
+        done, skip = asyncio.run(si.push_sold_marks("sheet123", items))
+    finally:
+        import importlib
+        importlib.reload(si)
+    assert done == [1]
+    assert skip == [2]
+    # phải có 1 batchUpdate ghi J1 tiêu đề + J5
+    updates = [p for a, p in calls if a and "batchUpdate" in a]
+    assert updates
+    ranges = [d["range"] for d in updates[0]["data"]]
+    assert "NhapKho!J1:J1" in ranges
+    assert "NhapKho!J5:J5" in ranges
+    assert "NhapKho!J9:J9" not in ranges
+
+
+def test_migration_adds_sheet_columns(tdb):
+    db = tdb
+    cols = {r[1] for r in db.get_conn().execute(
+        "PRAGMA table_info(acc_stock)").fetchall()}
+    assert {"sheet_ref", "sheet_marked"} <= cols

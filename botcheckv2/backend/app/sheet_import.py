@@ -19,7 +19,10 @@ CLI = shutil.which("hatch_gws_cli") or "/opt/hatch/bin/hatch_gws_cli"
 
 #: Hàng tiêu đề chuẩn ghi khi tự tạo tab mới
 SHEET_HEADERS = ["UID", "Mật khẩu", "Ngày tạo", "Mail thay", "Ghi chú",
-                 "2FA", "Cookie", "Token", "Trạng thái"]
+                 "2FA", "Cookie", "Token", "Trạng thái", "Đã bán"]
+
+#: Cột J (1-based) — ghi dấu "đã bán" khi acc được khách mua
+SOLD_COL = 10
 
 #: Gian hàng mặc định (acc Facebook) dùng tab chung cũ
 DEFAULT_STALL = "Acc Facebook"
@@ -66,10 +69,10 @@ async def ensure_tab(spreadsheet_id: str, tab: str) -> bool:
         await _cli(["sheets", "spreadsheets", "batchUpdate", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id})],
                    {"requests": [{"addSheet": {"properties": {"title": tab}}}]})
-        # Ghi hàng tiêu đề A1:I1
+        # Ghi hàng tiêu đề A1:J1
         await _cli(["sheets", "spreadsheets", "values", "update", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id,
-                                "range": f"{tab}!A1:I1",
+                                "range": f"{tab}!A1:J1",
                                 "valueInputOption": "USER_ENTERED"})],
                    {"values": [SHEET_HEADERS]})
         log.info("ensure_tab: đã tạo tab '%s'", tab)
@@ -132,3 +135,77 @@ async def write_updates(spreadsheet_id: str, tab: str, updates):
     await _cli(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
                 json.dumps({"spreadsheetId": spreadsheet_id})],
                {"valueInputOption": "USER_ENTERED", "data": data})
+
+
+def _fmt_sold(sold_at: int) -> str:
+    import time as _t
+    try:
+        return "🛒 ĐÃ BÁN " + _t.strftime("%d/%m %H:%M", _t.localtime(int(sold_at or 0)))
+    except Exception:
+        return "🛒 ĐÃ BÁN"
+
+
+async def push_sold_marks(spreadsheet_id: str, items):
+    """Ghi dấu 'đã bán' lên cột J cho các acc đã bán.
+
+    items: list dict {"id","uid","tab","row","sold_at"}.
+    Mỗi tab: đảm bảo tiêu đề J1, đọc cột A để kiểm tra UID khớp mới ghi
+    (tránh ghi nhầm khi dòng trên Sheet bị xóa/sắp xếp lại).
+    Trả (done_ids, skip_ids) — skip là dòng không khớp UID (vẫn đánh dấu
+    đã xử lý để không thử lại vô hạn).
+    """
+    done, skip = [], []
+    if not spreadsheet_id or not items:
+        return done, skip
+    by_tab = {}
+    for it in items:
+        try:
+            by_tab.setdefault(it["tab"], []).append(it)
+        except Exception:
+            continue
+    for tab, lst in by_tab.items():
+        rows = []
+        for it in lst:
+            try:
+                r = int(it["row"])
+            except Exception:
+                continue
+            rows.append((r, it))
+        if not rows:
+            continue
+        try:
+            # 1. Đọc cột A các dòng để kiểm tra UID
+            ranges = [f"{tab}!A{r}" for r, _ in rows]
+            d = await _cli(["sheets", "spreadsheets", "values", "batchGet",
+                            "--params",
+                            json.dumps({"spreadsheetId": spreadsheet_id,
+                                        "ranges": ranges})])
+            vrs = d.get("valueRanges") or []
+            cell_by_row = {}
+            for vr in vrs:
+                try:
+                    rng = str(vr.get("range") or "")
+                    rr = int(rng.rsplit("!A", 1)[1])
+                    vals = (vr.get("values") or [[]])[0]
+                    cell_by_row[rr] = str(vals[0]).strip() if vals else ""
+                except Exception:
+                    continue
+            matched, mismatched = [], []
+            for r, it in rows:
+                if cell_by_row.get(r, "") == str(it["uid"]).strip():
+                    matched.append((r, it))
+                else:
+                    mismatched.append(it)
+            # 2. Ghi: tiêu đề J1 + dấu đã bán cho các dòng khớp
+            data = [{"range": f"{tab}!J1:J1", "values": [["Đã bán"]]}]
+            for r, it in matched:
+                data.append({"range": f"{tab}!J{r}:J{r}",
+                             "values": [[_fmt_sold(it.get("sold_at"))]]})
+            await _cli(["sheets", "spreadsheets", "values", "batchUpdate",
+                        "--params", json.dumps({"spreadsheetId": spreadsheet_id})],
+                       {"valueInputOption": "USER_ENTERED", "data": data})
+            done.extend(it["id"] for _, it in matched)
+            skip.extend(it["id"] for it in mismatched)
+        except Exception as e:
+            log.warning("push_sold_marks lỗi (tab=%s): %s", tab, e)
+    return done, skip
