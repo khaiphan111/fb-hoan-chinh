@@ -219,6 +219,7 @@ CALLBACK_ORDER = [
     "_on_admx_cb",
     "_on_shopm_pick",
     "_on_shopm_autoimp",
+    "_on_shopm_mystog",
     "_on_shopm_cb",
     "_on_shopm_confirm",
     "on_sheet_pick",

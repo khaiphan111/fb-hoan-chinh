@@ -237,3 +237,11 @@ def test_mystog_groups_dynamic(tdb):
     assert "mystery_toggle" in sm.FLOWS
     items = dict(sm.GROUPS["price"][1])
     assert "mystery_toggle" in items
+
+
+def test_mystog_callback_order():
+    # Handler shopm:mystog PHẢI đứng trước handler chung shopm:,
+    # nếu không callback sẽ bị nuốt (bug 2026-09-25).
+    from app.handlers._order import CALLBACK_ORDER
+    assert "_on_shopm_mystog" in CALLBACK_ORDER
+    assert CALLBACK_ORDER.index("_on_shopm_mystog") < CALLBACK_ORDER.index("_on_shopm_cb")
