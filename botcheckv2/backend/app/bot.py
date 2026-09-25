@@ -9336,17 +9336,21 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
         dead = 0
         dead_list = []
         dead_uids = []
+        live_uids = []
         async def _one(sid, uid):
             nonlocal dead
             async with sem:
                 try:
                     r = await fb_mod.check_uid(str(uid))
-                    if str(r.get("status", "")).lower() in ("die", "dead"):
+                    st = str(r.get("status", "")).lower()
+                    if st in ("die", "dead"):
                         db.acc_mark_status(sid, "DEAD")
                         dead += 1
                         dead_uids.append(str(uid))
                         lk = (uid_to_link.get(str(uid)) or "").strip()
                         dead_list.append(f"• {html.escape(str(uid))}" + (f" — {html.escape(lk)}" if lk else ""))
+                    elif st == "live":
+                        live_uids.append(str(uid))
                 except Exception:
                     pass
         await asyncio.gather(*[_one(r["id"], r["uid"]) for r in ids])
@@ -9356,15 +9360,19 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
             dead_txt = "\n⚠️ <b>Danh sách acc die:</b>\n" + "\n".join(dead_list[:20])
             if len(dead_list) > 20:
                 dead_txt += f"\n...và {len(dead_list) - 20} acc nữa"
-        if sheet_ctx is not None and dead_uids:
-            # Đánh dấu DIE ngược vào sheet
+        if sheet_ctx is not None and (dead_uids or live_uids):
+            # Đánh dấu tình trạng acc ngược vào cột K (cột I giữ nguyên trạng thái nhập kho)
             try:
                 from . import sheet_import as _si
-                _u = [(r, 9, "☠️ DIE") for u, r in sheet_ctx.get("uid_to_row", {}).items()
-                      if u in dead_uids]
+                _u2r = sheet_ctx.get("uid_to_row", {}) or {}
+                _u = [(1, _si.HEALTH_COL, "Tình trạng")]
+                _u += [(r, _si.HEALTH_COL, "☠️ DIE")
+                       for u, r in _u2r.items() if u in dead_uids]
+                _u += [(r, _si.HEALTH_COL, "🟢 LIVE")
+                       for u, r in _u2r.items() if u in live_uids]
                 await _si.write_updates(sheet_ctx["sheet_id"], sheet_ctx["tab"], _u)
             except Exception as e:
-                log.warning("sheet die mark: %s", e)
+                log.warning("sheet health mark: %s", e)
         await msg.answer(
             f"🔍 <b>Quét xong {len(ids)} acc mới nhập:</b> "
             f"<b>{dead}</b> acc die đã loại khỏi kho.\n"

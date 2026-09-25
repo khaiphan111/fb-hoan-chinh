@@ -19,10 +19,17 @@ CLI = shutil.which("hatch_gws_cli") or "/opt/hatch/bin/hatch_gws_cli"
 
 #: Hàng tiêu đề chuẩn ghi khi tự tạo tab mới
 SHEET_HEADERS = ["UID", "Mật khẩu", "Ngày tạo", "Mail thay", "Ghi chú",
-                 "2FA", "Cookie", "Token", "Trạng thái", "Đã bán"]
+                 "2FA", "Cookie", "Token", "Trạng thái", "Đã bán", "Tình trạng"]
 
 #: Cột J (1-based) — ghi dấu "đã bán" khi acc được khách mua
 SOLD_COL = 10
+
+#: Cột K (1-based) — ghi tình trạng acc (🟢 LIVE / ☠️ DIE) mỗi khi bot check kho.
+#: Cột I "Trạng thái" chỉ giữ trạng thái nhập kho, không bị ghi đè nữa.
+HEALTH_COL = 11
+
+#: Giá trị hợp lệ của cột K
+HEALTH_MARKS = ("🟢 LIVE", "☠️ DIE")
 
 #: Gian hàng mặc định (acc Facebook) dùng tab chung cũ
 DEFAULT_STALL = "Acc Facebook"
@@ -69,10 +76,10 @@ async def ensure_tab(spreadsheet_id: str, tab: str) -> bool:
         await _cli(["sheets", "spreadsheets", "batchUpdate", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id})],
                    {"requests": [{"addSheet": {"properties": {"title": tab}}}]})
-        # Ghi hàng tiêu đề A1:J1
+        # Ghi hàng tiêu đề A1:K1
         await _cli(["sheets", "spreadsheets", "values", "update", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id,
-                                "range": f"{tab}!A1:J1",
+                                "range": f"{tab}!A1:K1",
                                 "valueInputOption": "USER_ENTERED"})],
                    {"values": [SHEET_HEADERS]})
         log.info("ensure_tab: đã tạo tab '%s'", tab)
@@ -153,6 +160,96 @@ async def write_updates(spreadsheet_id: str, tab: str, updates):
     await _cli(["sheets", "spreadsheets", "values", "batchUpdate", "--params",
                 json.dumps({"spreadsheetId": spreadsheet_id})],
                {"valueInputOption": "USER_ENTERED", "data": data})
+
+
+def build_health_items(qrows, live_ids, die_ids):
+    """Dựng danh sách ghi cột K từ các dòng kho có sheet_ref.
+
+    qrows: iterable dict {id, uid, sheet_ref, status}.
+    live_ids: id vừa check live; die_ids: id vừa bị cách ly.
+    Acc DIE (kể cả cách ly từ trước khi có cột K) -> "☠️ DIE";
+    acc vừa check live -> "🟢 LIVE"; còn lại bỏ qua (giữ nguyên ô cũ).
+    Trả list {"uid","tab","row","mark"} (dedupe theo cặp tab:row).
+    """
+    live_ids = {int(i) for i in (live_ids or [])}
+    die_ids = {int(i) for i in (die_ids or [])}
+    items, seen = [], set()
+    for r in qrows or []:
+        try:
+            sid = int(r["id"])
+            uid = str(r["uid"])
+            tab, row = str(r["sheet_ref"] or "").rsplit(":", 1)
+            row = int(row)
+            status = str(r.get("status") or "")
+        except Exception:
+            continue
+        if sid in die_ids or status == "DIE":
+            mark = "☠️ DIE"
+        elif sid in live_ids:
+            mark = "🟢 LIVE"
+        else:
+            continue
+        if (tab, row) in seen:
+            continue
+        seen.add((tab, row))
+        items.append({"uid": uid, "tab": tab, "row": row, "mark": mark})
+    return items
+
+
+async def push_health_marks(spreadsheet_id: str, items):
+    """Ghi tình trạng acc (🟢 LIVE / ☠️ DIE) lên cột K cho các dòng đã nhập kho.
+
+    items: list dict {"uid","tab","row","mark"}.
+    Mỗi tab: đảm bảo tiêu đề K1, đọc cột A để kiểm tra UID khớp mới ghi
+    (tránh ghi nhầm khi dòng trên Sheet bị xóa/sắp xếp lại).
+    Trả (done, skip) — số dòng đã ghi / bỏ qua (không khớp UID).
+    """
+    done, skip = 0, 0
+    if not spreadsheet_id or not items:
+        return done, skip
+    by_tab = {}
+    for it in items:
+        try:
+            mark = str(it.get("mark") or "")
+            if mark not in HEALTH_MARKS:
+                continue
+            by_tab.setdefault(it["tab"], []).append(
+                {"uid": str(it["uid"]).strip(),
+                 "row": int(it["row"]), "mark": mark})
+        except Exception:
+            continue
+    for tab, lst in by_tab.items():
+        try:
+            # 1. Đọc cột A các dòng để kiểm tra UID
+            ranges = [f"{tab}!A{r['row']}" for r in lst]
+            d = await _cli(["sheets", "spreadsheets", "values", "batchGet",
+                            "--params",
+                            json.dumps({"spreadsheetId": spreadsheet_id,
+                                        "ranges": ranges})])
+            cell_by_row = {}
+            for vr in d.get("valueRanges") or []:
+                try:
+                    rng = str(vr.get("range") or "")
+                    rr = int(rng.rsplit("!A", 1)[1])
+                    vals = (vr.get("values") or [[]])[0]
+                    cell_by_row[rr] = str(vals[0]).strip() if vals else ""
+                except Exception:
+                    continue
+            # 2. Ghi: tiêu đề K1 + tình trạng cho các dòng khớp UID
+            data = [{"range": f"{tab}!K1:K1", "values": [["Tình trạng"]]}]
+            for r in lst:
+                if cell_by_row.get(r["row"], "") == r["uid"]:
+                    data.append({"range": f"{tab}!K{r['row']}:K{r['row']}",
+                                 "values": [[r["mark"]]]})
+                    done += 1
+                else:
+                    skip += 1
+            await _cli(["sheets", "spreadsheets", "values", "batchUpdate",
+                        "--params", json.dumps({"spreadsheetId": spreadsheet_id})],
+                       {"valueInputOption": "USER_ENTERED", "data": data})
+        except Exception as e:
+            log.warning("push_health_marks lỗi (tab=%s): %s", tab, e)
+    return done, skip
 
 
 def _fmt_sold(sold_at: int) -> str:

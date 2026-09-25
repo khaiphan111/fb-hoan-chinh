@@ -480,7 +480,7 @@ class FollowerPoller:
                         "checkpoint_956"}
         sem = asyncio.Semaphore(10)
         live_n, err_n = 0, 0
-        die_ids, die_rows = [], []
+        die_ids, die_rows, live_rows = [], [], []
 
         async def _one(r):
             async with sem:
@@ -498,6 +498,7 @@ class FollowerPoller:
                 for r, st in await asyncio.gather(*[_one(x) for x in batch]):
                     if st == "live":
                         live_n += 1
+                        live_rows.append(r)
                     elif st in die_statuses:
                         die_ids.append(r["id"])
                         die_rows.append(r)
@@ -534,8 +535,47 @@ class FollowerPoller:
             await self._alert_admin("\n".join(lines))
         except Exception as e:
             log.warning("stock recheck: báo admin lỗi: %s", e)
+        # Đẩy tình trạng acc lên cột K Google Sheet (🟢 LIVE / ☠️ DIE)
+        try:
+            await self._push_health_to_sheet(live_rows, die_ids)
+        except Exception as e:
+            log.warning("sheet health push: %s", e)
         log.info("stock recheck: xong — live=%d die=%d err=%d",
                  live_n, len(die_ids), err_n)
+
+    async def _push_health_to_sheet(self, live_rows, die_ids):
+        """Ghi 🟢 LIVE / ☠️ DIE lên cột K Google Sheet cho acc có sheet_ref.
+
+        live_rows: các dòng vừa check live trong đợt quét này;
+        die_ids: id vừa bị cách ly.
+        Kèm backfill ☠️ DIE cho acc đã cách ly từ trước (trước khi có cột K).
+        Chỉ sạp bật live_check mới có dữ liệu (recheck chỉ quét các sạp đó);
+        sạp khác để trống cột K.
+        """
+        from . import sheet_import as _si
+        sheet_id = (db.get_setting("sheet_import_id", "") or "").strip()
+        if not sheet_id:
+            return
+        live_ids = {int(r["id"]) for r in (live_rows or [])}
+        die_ids = {int(i) for i in (die_ids or [])}
+        try:
+            qrows = db.get_conn().execute(
+                "SELECT id, uid, sheet_ref, status FROM acc_stock "
+                "WHERE sheet_ref != '' AND status IN ('AVAILABLE','DIE')").fetchall()
+        except Exception as e:
+            log.warning("sheet health push: không đọc được kho: %s", e)
+            return
+        items = _si.build_health_items(
+            [dict(r) for r in qrows], live_ids, die_ids)
+        if not items:
+            return
+        try:
+            done, skip = await _si.push_health_marks(sheet_id, items)
+        except Exception as e:
+            log.warning("push health to sheet: %s", e)
+            return
+        log.info("sheet health push: %d đã ghi, %d bỏ qua (không khớp UID)",
+                 done, skip)
 
 
     async def _followup_orders(self):
