@@ -2,6 +2,7 @@ import asyncio
 import html
 import logging
 import os
+import random
 import time
 from typing import Optional
 
@@ -1342,7 +1343,7 @@ async def on_use_code(cb: CallbackQuery):
             wlbl = db.wallet_label(wallet)
             msg_text_resp = (
                 f"✅ <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n"
-                f"Bạn đã sử dụng mã <code>{code}</code> và được cộng <b>{vnd(amount)}</b> vào {wlbl}.\n"
+                f"Bạn đã sử dụng mã <code>{code}</code> và được cộng <b>{db.wallet_amount_text(wallet, amount)}</b> vào {wlbl}.\n"
                 f"Cảm ơn bạn đã tin tưởng dịch vụ!"
             )
             upgraded, new_vip, is_lifetime = db.check_vip_upgrade(cb.from_user.id) if db.parse_wallet(wallet) == "main" else (False, 0, False)
@@ -3089,7 +3090,7 @@ async def on_tienich_giftcode(msg: Message, state: FSMContext):
             db.check_vip_upgrade(msg.from_user.id)
         await msg.answer(
             f"✅ <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n"
-            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{vnd(amount)}</b> vào {db.wallet_label(wallet)}.",
+            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{db.wallet_amount_text(wallet, amount)}</b> vào {db.wallet_label(wallet)}.",
             parse_mode="HTML")
     else:
         await msg.answer(f"❌ {html.escape(msg_text)}", parse_mode="HTML")
@@ -5362,7 +5363,7 @@ async def on_code(msg: Message, command: CommandObject):
             db.check_vip_upgrade(msg.from_user.id)
         await msg.answer(
             f"✅ <b>NẠP TIỀN THÀNH CÔNG!</b>\n\n"
-            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{vnd(amount)}</b> vào {db.wallet_label(wallet)}.",
+            f"Bạn đã dùng mã <code>{html.escape(code)}</code> và được cộng <b>{db.wallet_amount_text(wallet, amount)}</b> vào {db.wallet_label(wallet)}.",
             parse_mode="HTML",
         )
     else:
@@ -5650,6 +5651,9 @@ async def on_taopromo(msg: Message):
     max_uses = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     hours = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else 0
     wallet = db.parse_wallet(parts[5]) if len(parts) > 5 else "main"
+    if wallet == "credits":
+        await msg.answer("❌ Mã giảm % chỉ áp dụng cho <b>ví chính</b> hoặc <b>ví shop</b>.", parse_mode="HTML")
+        return
     ok, txt = db.create_promo(parts[1], pct, max_uses, hours, wallet)
     extra = ""
     if ok:
@@ -8527,7 +8531,7 @@ async def on_doiqua(msg: Message):
             await msg.answer(
                 f"🎁 <b>ĐỔI QUÀ LOYALTY</b>\n\n"
                 f"Điểm của bạn: <b>{pts}</b> / cần <b>{need}</b> điểm.\n"
-                f"Quà: <b>{vnd(amt)}</b> vào {db.wallet_label(wallet)}.\n\n"
+                f"Quà: <b>{db.wallet_amount_text(wallet, amt)}</b> vào {db.wallet_label(wallet)}.\n\n"
                 f"👉 Mua acc ở /shop để tích thêm điểm (1 điểm / 100k).",
                 parse_mode="HTML")
             return
@@ -8537,7 +8541,7 @@ async def on_doiqua(msg: Message):
         db.credit_wallet(tg_id, amt, "Đổi điểm loyalty", wallet)
         await msg.answer(
             f"🎉 <b>ĐỔI QUÀ THÀNH CÔNG!</b> (−{need} điểm)\n"
-            f"🎁 Bạn nhận <b>{vnd(amt)}</b> vào {db.wallet_label(wallet)}.\n"
+            f"🎁 Bạn nhận <b>{db.wallet_amount_text(wallet, amt)}</b> vào {db.wallet_label(wallet)}.\n"
             f"⭐ Điểm còn lại: <b>{db.loyalty_get(tg_id)}</b>",
             parse_mode="HTML")
         return
@@ -8559,16 +8563,22 @@ async def on_doiqua(msg: Message):
                 f"👉 Mua acc ở /shop để tích thêm điểm (1 điểm / 100k).",
                 parse_mode="HTML")
             return
-        kb = InlineKeyboardMarkup(inline_keyboard=[
+        kb_rows = [[InlineKeyboardButton(
+            text="🎲 Nhận acc BẤT KỲ trong gian hàng",
+            callback_data="doiqua_any")]]
+        kb_rows += [
             [InlineKeyboardButton(
                 text=f"🎁 {c['name']} ({n} acc)",
                 callback_data=f"doiqua_stall:{c['id']}")]
             for c, n in cats
-        ])
+        ]
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
         await msg.answer(
             f"🎁 <b>ĐỔI QUÀ LOYALTY</b>\n\n"
             f"Điểm của bạn: <b>{pts}</b> / cần <b>{need}</b> điểm.\n"
-            f"Chọn <b>1 loại acc</b> trong gian hàng Acc Facebook để đổi:",
+            f"Chọn cách nhận quà:\n"
+            f"🎲 <b>Bất kỳ</b> — shop chọn ngẫu nhiên 1 acc trong gian hàng Acc Facebook\n"
+            f"🎁 <b>Cố định</b> — bạn chọn 1 loại acc bên dưới:",
             parse_mode="HTML", reply_markup=kb)
         return
     cat_id = db.loyalty_redeem_cat()
@@ -8593,6 +8603,21 @@ async def on_doiqua(msg: Message):
         await msg.answer(_doiqua_fail_text(reason), parse_mode="HTML")
         return
     await _doiqua_success(msg.bot, msg, msg.from_user, tg_id, order, c["id"], need)
+
+
+_doiqua_processing: set = set()
+
+
+def _doiqua_try_lock(tg_id: int) -> bool:
+    """Chống bấm callback lặp: mỗi user chỉ đổi quà 1 lần tại 1 thời điểm."""
+    if tg_id in _doiqua_processing:
+        return False
+    _doiqua_processing.add(tg_id)
+    return True
+
+
+def _doiqua_unlock(tg_id: int):
+    _doiqua_processing.discard(tg_id)
 
 
 def _doiqua_fail_text(reason: str) -> str:
@@ -8622,8 +8647,7 @@ async def _doiqua_success(bot, answer_target, user, tg_id: int, order, cat_id: i
 
 @router.callback_query(F.data.startswith("doiqua_stall:"))
 async def on_doiqua_stall(cb: CallbackQuery):
-    """Khách đã chọn loại acc trong gian hàng FB để đổi quà."""
-    tg_id = cb.from_user.id
+    """Khách đã chọn 1 loại acc cố định trong gian hàng FB để đổi quà."""
     try:
         cat_id = int(cb.data.split(":", 1)[1])
     except Exception:
@@ -8640,16 +8664,54 @@ async def on_doiqua_stall(cb: CallbackQuery):
         need = int(db.get_setting("loyalty_redeem_points", "10") or 10)
     except Exception:
         need = 10
-    if db.loyalty_get(tg_id) < need:
-        await cb.answer(f"😅 Bạn cần {need} điểm để đổi quà.", show_alert=True)
+    await _doiqua_redeem_flow(cb, cat_id, need)
+
+
+@router.callback_query(F.data == "doiqua_any")
+async def on_doiqua_any(cb: CallbackQuery):
+    """Khách chọn nhận acc BẤT KỲ — shop chọn ngẫu nhiên 1 loại còn hàng."""
+    scope = db.get_setting("loyalty_redeem_scope", "cat") or "cat"
+    mode = db.get_setting("loyalty_redeem_mode", "acc") or "acc"
+    if scope != "stall" or mode != "acc":
+        await cb.answer("😅 Quà đổi điểm đã thay đổi, thử lại nhé!", show_alert=True)
         return
-    ok, order, reason = await _doiqua_redeem_acc(cb.bot, tg_id, cat_id, need)
-    if not ok:
-        await cb.message.answer(_doiqua_fail_text(reason), parse_mode="HTML")
-        await cb.answer()
+    cats = _fb_stall_gift_cats()
+    if not cats:
+        await cb.answer("😅 Gian hàng hiện hết hàng, bạn quay lại sau nhé!",
+                        show_alert=True)
         return
-    await _doiqua_success(cb.bot, cb.message, cb.from_user, tg_id, order, cat_id, need)
-    await cb.answer("🎉 Đổi quà thành công!")
+    cat_id = random.choice([c["id"] for c, _n in cats])
+    try:
+        need = int(db.get_setting("loyalty_redeem_points", "10") or 10)
+    except Exception:
+        need = 10
+    await _doiqua_redeem_flow(cb, cat_id, need)
+
+
+async def _doiqua_redeem_flow(cb: CallbackQuery, cat_id: int, need: int) -> None:
+    """Chạy đổi quà từ nút bấm: chống bấm lặp + gỡ nút sau khi đổi xong."""
+    tg_id = cb.from_user.id
+    if not _doiqua_try_lock(tg_id):
+        await cb.answer("⏳ Đang xử lý đổi quà, chờ xíu nhé!")
+        return
+    try:
+        if db.loyalty_get(tg_id) < need:
+            await cb.answer(f"😅 Bạn cần {need} điểm để đổi quà.", show_alert=True)
+            return
+        ok, order, reason = await _doiqua_redeem_acc(cb.bot, tg_id, cat_id, need)
+        if not ok:
+            await cb.message.answer(_doiqua_fail_text(reason), parse_mode="HTML")
+            await cb.answer()
+            return
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await _doiqua_success(cb.bot, cb.message, cb.from_user, tg_id, order,
+                              cat_id, need)
+        await cb.answer("🎉 Đổi quà thành công!")
+    finally:
+        _doiqua_unlock(tg_id)
 
 
 @router.message(Command("damua"))
@@ -10320,8 +10382,9 @@ def _loyalty_gift_desc() -> str:
     pts = db.get_setting("loyalty_redeem_points", "10") or "10"
     if mode == "money":
         amt = db.get_setting("loyalty_redeem_amount", "0") or "0"
-        w = db.wallet_label(db.get_setting("loyalty_redeem_wallet", "main"))
-        return f"<b>{vnd(int(amt))}</b> vào {w} — <b>{html.escape(str(pts))}</b> điểm"
+        wallet = db.get_setting("loyalty_redeem_wallet", "main") or "main"
+        w = db.wallet_label(wallet)
+        return f"<b>{db.wallet_amount_text(wallet, int(amt))}</b> vào {w} — <b>{html.escape(str(pts))}</b> điểm"
     scope = db.get_setting("loyalty_redeem_scope", "cat") or "cat"
     if scope == "stall":
         return f"1 acc <b>bất kỳ trong gian hàng Acc Facebook</b> — <b>{html.escape(str(pts))}</b> điểm"
@@ -10365,7 +10428,7 @@ async def on_quadoi(msg: Message):
     """Admin: chọn quà đổi điểm loyalty.
     /quadoi <id_loại> [số_điểm] — quà acc cố định (xem id: /kho)
     /quadoi stall [số_điểm] — quà acc bất kỳ trong gian hàng Acc Facebook
-    /quadoi tien <số_tiền> <chinh|shop> [số_điểm] — quà tiền về ví
+    /quadoi tien <số_tiền> <chinh|shop|credits> [số_điểm] — quà tiền/credits về ví
     /quadoi 0 — tắt"""
     if not _is_admin(msg.from_user.id):
         return
@@ -10376,14 +10439,14 @@ async def on_quadoi(msg: Message):
             f"Cú pháp:<br>"
             f"• <code>/quadoi &lt;id_loại&gt; [số_điểm]</code> — quà acc cố định (xem id: /kho)<br>"
             f"• <code>/quadoi stall [số_điểm]</code> — quà acc bất kỳ trong gian hàng Acc Facebook<br>"
-            f"• <code>/quadoi tien &lt;số_tiền&gt; &lt;chinh|shop&gt; [số_điểm]</code> — quà tiền về ví<br>"
+            f"• <code>/quadoi tien &lt;số_tiền&gt; &lt;chinh|shop|credits&gt; [số_điểm]</code> — quà tiền/credits về ví<br>"
             f"• <code>/quadoi 0</code> — tắt",
             parse_mode="HTML")
         return
-    # Chế độ quà tiền: /quadoi tien <số_tiền> <chinh|shop> [số_điểm]
+    # Chế độ quà tiền/credits: /quadoi tien <số_tiền> <chinh|shop|credits> [số_điểm]
     if parts[1].lower() == "tien":
         if len(parts) < 4:
-            await msg.answer("❌ Cú pháp: <code>/quadoi tien &lt;số_tiền&gt; &lt;chinh|shop&gt; [số_điểm]</code>",
+            await msg.answer("❌ Cú pháp: <code>/quadoi tien &lt;số_tiền&gt; &lt;chinh|shop|credits&gt; [số_điểm]</code>",
                              parse_mode="HTML")
             return
         try:

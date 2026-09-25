@@ -267,11 +267,13 @@ def _p_loyalty():
     if mode == "money":
         amt = db.get_setting("loyalty_redeem_amount", "0") or "0"
         try:
-            wlbl = db.wallet_label(db.get_setting("loyalty_redeem_wallet", "main"))
+            wallet = db.get_setting("loyalty_redeem_wallet", "main")
+            wlbl = db.wallet_label(wallet)
         except Exception:
             wlbl = "ví chính"
+            wallet = "main"
         try:
-            amt_txt = f"{int(amt):,}đ".replace(",", ".")
+            amt_txt = db.wallet_amount_text(wallet, int(amt))
         except Exception:
             amt_txt = str(amt)
         cur = f"{amt_txt} vào {wlbl}"
@@ -456,7 +458,7 @@ FLOWS = {
         "cat": "price", "handler": "on_quadoi",
         "steps": [
             ("💵 <b>QUÀ ĐỔI ĐIỂM (TIỀN)</b> (bước 1/3)\n\nGửi <b>số tiền</b> thưởng cho mỗi lần đổi (VD: 50000).", "price"),
-            ("💵 <b>QUÀ ĐỔI ĐIỂM (TIỀN)</b> (bước 2/3)\n\nTiền thưởng cộng vào ví nào? Gửi <b>chinh</b> (ví chính) hoặc <b>shop</b> (ví shop).", "wallet"),
+            ("💵 <b>QUÀ ĐỔI ĐIỂM (TIỀN)</b> (bước 2/3)\n\nTiền thưởng cộng vào ví nào? Gửi <b>chinh</b> (ví chính), <b>shop</b> (ví shop) hoặc <b>credits</b> (cộng lượt credits).", "wallet"),
             ("💵 <b>QUÀ ĐỔI ĐIỂM (TIỀN)</b> (bước 3/3)\n\nGửi <b>số điểm</b> cần để đổi (<code>0</code> = giữ nguyên).", "opt_int"),
         ],
         "build": lambda v: f"/quadoi tien {v[0]} {v[1]}" + (f" {v[2]}" if v[2] else ""),
@@ -632,7 +634,9 @@ def _parse_step(kind, raw):
             return True, "main", ""
         if t2 in ("shop", "vishop", "ví shop", "vi shop"):
             return True, "shop", ""
-        return False, None, "⚠️ Gửi <b>chinh</b> (ví chính) hoặc <b>shop</b> (ví shop) nhé."
+        if t2 in ("credits", "credit"):
+            return True, "credits", ""
+        return False, None, "⚠️ Gửi <b>chinh</b> (ví chính), <b>shop</b> (ví shop) hoặc <b>credits</b> nhé."
     return False, None, "⚠️ Lỗi nội bộ."
 
 

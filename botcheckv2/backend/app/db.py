@@ -874,23 +874,39 @@ def activate_trial(tg_id: int, days: int) -> bool:
     return True
 
 # --- GIFTCODES ---
-# ─── VÍ (wallet): 'main' = ví chính, 'shop' = ví shop ──────────────────────────
-WALLET_LABEL = {"main": "ví chính", "shop": "ví shop"}
+# ─── VÍ (wallet): 'main' = ví chính, 'shop' = ví shop, 'credits' = lượt credits ─
+WALLET_LABEL = {"main": "ví chính", "shop": "ví shop", "credits": "credits"}
 
 def wallet_label(wallet: str) -> str:
     return WALLET_LABEL.get((wallet or "main").strip().lower(), "ví chính")
 
 def parse_wallet(s: str) -> str:
-    """Chuẩn hoá lựa chọn ví của admin: 'shop' → 'shop', còn lại → 'main'."""
+    """Chuẩn hoá lựa chọn ví của admin: 'shop' → 'shop', 'credits' → 'credits',
+    còn lại → 'main'."""
     s = (s or "").strip().lower()
     if s in ("shop", "vishop", "ví shop", "vi shop"):
         return "shop"
+    if s in ("credits", "credit"):
+        return "credits"
     return "main"
 
+def wallet_amount_text(wallet: str, amount: int) -> str:
+    """Chuỗi hiển thị giá trị theo ví: credits → 'N credits', tiền → 'Nđ'."""
+    if parse_wallet(wallet) == "credits":
+        return f"{int(amount)} credits"
+    try:
+        return f"{int(amount):,}đ".replace(",", ".")
+    except Exception:
+        return str(amount)
+
 def credit_wallet(tg_id: int, amount: int, reason: str, wallet: str = "main") -> bool:
-    """Cộng tiền vào ví đã chọn. Trả về True nếu cộng thành công."""
-    if parse_wallet(wallet) == "shop":
+    """Cộng tiền/credits vào ví đã chọn. Trả về True nếu cộng thành công."""
+    w = parse_wallet(wallet)
+    if w == "shop":
         return adjust_shop_balance(tg_id, amount, reason)
+    if w == "credits":
+        add_credits(tg_id, amount, reason)
+        return True
     return adjust_balance(tg_id, amount, reason)
 
 def generate_code(amount: int, prefix: str = "CODE", max_uses: int = 1, expire_at: int = 0, wallet: str = "main") -> str:
@@ -2660,6 +2676,10 @@ def create_promo(code: str, pct: int, max_uses: int = 0, hours: int = 0, wallet:
         return False, "Mã không hợp lệ (1-32 ký tự)."
     pct = max(1, min(90, int(pct)))
     wallet = parse_wallet(wallet)
+    if wallet == "credits":
+        # Mã giảm % chỉ có nghĩa khi thanh toán bằng ví chính/ví shop
+        # (hiện không có luồng mua nào trả bằng credits).
+        return False, "Mã giảm % chỉ áp dụng cho ví chính hoặc ví shop."
     exp = int(time.time()) + int(hours) * 3600 if hours > 0 else 0
     with _lock:
         c = get_conn()
