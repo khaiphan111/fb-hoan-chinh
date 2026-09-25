@@ -462,6 +462,12 @@ class FollowerPoller:
     async def _run_stock_recheck(self, manual=False):
         """Quét LIVE toàn bộ acc AVAILABLE trong kho (chỉ sạp Acc Facebook).
         Acc DIE → cách ly khỏi kho bán + báo admin. Lỗi hạ tầng → bỏ qua."""
+        # Refresh cột L "Loại / Gian hàng" trên Sheet cho MỌI gian hàng
+        # (kể cả sạp tắt live_check — phần quét LIVE bên dưới chỉ chạy sạp FB).
+        try:
+            await self._push_cat_to_sheet()
+        except Exception as e:
+            log.warning("sheet cat push: %s", e)
         try:
             rows = [dict(r) for r in db.get_conn().execute(
                 "SELECT s.id, s.uid, s.cat_id FROM acc_stock s "
@@ -575,6 +581,38 @@ class FollowerPoller:
             log.warning("push health to sheet: %s", e)
             return
         log.info("sheet health push: %d đã ghi, %d bỏ qua (không khớp UID)",
+                 done, skip)
+
+    async def _push_cat_to_sheet(self):
+        """Refresh cột L 'Loại / Gian hàng' cho mọi acc có sheet_ref.
+
+        Chạy mỗi lần re-check kho (định kỳ hoặc /recheck tay): loại acc bị
+        đổi tên / chuyển gian hàng sẽ được cập nhật lại; dòng nhập từ trước
+        khi có cột L được backfill. Bao phủ MỌI gian hàng, mọi trạng thái
+        (AVAILABLE/DIE/SOLD).
+        """
+        from . import sheet_import as _si
+        sheet_id = (db.get_setting("sheet_import_id", "") or "").strip()
+        if not sheet_id:
+            return
+        try:
+            qrows = db.get_conn().execute(
+                "SELECT s.uid, s.sheet_ref, s.cat_id, "
+                "c.name AS cat_name, COALESCE(c.stall,'Acc Facebook') AS stall "
+                "FROM acc_stock s LEFT JOIN acc_categories c ON c.id=s.cat_id "
+                "WHERE s.sheet_ref != ''").fetchall()
+        except Exception as e:
+            log.warning("sheet cat push: không đọc được kho: %s", e)
+            return
+        items = _si.build_cat_items([dict(r) for r in qrows])
+        if not items:
+            return
+        try:
+            done, skip = await _si.push_cat_marks(sheet_id, items)
+        except Exception as e:
+            log.warning("push cat to sheet: %s", e)
+            return
+        log.info("sheet cat push: %d đã ghi, %d bỏ qua (không khớp UID)",
                  done, skip)
 
 

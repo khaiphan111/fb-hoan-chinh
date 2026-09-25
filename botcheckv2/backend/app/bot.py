@@ -9326,14 +9326,21 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
     )
     if sheet_ctx is not None:
         # Ghi đánh dấu ngược vào sheet: cột I trạng thái + ghi đè link bằng UID (cách 1)
+        # + cột L loại/gian hàng
         try:
             from . import sheet_import as _si
+            try:
+                _wb_stall = (c["stall"] if "stall" in c.keys() else "") or "Acc Facebook"
+            except Exception:
+                _wb_stall = "Acc Facebook"
+            _wb_label = _si.cat_label(cat_id, c["name"], _wb_stall)
             _updates = []
             for r in all_rows:
                 sr = r.get("_sheet_row")
                 if not sr:
                     continue
                 _updates.append((sr, 9, r.get("_sheet_status") or "⏭ BỎ QUA"))
+                _updates.append((sr, _si.CAT_COL, _wb_label))
                 if r.get("_orig_link") and str(r.get("uid") or "").isdigit():
                     _updates.append((sr, 1, str(r["uid"])))
             await _si.write_updates(sheet_ctx["sheet_id"], sheet_ctx["tab"], _updates)

@@ -17,11 +17,13 @@ from app import sheet_import as _si  # noqa: E402
 
 
 def test_headers_co_tinh_trang():
-    assert len(_si.SHEET_HEADERS) == 11
+    assert len(_si.SHEET_HEADERS) == 12
     assert _si.SHEET_HEADERS[8] == "Trạng thái"   # cột I giữ nguyên
     assert _si.SHEET_HEADERS[9] == "Đã bán"       # cột J giữ nguyên
-    assert _si.SHEET_HEADERS[10] == "Tình trạng"  # cột K mới
+    assert _si.SHEET_HEADERS[10] == "Tình trạng"  # cột K giữ nguyên
+    assert _si.SHEET_HEADERS[11] == "Loại / Gian hàng"  # cột L mới
     assert _si.HEALTH_COL == 11
+    assert _si.CAT_COL == 12
     assert set(_si.HEALTH_MARKS) == {"🟢 LIVE", "☠️ DIE"}
 
 

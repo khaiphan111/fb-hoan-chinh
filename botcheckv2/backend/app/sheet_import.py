@@ -19,7 +19,8 @@ CLI = shutil.which("hatch_gws_cli") or "/opt/hatch/bin/hatch_gws_cli"
 
 #: Hàng tiêu đề chuẩn ghi khi tự tạo tab mới
 SHEET_HEADERS = ["UID", "Mật khẩu", "Ngày tạo", "Mail thay", "Ghi chú",
-                 "2FA", "Cookie", "Token", "Trạng thái", "Đã bán", "Tình trạng"]
+                 "2FA", "Cookie", "Token", "Trạng thái", "Đã bán", "Tình trạng",
+                 "Loại / Gian hàng"]
 
 #: Cột J (1-based) — ghi dấu "đã bán" khi acc được khách mua
 SOLD_COL = 10
@@ -27,6 +28,11 @@ SOLD_COL = 10
 #: Cột K (1-based) — ghi tình trạng acc (🟢 LIVE / ☠️ DIE) mỗi khi bot check kho.
 #: Cột I "Trạng thái" chỉ giữ trạng thái nhập kho, không bị ghi đè nữa.
 HEALTH_COL = 11
+
+#: Cột L (1-based) — loại acc + gian hàng chứa acc ("#17 Tên loại · 🏪 Acc Facebook").
+#: Ghi lúc nhập kho, refresh lại mỗi lần re-check kho (mọi gian hàng).
+CAT_COL = 12
+CAT_HEADER = "Loại / Gian hàng"
 
 #: Giá trị hợp lệ của cột K
 HEALTH_MARKS = ("🟢 LIVE", "☠️ DIE")
@@ -76,10 +82,10 @@ async def ensure_tab(spreadsheet_id: str, tab: str) -> bool:
         await _cli(["sheets", "spreadsheets", "batchUpdate", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id})],
                    {"requests": [{"addSheet": {"properties": {"title": tab}}}]})
-        # Ghi hàng tiêu đề A1:K1
+        # Ghi hàng tiêu đề A1:L1
         await _cli(["sheets", "spreadsheets", "values", "update", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id,
-                                "range": f"{tab}!A1:K1",
+                                "range": f"{tab}!A1:L1",
                                 "valueInputOption": "USER_ENTERED"})],
                    {"values": [SHEET_HEADERS]})
         log.info("ensure_tab: đã tạo tab '%s'", tab)
@@ -249,6 +255,93 @@ async def push_health_marks(spreadsheet_id: str, items):
                        {"valueInputOption": "USER_ENTERED", "data": data})
         except Exception as e:
             log.warning("push_health_marks lỗi (tab=%s): %s", tab, e)
+    return done, skip
+
+
+def cat_label(cat_id, name, stall) -> str:
+    """Nhãn cột L 'Loại / Gian hàng'. VD: '#17 Acc clone · 🏪 Acc Facebook'."""
+    name = (str(name or "").strip()) or f"loại #{cat_id}"
+    stall = (str(stall or "").strip()) or DEFAULT_STALL
+    return f"#{cat_id} {name} · 🏪 {stall}"
+
+
+def build_cat_items(qrows):
+    """Dựng danh sách ghi cột L từ các dòng kho có sheet_ref.
+
+    qrows: iterable dict {uid, sheet_ref, cat_id, cat_name, stall}.
+    Trả list {"uid","tab","row","label"} (dedupe theo cặp tab:row).
+    """
+    items, seen = [], set()
+    for r in qrows or []:
+        try:
+            uid = str(r["uid"])
+            tab, row = str(r["sheet_ref"] or "").rsplit(":", 1)
+            row = int(row)
+            cid = int(r.get("cat_id") or 0)
+        except Exception:
+            continue
+        if (tab, row) in seen:
+            continue
+        seen.add((tab, row))
+        items.append({"uid": uid, "tab": tab, "row": row,
+                      "label": cat_label(cid, r.get("cat_name"), r.get("stall"))})
+    return items
+
+
+async def push_cat_marks(spreadsheet_id: str, items):
+    """Ghi nhãn loại/gian hàng lên cột L cho các dòng đã nhập kho.
+
+    items: list dict {"uid","tab","row","label"}.
+    Mỗi tab: đảm bảo tiêu đề L1, đọc cột A để kiểm tra UID khớp mới ghi
+    (tránh ghi nhầm khi dòng trên Sheet bị xóa/sắp xếp lại).
+    Trả (done, skip) — số dòng đã ghi / bỏ qua (không khớp UID).
+    """
+    done, skip = 0, 0
+    if not spreadsheet_id or not items:
+        return done, skip
+    by_tab = {}
+    for it in items:
+        try:
+            label = str(it.get("label") or "").strip()
+            if not label:
+                continue
+            by_tab.setdefault(it["tab"], []).append(
+                {"uid": str(it["uid"]).strip(),
+                 "row": int(it["row"]), "label": label})
+        except Exception:
+            continue
+    for tab, lst in by_tab.items():
+        try:
+            # 1. Đọc cột A các dòng để kiểm tra UID
+            ranges = [f"{tab}!A{r['row']}" for r in lst]
+            d = await _cli(["sheets", "spreadsheets", "values", "batchGet",
+                            "--params",
+                            json.dumps({"spreadsheetId": spreadsheet_id,
+                                        "ranges": ranges})])
+            cell_by_row = {}
+            for vr in d.get("valueRanges") or []:
+                try:
+                    rng = str(vr.get("range") or "")
+                    rr = int(rng.rsplit("!A", 1)[1])
+                    vals = (vr.get("values") or [[]])[0]
+                    cell_by_row[rr] = str(vals[0]).strip() if vals else ""
+                except Exception:
+                    continue
+            # 2. Ghi: tiêu đề L1 + nhãn loại/gian hàng cho các dòng khớp UID
+            col = _col_name(CAT_COL)
+            data = [{"range": f"{tab}!{col}1:{col}1", "values": [[CAT_HEADER]]}]
+            for r in lst:
+                if cell_by_row.get(r["row"], "") == r["uid"]:
+                    data.append({"range": f"{tab}!{col}{r['row']}:{col}{r['row']}",
+                                 "values": [[r["label"]]]})
+                    done += 1
+                else:
+                    skip += 1
+            await _cli(["sheets", "spreadsheets", "values", "batchUpdate",
+                        "--params", json.dumps({"spreadsheetId": spreadsheet_id})],
+                       {"valueInputOption": "USER_ENTERED", "data": data})
+        except Exception as e:
+            log.warning("push_cat_marks lỗi (tab=%s): %s", tab, e)
     return done, skip
 
 
