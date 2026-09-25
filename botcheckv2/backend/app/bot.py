@@ -3330,7 +3330,7 @@ async def on_tienich_tf_amount(msg: Message, state: FSMContext):
         reply_markup=kb, parse_mode="HTML")
 
 
-@router.message(F.text & ~F.text.startswith("/"))
+@router.message(StateFilter(None), F.text & ~F.text.startswith("/"))
 async def on_other(msg: Message):
     username = parse_username(msg.text or "")
     if username:
