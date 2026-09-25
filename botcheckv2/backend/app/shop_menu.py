@@ -311,6 +311,7 @@ def _p_loyalty_random():
 #   | pick_cat (chọn loại acc bằng nút; vẫn gõ tay được)
 #   | pick_cat_all (như pick_cat + hiện cả loại đang ẩn, đánh dấu 🙈)
 #   | pick_cat_opt (như pick_cat + nút "📦 Toàn bộ" = None)
+#   | pick_stall (chọn gian hàng bằng nút; vẫn gõ tay tên được)
 #   | pick_supplier / pick_supplier_opt (chọn NCC bằng nút; _opt = thêm "không chọn")
 # "run": chạy ngay không cần nhập | "short": {giá_trị: lệnh_chạy_ngay} ở bước 1
 # "confirm": hiện màn hình xác nhận trước khi chạy | "needs_state": handler cần FSMContext
@@ -320,12 +321,13 @@ FLOWS = {
     "add_cat": {
         "cat": "kho", "handler": "on_themloai",
         "steps": [
-            ("➕ <b>THÊM LOẠI ACC</b> (bước 1/4)\n\nGửi <b>tên loại</b> (VD: Via Việt).", "text"),
-            ("➕ <b>THÊM LOẠI ACC</b> (bước 2/4)\n\nGửi <b>giá bán</b> (VD: 25000).", "price"),
-            ("➕ <b>THÊM LOẠI ACC</b> (bước 3/4)\n\nGửi <b>bảo hành</b>: <code>30p</code> | <code>24h</code> | <code>2 ngày</code> | <code>1 tuần</code>.", "text"),
-            ("➕ <b>THÊM LOẠI ACC</b> (bước 4/4)\n\nGửi <b>mô tả</b> (gõ <code>-</code> để bỏ qua).", "opt_text"),
+            ("➕ <b>THÊM LOẠI ACC</b> (bước 1/5)\n\nChọn <b>gian hàng</b> cho loại acc mới (hoặc gõ tên gian hàng).", "pick_stall"),
+            ("➕ <b>THÊM LOẠI ACC</b> (bước 2/5)\n\nGửi <b>tên loại</b> (VD: Via Việt).", "text"),
+            ("➕ <b>THÊM LOẠI ACC</b> (bước 3/5)\n\nGửi <b>giá bán</b> (VD: 25000).", "price"),
+            ("➕ <b>THÊM LOẠI ACC</b> (bước 4/5)\n\nGửi <b>bảo hành</b>: <code>30p</code> | <code>24h</code> | <code>2 ngày</code> | <code>1 tuần</code>.", "text"),
+            ("➕ <b>THÊM LOẠI ACC</b> (bước 5/5)\n\nGửi <b>mô tả</b> (gõ <code>-</code> để bỏ qua).", "opt_text"),
         ],
-        "build": lambda v: f"/themloai {v[0]} | {v[1]} | {v[2]} | {'' if v[3] == '-' else v[3]}",
+        "build": lambda v: f"/themloai {v[1]} | {v[2]} | {v[3]} | {'' if v[4] == '-' else v[4]} | {v[0]}",
     },
     "add_stall": {
         "cat": "kho", "handler": "on_themstall",
@@ -576,6 +578,19 @@ def _parse_step(kind, raw):
     t = (raw or "").strip()
     if kind == "text":
         return (True, t, "") if t else (False, None, "⚠️ Không được để trống, gửi lại nhé.")
+    if kind == "pick_stall":
+        # Chọn gian hàng bằng nút; gõ tay tên gian hàng vẫn được (không phân biệt hoa/thường)
+        if not t:
+            return False, None, "⚠️ Bấm nút chọn gian hàng bên dưới, hoặc gõ tên gian hàng nhé."
+        try:
+            stalls = [(s.get("stall") or "").strip() for s in db.acc_stall_list()]
+            stalls = [s for s in stalls if s]
+        except Exception:
+            stalls = []
+        for s in stalls:
+            if s.lower() == t.lower():
+                return True, s, ""
+        return False, None, "⚠️ Chưa có gian hàng này. Bấm nút bên dưới, hoặc tạo sạp mới (🏪 Thêm gian hàng mới) nhé."
     if kind == "int":
         try:
             return True, int(t), ""
@@ -721,6 +736,33 @@ def _sup_pick_kb(flow_key: str, step_idx: int, cat: str,
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _stall_pick_kb(flow_key: str, step_idx: int, cat: str):
+    """Bàn phím chọn gian hàng cho bước pick_stall."""
+    try:
+        stalls = db.acc_stall_list()
+    except Exception:
+        stalls = []
+    rows = []
+    for s in stalls:
+        nm = (s.get("stall") or "").strip()[:28]
+        if not nm:
+            continue
+        try:
+            n = int(s.get("n") or 0)
+        except Exception:
+            n = 0
+        rows.append([InlineKeyboardButton(
+            text=f"🏪 {nm} ({n} loại)",
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{nm}")])
+    if not rows:
+        return None
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data=f"shopm:back_{cat}")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _step_kb(flow, flow_key: str, step_idx: int):
     """Bàn phím cho bước nhập liệu: nút chọn loại acc / NCC nếu là pick_*."""
     kind = flow["steps"][step_idx][1]
@@ -732,6 +774,8 @@ def _step_kb(flow, flow_key: str, step_idx: int):
     if kind == "pick_cat_opt":
         return (_cat_pick_kb(flow_key, step_idx, flow["cat"], optional=True)
                 or _back_kb(flow["cat"]))
+    if kind == "pick_stall":
+        return _stall_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
     if kind == "pick_supplier":
         return _sup_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
     if kind == "pick_supplier_opt":
@@ -908,7 +952,8 @@ def register_shop_menu(target_router):
             await cb.answer("🚫 Không có quyền.", show_alert=True)
             return
         try:
-            _, _, flow_key, step_s, cat_s = (cb.data or "").split(":")
+            # maxsplit=4 để tên gian hàng (pick_stall) có chứa ":" cũng không vỡ
+            _, _, flow_key, step_s, cat_s = (cb.data or "").split(":", 4)
             step_idx = int(step_s)
         except Exception:
             await cb.answer()
@@ -927,6 +972,11 @@ def register_shop_menu(target_router):
                 await cb.answer("Hết phiên, thử lại.", show_alert=True)
                 return
             val = None
+        elif kind == "pick_stall":
+            val = (cat_s or "").strip()
+            if not val:
+                await cb.answer()
+                return
         else:
             try:
                 val = int(cat_s)

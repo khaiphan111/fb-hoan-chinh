@@ -8945,15 +8945,16 @@ def _fmt_warranty(mins) -> str:
 
 @router.message(Command("themloai"))
 async def on_themloai(msg: Message):
-    """Thêm loại acc. Cú pháp: /themloai Tên loại | giá | bảo_hành (30p|24h|2 ngày|1 tuần) | mô tả"""
+    """Thêm loại acc. Cú pháp: /themloai Tên loại | giá | bảo_hành (30p|24h|2 ngày|1 tuần) | mô tả [| gian hàng]"""
     if not _is_admin(msg.from_user.id):
         return
     raw = (msg.text or "").split(maxsplit=1)
     if len(raw) < 2 or "|" not in raw[1]:
         await msg.answer(
-            "⚠️ Cú pháp: <code>/themloai Tên loại | giá | bảo_hành | mô tả</code>\n"
+            "⚠️ Cú pháp: <code>/themloai Tên loại | giá | bảo_hành | mô tả [| gian hàng]</code>\n"
             "Bảo hành: <code>30p</code> (30 phút) | <code>24h</code> | <code>2 ngày</code> | <code>1 tuần</code>\n"
-            "VD: <code>/themloai Via Việt | 25000 | 24h | Via VN 50-500 bạn</code>",
+            "VD: <code>/themloai Via Việt | 25000 | 24h | Via VN 50-500 bạn</code>\n"
+            "VD sạp khác: <code>/themloai Gmail Edu | 15000 | 24h | Gmail edu | Gmail</code>",
             parse_mode="HTML",
         )
         return
@@ -8962,6 +8963,7 @@ async def on_themloai(msg: Message):
         name = parts[0]
         price = int(parts[1].replace(".", "").replace(",", "").replace(" ", ""))
         desc = parts[3] if len(parts) > 3 else ""
+        stall_raw = parts[4] if len(parts) > 4 else ""
     except Exception:
         await msg.answer("❌ Giá phải là số.")
         return
@@ -8970,12 +8972,35 @@ async def on_themloai(msg: Message):
         await msg.answer("❌ Bảo hành không hợp lệ. Nhập dạng: <code>30p</code> (30 phút) | <code>24h</code> | <code>2 ngày</code> | <code>1 tuần</code>",
                          parse_mode="HTML")
         return
-    cid = db.acc_category_add(name, price, wh, desc)
+    # Gian hàng: mặc định sạp Acc Facebook; nếu chỉ định thì phải là sạp đã có
+    stall = "Acc Facebook"
+    live_check = 1
+    if stall_raw:
+        canon = ""
+        try:
+            for s in db.acc_stall_list():
+                sn = (s.get("stall") or "").strip()
+                if sn and sn.lower() == stall_raw.lower():
+                    canon = sn
+                    break
+        except Exception:
+            pass
+        if not canon:
+            await msg.answer(
+                f"❌ Chưa có gian hàng <b>{html.escape(stall_raw)}</b>. "
+                f"Tạo sạp mới trước bằng nút 🏪 <b>Thêm gian hàng mới</b> trong /shopadm nhé.",
+                parse_mode="HTML")
+            return
+        stall = canon
+        live_check = db.acc_stall_live_check(stall)
+    cid = db.acc_category_add(name, price, wh, desc, stall=stall,
+                              live_check=live_check)
     if cid == -1:
         await msg.answer("❌ Tên loại này đã tồn tại.")
         return
     await msg.answer(
         f"✅ Đã thêm loại acc <b>#{cid} — {html.escape(name)}</b>\n"
+        f"🏪 Gian hàng: <b>{html.escape(stall)}</b>\n"
         f"💰 Giá: {vnd(price)} | 🛡 BH: {_fmt_warranty(wh)}\n"
         f"Nhập hàng: <code>/themacc {cid}</code>",
         parse_mode="HTML",

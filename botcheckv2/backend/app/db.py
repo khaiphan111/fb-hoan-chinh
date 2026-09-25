@@ -3066,6 +3066,21 @@ def acc_stall_list() -> list:
         return [{"stall": "Acc Facebook", "n": 0}]
 
 
+def acc_stall_live_check(stall: str) -> int:
+    """live_check của 1 gian hàng (lấy từ loại acc đầu tiên trong sạp).
+    Sạp 'Acc Facebook' mặc định 1, sạp khác mặc định 0."""
+    s = (stall or "").strip()
+    try:
+        r = get_conn().execute(
+            "SELECT live_check FROM acc_categories WHERE stall=? LIMIT 1",
+            (s,)).fetchone()
+        if r is not None:
+            return int(r["live_check"] or 0)
+    except Exception:
+        pass
+    return 1 if s == "Acc Facebook" else 0
+
+
 def acc_stock_count_stall(stall: str) -> int:
     """Tổng acc AVAILABLE của 1 gian hàng."""
     c = get_conn()
