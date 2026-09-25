@@ -108,6 +108,44 @@ def test_pick_uid_dot_zero(tdb):
     assert r and r["uid"] == "940000000001"
 
 
+# ── 6. Parse nhiều UID 1 lúc (logic trong on_acc_pick_input) ──────
+def _parse_uids(text):
+    uids = []
+    for m in re.findall(r"\d+(?:\.0+)?", text):
+        u = re.sub(r"\.0+$", "", m)
+        if u and u not in uids:
+            uids.append(u)
+    return uids[:20]
+
+
+def test_parse_multi_uids():
+    p = _parse_uids
+    assert p("61593959792972") == ["61593959792972"]
+    assert p("61593959792972, 61593959792973") == ["61593959792972", "61593959792973"]
+    assert p("61593959792972\n61593959792973") == ["61593959792972", "61593959792973"]
+    assert p("uid: 61593959792972; 61593959792973.0") == ["61593959792972", "61593959792973"]
+    assert p("61593959792972 61593959792972") == ["61593959792972"], "loại trùng"
+    assert p("61593959792972.00") == ["61593959792972"], "đuôi .00 của Excel"
+    assert p("abc") == [], "không có số"
+    assert len(p(" ".join(str(900000000000 + i) for i in range(30)))) == 20, "tối đa 20"
+
+
+def test_multi_uid_add_all_to_cart(tdb):
+    db = tdb
+    cid = _mkcat(db)
+    _add(db, cid, ["970000000001", "970000000002", "970000000003"])
+    ids = [db.acc_stock_find_by_uid(u)["id"] for u in
+           ["970000000001", "970000000002", "970000000003"]]
+    for sid in ids:
+        assert db.cart_uid_add(111, cid, sid) == "ok"
+    assert db.cart_uid_count(111) == 3
+    # mô phỏng multi-buy: bán đúng 3 acc đã chọn
+    sold = db.acc_sell_stock_ids(cid, 111, 30000, ids)
+    assert sold and len(sold) == 3
+    for s in db.get_conn().execute(
+            "SELECT status FROM acc_stock WHERE id IN (?,?,?)",
+            tuple(ids)).fetchall():
+        assert s["status"] == "SOLD"
 # ── 5. UID trong giỏ hàng ─────────────────────────────────────────
 def test_cart_uid_add_list_remove(tdb):
     db = tdb

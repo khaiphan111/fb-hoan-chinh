@@ -8120,7 +8120,9 @@ async def on_acc_pick_type(cb: CallbackQuery, state: FSMContext):
     await state.set_state(AccShopState.waiting_for_pick_uid)
     await state.update_data(pick_uid_cat_id=cat_id)
     await cb.message.answer(
-        "✏️ Nhập <b>UID</b> acc muốn mua:\n<i>Gõ /huy để hủy.</i>",
+        "✏️ Nhập <b>UID</b> acc muốn mua:\n"
+        "<i>Nhập 1 hoặc nhiều UID, cách nhau bằng dấu phẩy, dấu cách "
+        "hoặc xuống dòng (tối đa 20 UID/lần).\nGõ /huy để hủy.</i>",
         parse_mode="HTML")
 
 
@@ -8136,25 +8138,205 @@ async def on_acc_pick_input(msg: Message, state: FSMContext):
         return
     data = await state.get_data()
     cat_id = data.get("pick_uid_cat_id")
-    await state.clear()
-    _m = re.fullmatch(r"(\d+)(?:\.0+)?", _t)
-    uid = _m.group(1) if _m else _t
-    r = db.get_conn().execute(
-        "SELECT id, uid, created_date, status FROM acc_stock "
-        "WHERE cat_id=? AND uid=?", (cat_id, uid)).fetchone()
-    if not r:
-        await msg.answer(
-            "❌ Không tìm thấy UID này trong kho của loại acc đã chọn.\n"
-            "Bạn kiểm tra lại UID nhé.")
+    # Tách nhiều UID: dãy số (kèm đuôi .0 của Excel) cách nhau bởi
+    # dấu phẩy / cách / xuống dòng. Giữ thứ tự, loại trùng, tối đa 20.
+    uids = []
+    for m in re.findall(r"\d+(?:\.0+)?", _t):
+        u = re.sub(r"\.0+$", "", m)
+        if u and u not in uids:
+            uids.append(u)
+    uids = uids[:20]
+    if not uids:
+        await msg.answer("❌ Không tìm thấy UID nào hợp lệ. "
+                         "Bạn nhập lại dãy số UID nhé.")
         return
-    r = dict(r)
-    if r["status"] != "AVAILABLE":
-        await msg.answer("😔 UID này không còn hàng (đã bán hoặc đang cách ly). "
-                         "Bạn chọn UID khác nhé.")
+    valid, gone, missing = [], [], []
+    for uid in uids:
+        r = db.get_conn().execute(
+            "SELECT id, uid, created_date, status FROM acc_stock "
+            "WHERE cat_id=? AND uid=?", (cat_id, uid)).fetchone()
+        if not r:
+            missing.append(uid)
+        elif r["status"] != "AVAILABLE":
+            gone.append(uid)
+        else:
+            valid.append(dict(r))
+    # 1 UID duy nhất: giữ nguyên luồng cũ (màn xác nhận 1 acc)
+    if len(uids) == 1:
+        await state.clear()
+        uid = uids[0]
+        if uid in missing:
+            await msg.answer(
+                "❌ Không tìm thấy UID này trong kho của loại acc đã chọn.\n"
+                "Bạn kiểm tra lại UID nhé.")
+            return
+        if uid in gone:
+            await msg.answer("😔 UID này không còn hàng (đã bán hoặc đang cách ly). "
+                             "Bạn chọn UID khác nhé.")
+            return
+        txt, kb = _pick_uid_confirm(cat_id, valid[0], msg.from_user.id)
+        await msg.answer(txt, parse_mode="HTML", reply_markup=kb,
+                         disable_web_page_preview=True)
         return
-    txt, kb = _pick_uid_confirm(cat_id, r, msg.from_user.id)
-    await msg.answer(txt, parse_mode="HTML", reply_markup=kb,
+    # Nhiều UID: lưu vào state để 2 nút bên dưới dùng
+    await state.update_data(pick_multi=[{"id": s["id"], "uid": s["uid"]}
+                                       for s in valid],
+                            pick_multi_cat_id=cat_id)
+    c = db.acc_category_get(cat_id)
+    c = dict(c) if c else {}
+    unit_final, _, _, _, _, wmin, upsell_pct_cfg = _uid_final_price(
+        msg.from_user.id, c)
+    lines = [f"🎯 <b>Tìm thấy {len(valid)}/{len(uids)} UID:</b>"]
+    for s in valid:
+        lines.append(f"✅ <code>{html.escape(s['uid'])}</code> — "
+                     f"{vnd(unit_final)}")
+    for uid in gone:
+        lines.append(f"😔 <code>{html.escape(uid)}</code> — đã bán/hết hàng")
+    for uid in missing:
+        lines.append(f"❌ <code>{html.escape(uid)}</code> — không có trong kho")
+    kb_rows = []
+    if valid:
+        total = unit_final * len(valid)
+        kb_rows.append([InlineKeyboardButton(
+            text=f"✅ Mua ngay {len(valid)} UID — {vnd(total)}",
+            callback_data=f"accmultibuy:{cat_id}")])
+        kb_rows.append([InlineKeyboardButton(
+            text=f"🛒 Thêm {len(valid)} UID vào giỏ",
+            callback_data=f"accmulticart:{cat_id}")])
+    kb_rows.append([InlineKeyboardButton(
+        text="✏️ Nhập lại", callback_data=f"accpicktype:{cat_id}")])
+    await msg.answer("\n".join(lines), parse_mode="HTML",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
                      disable_web_page_preview=True)
+
+
+def _pick_multi_state(data: dict, cat_id: int):
+    """Lấy danh sách UID đã lưu trong state, kiểm tra còn hạn + đúng loại."""
+    if data.get("pick_multi_cat_id") != cat_id:
+        return None
+    lst = data.get("pick_multi") or []
+    return lst if lst else None
+
+
+@router.callback_query(F.data.startswith("accmulticart:"))
+async def on_acc_multi_cart(cb: CallbackQuery, state: FSMContext):
+    """Thêm nhiều UID đã nhập vào giỏ hàng."""
+    await cb.answer()
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    data = await state.get_data()
+    lst = _pick_multi_state(data, cat_id)
+    if not lst:
+        await cb.answer("⏰ Danh sách đã hết hạn. Bạn nhập lại UID nhé.",
+                        show_alert=True)
+        return
+    await state.clear()
+    ok = dup = miss = 0
+    for s in lst:
+        r = db.cart_uid_add(cb.from_user.id, cat_id, s["id"])
+        if r == "ok":
+            ok += 1
+        elif r == "exists":
+            dup += 1
+        else:
+            miss += 1
+    parts = [f"🛒 Đã thêm <b>{ok}</b> UID vào giỏ!"]
+    if dup:
+        parts.append(f"<i>({dup} UID đã có sẵn trong giỏ)</i>")
+    if miss:
+        parts.append(f"<i>({miss} UID vừa hết hàng)</i>")
+    parts.append("Vào /giohang để thanh toán nhé.")
+    await cb.message.answer("\n".join(parts), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("accmultibuy:"))
+async def on_acc_multi_buy(cb: CallbackQuery, state: FSMContext):
+    """Mua ngay nhiều UID đã nhập: trừ ví 1 lần -> check LIVE từng acc -> giao."""
+    await cb.answer()
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    data = await state.get_data()
+    lst = _pick_multi_state(data, cat_id)
+    if not lst:
+        await cb.answer("⏰ Danh sách đã hết hạn. Bạn nhập lại UID nhé.",
+                        show_alert=True)
+        return
+    await state.clear()
+    tg_id = cb.from_user.id
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"]:
+        await cb.message.answer("❌ Loại acc này không còn bán.")
+        return
+    c = dict(c)
+    final1, _, _, _, _, wmin, upsell_pct_cfg = _uid_final_price(tg_id, c)
+    # Validate lại từng acc (có thể bị mua mất sau khi nhập)
+    priced, gone = [], []
+    for s in lst:
+        r = db.get_conn().execute(
+            "SELECT id, uid, cat_id FROM acc_stock "
+            "WHERE id=? AND cat_id=? AND status='AVAILABLE'",
+            (s["id"], cat_id)).fetchone()
+        if r:
+            priced.append((c, dict(r), final1))
+        else:
+            gone.append(s["uid"])
+    if not priced:
+        await cb.message.answer(
+            "😔 Các UID vừa chọn đều đã hết hàng. Bạn chọn UID khác nhé.")
+        return
+    grand = final1 * len(priced)
+    grand, promo_code = db.apply_user_promo(tg_id, grand, wallet="shop")
+    u = db.get_user(tg_id)
+    balance = int(u["shop_balance"] or 0) if u else 0
+    if balance < grand:
+        await cb.message.answer(
+            f"😢 <b>VÍ SHOP KHÔNG ĐỦ</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"Mua {len(priced)} UID: <b>{vnd(grand)}</b>\n"
+            f"👛 Ví shop của bạn: <b>{vnd(balance)}</b>\n"
+            f"💸 Còn thiếu: <b>{vnd(grand - balance)}</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"Nạp thêm bằng /napshop (tự động, quét QR) rồi mua lại nhé."
+            + _SHOP_WALLET_HINT,
+            parse_mode="HTML")
+        return
+    if not db.adjust_shop_balance(
+            tg_id, -grand,
+            f"mua_nhieu_uid:{cat_id}:{len(priced)}acc"
+            + (f" (promo {promo_code})" if promo_code else "")):
+        await cb.message.answer(
+            "❌ <b>Ví shop không đủ!</b>\nNạp thêm bằng /napshop rồi mua lại nhé."
+            + _SHOP_WALLET_HINT,
+            parse_mode="HTML")
+        return
+    await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>",
+                            parse_mode="HTML")
+    delivered, failed = await _sell_uid_items(cb.bot, tg_id, priced)
+    paid = grand - sum(p for _, _, p in failed)
+    for _cat, _s, p in failed:
+        db.add_shop_balance_only(tg_id, p, "hoan_tien_multi_uid")
+    if not delivered:
+        await cb.message.answer(
+            "😔 <b>Rất tiếc, không giao được acc nào</b> "
+            "(die hoặc vừa bị mua mất).\n"
+            f"Tiền <b>{vnd(grand)}</b> đã được hoàn vào ví shop.",
+            parse_mode="HTML")
+        return
+    orders = delivered  # _sell_uid_items đã trả list dict đơn hàng
+    await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id,
+                              tg_id, paid, len(delivered), orders, False,
+                              upsell_pct_cfg, wmin)
+    if failed or gone:
+        names = [html.escape(s["uid"]) for _, s, _ in failed] + \
+                [html.escape(u) for u in gone]
+        await cb.message.answer(
+            f"⚠️ {len(failed) + len(gone)} UID không giao được "
+            f"({', '.join(names)}): đã hoàn tiền phần này vào ví shop.",
+            parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("accuidcart:"))
