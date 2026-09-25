@@ -106,3 +106,36 @@ def test_pick_uid_dot_zero(tdb):
         "SELECT id, uid, status FROM acc_stock WHERE cat_id=? AND uid=?",
         (cid, uid)).fetchone()
     assert r and r["uid"] == "940000000001"
+
+
+# ── 5. UID trong giỏ hàng ─────────────────────────────────────────
+def test_cart_uid_add_list_remove(tdb):
+    db = tdb
+    cid = _mkcat(db)
+    _add(db, cid, ["950000000001", "950000000002"])
+    a1 = db.acc_stock_find_by_uid("950000000001")
+    a2 = db.acc_stock_find_by_uid("950000000002")
+    assert db.cart_uid_add(111, cid, a1["id"]) == "ok"
+    assert db.cart_uid_add(111, cid, a1["id"]) == "exists", "thêm trùng phải báo exists"
+    assert db.cart_uid_add(111, cid, a2["id"]) == "ok"
+    assert db.cart_uid_add(111, cid, 999999) == "unavailable", "stock không tồn tại"
+    lst = db.cart_uid_list(111)
+    assert [r["uid"] for r in lst] == ["950000000001", "950000000002"]
+    assert db.cart_uid_count(111) == 2
+    db.cart_uid_remove(111, a1["id"])
+    assert db.cart_uid_count(111) == 1
+    db.cart_uid_clear(111)
+    assert db.cart_uid_count(111) == 0
+
+
+def test_cart_uid_sold_elsewhere(tdb):
+    db = tdb
+    cid = _mkcat(db)
+    _add(db, cid, ["960000000001"])
+    acc = db.acc_stock_find_by_uid("960000000001")
+    assert db.cart_uid_add(111, cid, acc["id"]) == "ok"
+    # người khác mua mất trước khi checkout
+    sold = db.acc_sell_stock_ids(cid, 222, 10000, [acc["id"]])
+    assert sold
+    # thêm lại phải báo unavailable
+    assert db.cart_uid_add(333, cid, acc["id"]) == "unavailable"

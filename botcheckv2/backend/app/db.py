@@ -2085,6 +2085,14 @@ def migrate_new_features():
             added_at   BIGINT NOT NULL,
             PRIMARY KEY (tg_id, cat_id)
         )""",
+        # 2026-09-25: món UID cụ thể trong giỏ (khách tự chọn UID)
+        """CREATE TABLE IF NOT EXISTS cart_uid_items (
+            tg_id      BIGINT NOT NULL,
+            cat_id     INTEGER NOT NULL,
+            stock_id   INTEGER NOT NULL,
+            added_at   BIGINT NOT NULL,
+            PRIMARY KEY (tg_id, stock_id)
+        )""",
         # 2026-09-24: cấu hình nhập kho tự động từng gian hàng (từ tab Sheet riêng)
         """CREATE TABLE IF NOT EXISTS stall_import_cfg (
             stall        TEXT PRIMARY KEY,
@@ -3720,6 +3728,61 @@ def cart_count(tg_id: int) -> int:
         "SELECT COUNT(*) n, COALESCE(SUM(qty),0) q FROM cart_items WHERE tg_id=?",
         (tg_id,)).fetchone()
     return int(r["q"] or 0) if r else 0
+
+
+# ---------- Món UID cụ thể trong giỏ (2026-09-25) ----------
+def cart_uid_add(tg_id: int, cat_id: int, stock_id: int) -> str:
+    """Thêm 1 UID cụ thể vào giỏ. Trả 'ok' | 'exists' | 'unavailable'."""
+    with _lock:
+        c = get_conn()
+        r = c.execute(
+            "SELECT id FROM acc_stock WHERE id=? AND cat_id=? AND status='AVAILABLE'",
+            (stock_id, cat_id)).fetchone()
+        if not r:
+            return "unavailable"
+        e = c.execute(
+            "SELECT stock_id FROM cart_uid_items WHERE tg_id=? AND stock_id=?",
+            (tg_id, stock_id)).fetchone()
+        if e:
+            return "exists"
+        c.execute(
+            "INSERT INTO cart_uid_items(tg_id, cat_id, stock_id, added_at) VALUES(?,?,?,?)",
+            (tg_id, cat_id, stock_id, int(time.time())))
+        c.commit()
+        return "ok"
+
+
+def cart_uid_list(tg_id: int) -> list:
+    """Các UID cụ thể trong giỏ kèm thông tin loại acc + UID."""
+    c = get_conn()
+    return [dict(r) for r in c.execute(
+        "SELECT i.cat_id, i.stock_id, i.added_at, s.uid, s.created_date, "
+        "c.name, c.price, c.active, c.hidden FROM cart_uid_items i "
+        "JOIN acc_stock s ON s.id = i.stock_id "
+        "JOIN acc_categories c ON c.id = i.cat_id "
+        "WHERE i.tg_id=? ORDER BY i.added_at",
+        (tg_id,)).fetchall()]
+
+
+def cart_uid_remove(tg_id: int, stock_id: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM cart_uid_items WHERE tg_id=? AND stock_id=?",
+                  (tg_id, stock_id))
+        c.commit()
+
+
+def cart_uid_clear(tg_id: int) -> None:
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM cart_uid_items WHERE tg_id=?", (tg_id,))
+        c.commit()
+
+
+def cart_uid_count(tg_id: int) -> int:
+    r = get_conn().execute(
+        "SELECT COUNT(*) n FROM cart_uid_items WHERE tg_id=?", (tg_id,)).fetchone()
+    return int(r["n"] or 0) if r else 0
 
 
 def ref_shop_commission(buyer_tg_id: int, amount: int) -> tuple[int, int]:

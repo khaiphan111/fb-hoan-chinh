@@ -7014,6 +7014,46 @@ async def _sell_live_stock(bot, tg_id: int, price_total: int, qty: int, pick_fn,
     return orders, None
 
 
+async def _sell_uid_items(bot, tg_id, priced):
+    """Bán các UID cụ thể khách đã chọn trong giỏ (check LIVE từng acc nếu sạp FB).
+    priced: list[(cat_dict, stock_dict, price)].
+    Trả (delivered_orders, failed[(cat, stock, price)])."""
+    delivered, failed = [], []
+    groups = {}
+    for cat, stock, price in priced:
+        groups.setdefault(cat["id"], (cat, []))[1].append((stock, price))
+    for cat_id, (cat, lst) in groups.items():
+        rows = [s for s, _ in lst]
+        price_of = {s["id"]: p for s, p in lst}
+        bad = set()
+        if _cat_live_check(cat_id):
+            l_ids, d_ids, u_ids = await _check_stock_live(rows)
+            if d_ids:
+                db.acc_stock_quarantine(d_ids)
+                try:
+                    await _notify_die_quarantine(
+                        bot, [s for s in rows if s["id"] in set(d_ids)])
+                except Exception:
+                    pass
+            bad = set(d_ids) | set(u_ids)
+        for s, p in lst:
+            if s["id"] in bad:
+                failed.append((cat, s, p))
+        ok_rows = [s for s in rows if s["id"] not in bad]
+        if not ok_rows:
+            continue
+        total = sum(price_of[s["id"]] for s in ok_rows)
+        sold = db.acc_sell_stock_ids(cat_id, tg_id, total,
+                                     [s["id"] for s in ok_rows])
+        if not sold:
+            for s, p in lst:
+                if s["id"] not in bad:
+                    failed.append((cat, s, p))
+            continue
+        delivered += [dict(db.acc_get_order(oid)) for oid, _ in sold]
+    return delivered, failed
+
+
 async def _notify_shop_admin(bot, text: str):
     """Báo cho admin qua bot chính."""
     try:
@@ -7999,6 +8039,9 @@ def _pick_uid_confirm(cat_id: int, stock: dict, tg_id: int):
             text=f"✅ Mua UID này — {vnd(prev)}",
             callback_data=f"accbuyuid:{cat_id}:{stock['id']}")],
         [InlineKeyboardButton(
+            text="🛒 Thêm UID này vào giỏ",
+            callback_data=f"accuidcart:{cat_id}:{stock['id']}")],
+        [InlineKeyboardButton(
             text="‹ Chọn UID khác",
             callback_data=f"accpick:{cat_id}:0")],
     ])
@@ -8114,6 +8157,32 @@ async def on_acc_pick_input(msg: Message, state: FSMContext):
                      disable_web_page_preview=True)
 
 
+@router.callback_query(F.data.startswith("accuidcart:"))
+async def on_acc_uid_cart(cb: CallbackQuery):
+    """Thêm UID cụ thể vào giỏ hàng."""
+    await cb.answer()
+    try:
+        _, cat_id, stock_id = cb.data.split(":")
+        cat_id, stock_id = int(cat_id), int(stock_id)
+    except Exception:
+        return
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"]:
+        await cb.answer("❌ Loại acc này không còn bán.", show_alert=True)
+        return
+    r = db.get_conn().execute(
+        "SELECT uid FROM acc_stock WHERE id=? AND cat_id=?",
+        (stock_id, cat_id)).fetchone()
+    uid = r["uid"] if r else ""
+    res = db.cart_uid_add(cb.from_user.id, cat_id, stock_id)
+    if res == "ok":
+        await cb.answer(f"🛒 Đã thêm UID {uid} vào giỏ!", show_alert=True)
+    elif res == "exists":
+        await cb.answer("UID này đã có trong giỏ rồi.", show_alert=True)
+    else:
+        await cb.answer("😔 UID này vừa hết hàng.", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("accbuyuid:"))
 async def on_acc_buy_uid(cb: CallbackQuery):
     """Mua đúng UID khách đã chọn: trừ ví shop -> check LIVE acc đó -> giao."""
@@ -8223,7 +8292,8 @@ def _line_price(cat: dict, qty: int, tg_id: int) -> dict:
 def _cart_render(tg_id: int):
     """Trả (text, keyboard) cho giỏ hàng, hoặc None nếu giỏ trống."""
     items = [it for it in db.cart_list(tg_id) if it["active"]]
-    if not items:
+    uid_items = [it for it in db.cart_uid_list(tg_id) if it["active"]]
+    if not items and not uid_items:
         return None
     lines = ["🛒 <b>GIỎ HÀNG CỦA BẠN</b>", "━━━━━━━━━━━━━━"]
     kb_rows = []
@@ -8256,6 +8326,22 @@ def _cart_render(tg_id: int):
             InlineKeyboardButton(text="➕", callback_data=f"cartinc:{it['cat_id']}"),
             InlineKeyboardButton(text="❌", callback_data=f"cartdel:{it['cat_id']}"),
         ])
+    if uid_items:
+        lines.append(f"<b>🎯 UID đã chọn ({len(uid_items)}):</b>")
+        for it in uid_items:
+            cat = db.acc_category_get(it["cat_id"])
+            if not cat:
+                continue
+            lp = _line_price(dict(cat), 1, tg_id)
+            grand += lp["final"]
+            lines.append(
+                f"👤 <code>{html.escape(it['uid'] or '')}</code> — "
+                f"<i>{html.escape(it['name'])}</i> = <b>{vnd(lp['final'])}</b>")
+            kb_rows.append([
+                InlineKeyboardButton(
+                    text=f"❌ Xóa UID {it['uid']}",
+                    callback_data=f"cartuiddel:{it['stock_id']}"),
+            ])
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
     grand_promo, promo_code = db.preview_user_promo(tg_id, grand, wallet="shop")
@@ -8314,6 +8400,27 @@ def _cart_validated_lines(tg_id: int):
             qty = stock
         lines.append((dict(c), qty))
     return lines, notes
+
+
+def _cart_uid_validated(tg_id: int):
+    """Validate món UID cụ thể trong giỏ: loại còn bán + acc còn AVAILABLE.
+    Trả (items[(cat_dict, stock_dict)], notes[str])."""
+    items, notes = [], []
+    for it in db.cart_uid_list(tg_id):
+        c = db.acc_category_get(it["cat_id"])
+        if not c or not c["active"]:
+            db.cart_uid_remove(tg_id, it["stock_id"])
+            notes.append(f"❌ UID {it['uid']}: loại ngừng bán → đã xóa khỏi giỏ")
+            continue
+        s = db.get_conn().execute(
+            "SELECT id, uid, cat_id FROM acc_stock WHERE id=? AND status='AVAILABLE'",
+            (it["stock_id"],)).fetchone()
+        if not s:
+            db.cart_uid_remove(tg_id, it["stock_id"])
+            notes.append(f"😔 UID {it['uid']}: vừa hết hàng → đã xóa khỏi giỏ")
+            continue
+        items.append((dict(c), dict(s)))
+    return items, notes
 
 
 @router.callback_query(F.data.startswith("accaddcart:"))
@@ -8402,9 +8509,23 @@ async def on_cart_del(cb: CallbackQuery):
     await _cart_refresh(cb)
 
 
+@router.callback_query(F.data.startswith("cartuiddel:"))
+async def on_cart_uid_del(cb: CallbackQuery):
+    """Xóa 1 UID cụ thể khỏi giỏ."""
+    try:
+        stock_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await cb.answer()
+        return
+    await cb.answer("Đã xóa UID khỏi giỏ.")
+    db.cart_uid_remove(cb.from_user.id, stock_id)
+    await _cart_refresh(cb)
+
+
 @router.callback_query(F.data == "cartclear")
 async def on_cart_clear(cb: CallbackQuery):
     db.cart_clear(cb.from_user.id)
+    db.cart_uid_clear(cb.from_user.id)
     await cb.answer("🗑 Đã xóa toàn bộ giỏ hàng.")
     await _cart_refresh(cb)
 
@@ -8425,17 +8546,24 @@ async def on_cart_checkout(cb: CallbackQuery):
     await cb.answer()
     tg_id = cb.from_user.id
     lines, notes = _cart_validated_lines(tg_id)
-    if not lines:
+    uid_items, uid_notes = _cart_uid_validated(tg_id)
+    notes += uid_notes
+    if not lines and not uid_items:
         txt = "🛒 Giỏ hàng không còn món nào mua được."
         if notes:
             txt += "\n" + "\n".join(notes)
         await cb.message.answer(txt)
         return
     priced = []
+    uid_priced = []
     grand = 0
     for c, qty in lines:
         lp = _line_price(c, qty, tg_id)
         priced.append((c, qty, lp))
+        grand += lp["final"]
+    for c, stock in uid_items:
+        lp = _line_price(c, 1, tg_id)
+        uid_priced.append((c, stock, lp))
         grand += lp["final"]
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
@@ -8443,6 +8571,9 @@ async def on_cart_checkout(cb: CallbackQuery):
     for c, qty, lp in priced:
         txt.append(f"{_cat_icon(c['name'])} <b>{html.escape(c['name'])}</b>\n"
                    f"   {qty} × {vnd(lp['unit'])} = <b>{vnd(lp['final'])}</b>")
+    for c, stock, lp in uid_priced:
+        txt.append(f"👤 <code>{html.escape(stock['uid'] or '')}</code> "
+                   f"<i>({html.escape(c['name'])})</i> = <b>{vnd(lp['final'])}</b>")
     txt += ["━━━━━━━━━━━━━━",
             f"🧾 <b>Tổng cộng: {vnd(grand)}</b>",
             f"👛 Ví shop: <b>{vnd(balance)}</b>"]
@@ -8467,10 +8598,12 @@ async def on_cart_confirm(cb: CallbackQuery):
     await cb.answer()
     tg_id = cb.from_user.id
     lines, _notes = _cart_validated_lines(tg_id)
-    if not lines:
+    uid_items, _uid_notes = _cart_uid_validated(tg_id)
+    if not lines and not uid_items:
         await cb.message.answer("🛒 Giỏ hàng không còn món nào mua được.")
         return
     priced = []
+    uid_priced = []
     grand = 0
     for c, qty in lines:
         stock = db.acc_stock_count(c["id"])
@@ -8482,6 +8615,10 @@ async def on_cart_confirm(cb: CallbackQuery):
             return
         lp = _line_price(c, qty, tg_id)
         priced.append((c, qty, lp))
+        grand += lp["final"]
+    for c, stock in uid_items:
+        lp = _line_price(c, 1, tg_id)
+        uid_priced.append((c, stock, lp["final"]))
         grand += lp["final"]
     grand, promo_code = db.apply_user_promo(tg_id, grand, wallet="shop")
     u = db.get_user(tg_id)
@@ -8511,7 +8648,16 @@ async def on_cart_confirm(cb: CallbackQuery):
         else:
             failed.append((c, qty))
             db.add_shop_balance_only(tg_id, lp["final"], "hoan_tien_giohang_thieu_live")
+    uid_failed = []
+    if uid_priced:
+        u_delivered, u_failed = await _sell_uid_items(cb.bot, tg_id, uid_priced)
+        delivered += u_delivered
+        paid_total += sum(p for _, _, p in uid_priced) - sum(p for _, _, p in u_failed)
+        for cat, stock, price in u_failed:
+            uid_failed.append((cat, stock))
+            db.add_shop_balance_only(tg_id, price, "hoan_tien_giohang_uid")
     db.cart_clear(tg_id)
+    db.cart_uid_clear(tg_id)
     if not delivered:
         await cb.message.answer(
             "😔 <b>Rất tiếc, hiện không đủ hàng</b> để giao.\n"
@@ -8539,6 +8685,9 @@ async def on_cart_confirm(cb: CallbackQuery):
     if failed:
         fnames = ", ".join(f"{html.escape(c['name'])}×{q}" for c, q in failed)
         summary.append(f"⚠️ {fnames}: không đủ acc LIVE → đã hoàn tiền dòng này.")
+    if uid_failed:
+        unames = ", ".join(f"UID {html.escape(s['uid'] or '')}" for _, s in uid_failed)
+        summary.append(f"⚠️ {unames}: không giao được (die/bị mua mất) → đã hoàn tiền.")
     extras = []
     for cid, olist in by_cat.items():
         crow = db.acc_category_get(cid)
