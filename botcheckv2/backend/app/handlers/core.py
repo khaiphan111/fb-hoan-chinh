@@ -735,6 +735,50 @@ async def _perm_middleware(handler, event, data):
         pass
     return await handler(event, data)
 
+_known_cmds_cache = None
+
+
+def _known_commands():
+    """Tập hợp các lệnh slash đã đăng ký trên router (vd {'/shop', '/adm', ...})."""
+    global _known_cmds_cache
+    if _known_cmds_cache is None:
+        cmds = set()
+        for h in router.message.handlers:
+            for f in getattr(h, "filters", ()):
+                cb = getattr(f, "callback", None)
+                for c in (getattr(cb, "commands", None) or ()):
+                    cmds.add("/" + str(c).lower())
+        _known_cmds_cache = cmds
+    return _known_cmds_cache
+
+
+@router.message.middleware()
+async def _cmd_cancels_state_middleware(handler, event, data):
+    """Đang dở flow nhập liệu mà gõ lệnh slash khác -> hủy flow cũ, chạy lệnh mới.
+
+    Fix bug: state handler (vd chờ nhập ID trong /shopadm) nuốt lệnh mới —
+    gõ /app trong lúc chờ nhập ID thì bot tưởng "/app" là ID và báo
+    "bấm nút chọn hoặc gõ ID nhé", lệnh không bao giờ chạy.
+    /huy và /cancel vẫn do các input handler xử lý như cũ.
+    """
+    try:
+        from aiogram.types import Message as _Msg
+        if isinstance(event, _Msg):
+            head = ((event.text or "").strip().split() or [""])[0].lower()
+            head = head.split("@")[0]  # lệnh trong group: /shop@tenbot
+            if head.startswith("/") and head not in ("/huy", "/cancel"):
+                if head in _known_commands():
+                    state = data.get("state")
+                    if state is not None:
+                        try:
+                            if await state.get_state() is not None:
+                                await state.clear()
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    return await handler(event, data)
+
 @router.message(Command("web"))
 async def cmd_web(msg: Message):
     tg_id = msg.chat.id
