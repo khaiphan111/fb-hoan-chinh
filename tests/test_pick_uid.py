@@ -194,3 +194,41 @@ def test_cart_confirm_no_unbound_cat_id():
         assert u.strip() != "cat_id", (
             "on_cart_confirm dùng _live_line(cat_id) trần -> "
             "UnboundLocalError khi giỏ chỉ có UID cụ thể")
+
+
+def test_send_merged_acc_file_helper():
+    """Mua nhieu acc 1 luc: helper gui file gop phai ton tai va chi gui khi >=2 acc."""
+    import asyncio
+    import inspect
+    from app import bot as botmod
+    assert hasattr(botmod, "_send_merged_acc_file"), "thieu helper _send_merged_acc_file"
+    src = inspect.getsource(botmod._send_merged_acc_file)
+    assert "len(delivered) < 2" in src, "helper phai bo qua khi < 2 acc"
+    # _acc_after_purchase phai goi helper (phu luot mua thuong SLN + mua UID + mua nhieu UID)
+    src2 = inspect.getsource(botmod._acc_after_purchase)
+    assert "_send_merged_acc_file" in src2
+    # on_cart_confirm phai goi helper
+    src3 = inspect.getsource(botmod.on_cart_confirm)
+    assert "_send_merged_acc_file" in src3
+
+    # chay that helper voi 2 acc gia -> phai gui 2 document
+    sent = []
+
+    class FakeMsg:
+        async def answer_document(self, doc, caption="", parse_mode=None):
+            sent.append((doc.filename, caption))
+
+    delivered = [
+        {"uid": "111", "password": "p1", "created_date": "d1", "backup_mail": "m1",
+         "note": "", "totp": "", "cookie": "", "token": ""},
+        {"uid": "222", "password": "p2", "created_date": "d2", "backup_mail": "m2",
+         "note": "", "totp": "", "cookie": "", "token": ""},
+    ]
+    asyncio.run(botmod._send_merged_acc_file(FakeMsg(), delivered))
+    assert len(sent) == 2, f"phai gui 2 file (txt+xlsx), nhan {len(sent)}"
+    assert sent[0][0].endswith(".txt") and sent[1][0].endswith(".xlsx")
+
+    # 1 acc -> khong gui gi
+    sent.clear()
+    asyncio.run(botmod._send_merged_acc_file(FakeMsg(), delivered[:1]))
+    assert sent == []

@@ -7839,6 +7839,55 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
             f"Nhập thêm bằng /themacc {cat_id}",
             perm="kho",
         )
+    # Mua nhiều acc 1 lúc: tự động gửi 1 file gộp
+    await _send_merged_acc_file(msg, delivered)
+
+
+async def _send_merged_acc_file(msg, delivered):
+    """Khách mua nhiều acc 1 lúc: tự động gửi 1 file txt + 1 file xlsx
+    gộp tất cả acc vừa giao (mỗi dòng 1 acc, dòng cuối chú thích cột)."""
+    if len(delivered) < 2:
+        return
+    import datetime as _dt
+    F = ["uid", "password", "created_date", "backup_mail", "note",
+         "totp", "cookie", "token"]
+    rows = [[(o.get(k) or "") for k in F] for o in delivered]
+    header = ["UID", "Mật khẩu", "Ngày tạo", "Mail thay", "Ghi chú",
+              "2FA", "Cookie", "Token"]
+    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    n = len(delivered)
+    try:
+        txt_data = ("\n".join("|".join(r) for r in rows)
+                    + "\n" + "|".join(header)).encode("utf-8")
+        await msg.answer_document(
+            BufferedInputFile(txt_data,
+                              filename=f"acc_gop_{n}acc_{ts}.txt"),
+            caption=f"📦 <b>File gộp {n} acc</b> vừa mua — mỗi dòng 1 acc, "
+                    f"dòng cuối là chú thích cột.",
+            parse_mode="HTML")
+    except Exception:
+        pass
+    try:
+        import openpyxl
+        import io as _io
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "acc"
+        ws.append(header)
+        for r in rows:
+            ws.append(r)
+        ws.append([])
+        ws.append(header)
+        buf = _io.BytesIO()
+        wb.save(buf)
+        await msg.answer_document(
+            BufferedInputFile(buf.getvalue(),
+                              filename=f"acc_gop_{n}acc_{ts}.xlsx"),
+            caption=f"📊 <b>File Excel gộp {n} acc</b> vừa mua.",
+            parse_mode="HTML")
+    except Exception:
+        pass
+
 
 @router.callback_query(F.data.startswith("accconfirm:"))
 async def on_acc_confirm(cb: CallbackQuery):
@@ -8922,6 +8971,8 @@ async def on_cart_confirm(cb: CallbackQuery):
     except Exception:
         pass
     await _notify_purchase_admin(cb.bot, cb.from_user, delivered)
+    # Mua nhiều acc 1 lúc: tự động gửi 1 file gộp
+    await _send_merged_acc_file(cb.message, delivered)
     try:
         warn_at = int(db.get_setting("acc_low_stock_warn", "20") or 20)
     except Exception:
