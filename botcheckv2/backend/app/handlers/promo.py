@@ -742,6 +742,41 @@ async def on_hopmugia(msg: Message):
     await msg.answer(f"✅ Giá hộp mù: <b>{vnd(max(0, price))}</b>"
                      + (" (đang tắt)" if price <= 0 else ""), parse_mode="HTML")
 
+@router.message(Command("hopmutile"))
+async def on_hopmutile(msg: Message):
+    """Admin: /hopmutile <id_loại> <tỷ_trọng> đặt tỷ trọng trúng hộp mù.
+    Số càng lớn càng dễ trúng (mặc định 100 = ngang nhau)."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 3:
+        lines = ["⚠️ Cú pháp: <code>/hopmutile &lt;id_loại&gt; &lt;tỷ_trọng&gt;</code>\n"]
+        for i in db.acc_mystery_weights():
+            lines.append(f"#{i['id']} {html.escape(i['name'])}: "
+                         f"trọng số <b>{i['weight']}</b> (~{i['pct']}%)")
+        await msg.answer("\n".join(lines) or "Chưa có loại nào tham gia hộp mù.",
+                         parse_mode="HTML")
+        return
+    try:
+        cid, w = int(parts[1]), int(parts[2])
+    except Exception:
+        await msg.answer("❌ ID và tỷ trọng phải là số.")
+        return
+    if not (1 <= w <= 100000):
+        await msg.answer("❌ Tỷ trọng phải từ 1 đến 100000.")
+        return
+    c = db.acc_category_get(cid)
+    if not c:
+        await msg.answer("❌ Không có loại này.")
+        return
+    db.acc_category_update(cid, mystery_weight=w)
+    lines = [f"✅ <b>{html.escape(c['name'])}</b>: trọng số <b>{w}</b>\n",
+             "🎲 Tỷ lệ trúng hộp mù hiện tại:"]
+    for i in db.acc_mystery_weights():
+        mark = " 👈" if i["id"] == cid else ""
+        lines.append(f"#{i['id']} {html.escape(i['name'])}: ~<b>{i['pct']}%</b>{mark}")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
 @router.message(Command("giovang"))
 async def on_giovang(msg: Message):
     if not _is_admin(msg.from_user.id):
@@ -969,6 +1004,7 @@ __all__ = [
     "on_mystery_buy",
     "on_hopmu",
     "on_hopmugia",
+    "on_hopmutile",
     "on_giovang",
     "on_acc_review",
     "on_review_comment",

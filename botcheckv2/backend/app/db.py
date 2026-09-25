@@ -2002,6 +2002,7 @@ def migrate_new_features():
         "ALTER TABLE acc_categories ADD COLUMN low_threshold INTEGER DEFAULT 10",
         "ALTER TABLE acc_categories ADD COLUMN scarcity_pct INTEGER DEFAULT 15",
         "ALTER TABLE acc_categories ADD COLUMN mystery_eligible INTEGER DEFAULT 0",
+        "ALTER TABLE acc_categories ADD COLUMN mystery_weight INTEGER DEFAULT 100",
         "ALTER TABLE acc_categories ADD COLUMN hidden INTEGER DEFAULT 0",
         """CREATE TABLE IF NOT EXISTS acc_deposits (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3256,7 +3257,7 @@ def acc_category_delete_hard(cat_id: int) -> tuple[bool, str]:
 def acc_category_update(cat_id: int, **kw) -> bool:
     allowed = {"name", "price", "warranty_hours", "description", "active",
                "credit_bonus", "low_threshold", "scarcity_pct",
-               "mystery_eligible", "hidden", "cover_photo"}
+               "mystery_eligible", "hidden", "cover_photo", "mystery_weight"}
     sets, params = [], []
     for k, v in kw.items():
         if k in allowed:
@@ -3598,23 +3599,48 @@ def acc_stock_pick_candidates(cat_id: int, limit: int, exclude_ids=()):
 
 
 def acc_mystery_pick_candidates(limit: int, exclude_ids=()):
-    """Ứng viên hộp mù: ngẫu nhiên từ các loại mystery_eligible còn hàng.
+    """Ứng viên hộp mù: chọn LOẠI theo tỷ trọng mystery_weight (số càng lớn
+    càng dễ trúng), rồi lấy ngẫu nhiên acc trong loại đó.
     Trả list dict {"id","uid","cat_id"}."""
     import random
     c = get_conn()
     cats = c.execute(
-        "SELECT id FROM acc_categories WHERE active=1 AND hidden=0 "
-        "AND mystery_eligible=1").fetchall()
-    pool = []
+        "SELECT id, COALESCE(mystery_weight,100) AS w FROM acc_categories "
+        "WHERE active=1 AND hidden=0 AND mystery_eligible=1").fetchall()
+    avail = []
     for ct in cats:
-        q = "SELECT id, uid, cat_id FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'"
-        params = [ct["id"]]
-        if exclude_ids:
-            q += " AND id NOT IN (%s)" % ",".join("?" for _ in exclude_ids)
-            params += list(exclude_ids)
-        pool += [dict(r) for r in c.execute(q, params).fetchall()]
+        n = c.execute(
+            "SELECT COUNT(*) FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
+            (ct["id"],)).fetchone()[0]
+        if n:
+            avail.append(ct)
+    if not avail:
+        return []
+    weights = [max(1, int(ct["w"] or 100)) for ct in avail]
+    ct = random.choices(avail, weights=weights, k=1)[0]
+    excl = set(exclude_ids or ())
+    q = "SELECT id, uid, cat_id FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'"
+    params = [ct["id"]]
+    if excl:
+        q += " AND id NOT IN (%s)" % ",".join("?" for _ in excl)
+        params += list(excl)
+    pool = [dict(r) for r in c.execute(q, params).fetchall()]
     random.shuffle(pool)
     return pool[:max(1, int(limit))]
+
+
+def acc_mystery_weights():
+    """Danh sách loại tham gia hộp mù kèm tỷ trọng và % trúng quy đổi."""
+    c = get_conn()
+    rows = c.execute(
+        "SELECT id, name, COALESCE(mystery_weight,100) AS w FROM acc_categories "
+        "WHERE active=1 AND hidden=0 AND mystery_eligible=1 ORDER BY id").fetchall()
+    items = [{"id": r["id"], "name": r["name"],
+              "weight": max(1, int(r["w"] or 100))} for r in rows]
+    total = sum(i["weight"] for i in items) or 1
+    for i in items:
+        i["pct"] = round(i["weight"] * 100.0 / total, 1)
+    return items
 
 
 def acc_stock_quarantine(stock_ids) -> int:
@@ -4512,15 +4538,16 @@ def happy_hour_active() -> tuple[bool, int, int]:
 
 
 def acc_mystery_sell(tg_id: int, price: int):
-    """4.8 Hộp mù: giao ngẫu nhiên 1 acc từ các loại mystery_eligible còn hàng.
+    """4.8 Hộp mù: giao ngẫu nhiên 1 acc — chọn LOẠI theo tỷ trọng
+    mystery_weight, rồi chọn ngẫu nhiên acc trong loại.
     Trả (order_id, row, cat_name) hoặc None nếu hết."""
     import random
     now = int(time.time())
     with _lock:
         c = get_conn()
         cats = c.execute(
-            "SELECT id, name FROM acc_categories WHERE active=1 AND hidden=0 "
-            "AND mystery_eligible=1").fetchall()
+            "SELECT id, name, COALESCE(mystery_weight,100) AS w FROM acc_categories "
+            "WHERE active=1 AND hidden=0 AND mystery_eligible=1").fetchall()
         avail = []
         for ct in cats:
             rows = c.execute(
@@ -4530,7 +4557,8 @@ def acc_mystery_sell(tg_id: int, price: int):
                 avail.append((ct, rows))
         if not avail:
             return None
-        ct, rows = random.choice(avail)
+        weights = [max(1, int(ct["w"] or 100)) for ct, _ in avail]
+        ct, rows = random.choices(avail, weights=weights, k=1)[0]
         row = random.choice(rows)
         chk = c.execute("SELECT id FROM acc_stock WHERE id=? AND status='AVAILABLE'",
                         (row["id"],)).fetchone()

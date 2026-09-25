@@ -132,6 +132,7 @@ GROUPS = {
         ("happy_hour", "⚡ Giờ vàng"),
         ("mystery_price", "🎲 Giá hộp mù"),
         ("mystery_toggle", "🎲 Hộp mù: bật/tắt loại"),
+        ("mystery_weight", "🎲 Hộp mù: tỷ lệ trúng"),
         ("mail_app", "📧 Link app mail ảo"),
     ]),
     "orders": ("📋 <b>ĐƠN HÀNG & BẢO HÀNH</b>", [
@@ -494,6 +495,14 @@ FLOWS = {
         "steps": [("🎲 <b>HỘP MÙ: BẬT/TẮT LOẠI</b>\n\nChọn <b>loại acc</b> bên dưới (bật ↔ tắt).", "pick_cat")],
         "build": lambda v: f"/hopmu {v[0]}",
     },
+    "mystery_weight": {
+        "cat": "price", "handler": "on_hopmutile",
+        "steps": [
+            ("🎲 <b>HỘP MÙ: TỶ LỆ TRÚNG</b>\n\nChọn <b>loại acc</b> bên dưới (kèm tỷ trọng và % trúng hiện tại).", "pick_mystery_cat"),
+            ("Chọn <b>tỷ trọng</b> mới — số càng lớn càng dễ trúng.\n<i>Hoặc gõ số tay (1–100000), VD: 150.</i>", "pick_weight"),
+        ],
+        "build": lambda v: f"/hopmutile {v[0]} {v[1]}",
+    },
     "mail_app": {
         "cat": "price", "handler": "on_setmailapp",
         "steps": [(_p_mail_app, "text")],
@@ -598,6 +607,15 @@ def _parse_step(kind, raw):
             return True, int(t), ""
         except Exception:
             return False, None, "⚠️ Phải là số, gửi lại nhé."
+    if kind == "pick_weight":
+        # Tỷ trọng trúng hộp mù: bấm nút preset hoặc gõ tay 1–100000
+        try:
+            w = int(t)
+        except Exception:
+            return False, None, "⚠️ Tỷ trọng phải là số 1–100000, bấm nút hoặc gửi lại nhé."
+        if not (1 <= w <= 100000):
+            return False, None, "⚠️ Tỷ trọng phải từ 1 đến 100000, gửi lại nhé."
+        return True, w, ""
     if kind.startswith("pick_"):
         # Chọn bằng nút bấm (loại acc / NCC); gõ tay ID vẫn được
         t = (raw or "").strip()
@@ -673,6 +691,51 @@ def _cat_pick_kb(flow_key: str, step_idx: int, cat: str,
         rows.append([InlineKeyboardButton(
             text="📦 Toàn bộ",
             callback_data=f"shopm:pick:{flow_key}:{step_idx}:all")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data=f"shopm:back_{cat}")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _mystery_cat_pick_kb(flow_key: str, step_idx: int, cat: str):
+    """Bàn phím chọn loại acc tham gia hộp mù (hiện tỷ trọng + % trúng)."""
+    try:
+        items = db.acc_mystery_weights()
+    except Exception:
+        items = []
+    rows = []
+    for i in items:
+        nm = (i.get("name") or "").strip()[:26] or f"Loại {i['id']}"
+        rows.append([InlineKeyboardButton(
+            text=f"#{i['id']} {nm} — ~{i['pct']}% (trọng số {i['weight']})",
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{i['id']}")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="📭 Chưa có loại nào tham gia hộp mù",
+                                          callback_data="shopm:noop")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data=f"shopm:back_{cat}")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+_WEIGHT_PRESETS = [
+    (10, "10 · 🐢 hiếm"),
+    (50, "50 · ít trúng"),
+    (100, "100 · thường (mặc định)"),
+    (250, "250 · 🔥 dễ trúng"),
+    (500, "500 · ⚡ rất dễ trúng"),
+]
+
+
+def _weight_pick_kb(flow_key: str, step_idx: int, cat: str):
+    """Bàn phím chọn tỷ trọng trúng hộp mù (số càng lớn càng dễ trúng)."""
+    rows = []
+    for w, label in _WEIGHT_PRESETS:
+        rows.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{w}")])
     rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
                                       callback_data=f"shopm:back_{cat}")])
     rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
@@ -787,6 +850,11 @@ def _step_kb(flow, flow_key: str, step_idx: int):
                 or _back_kb(flow["cat"]))
     if kind == "pick_claim":
         return _claim_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
+    if kind == "pick_weight":
+        return _weight_pick_kb(flow_key, step_idx, flow["cat"]) or _back_kb(flow["cat"])
+    if kind == "pick_mystery_cat":
+        return (_mystery_cat_pick_kb(flow_key, step_idx, flow["cat"])
+                or _back_kb(flow["cat"]))
     return _back_kb(flow["cat"])
 
 
