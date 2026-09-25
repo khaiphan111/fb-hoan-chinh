@@ -9181,7 +9181,7 @@ def _smart_stock_fields(fields: list) -> dict:
 
 async def _resolve_stock_links(rows, wait, action_text="nhập kho"):
     """Giải link FB ở cột đầu -> UID số (dùng chung cho nhập kho và cập nhật).
-    Trả (resolved, failed, failed_lines, uid_to_link)."""
+    Trả (resolved, failed, failed_lines, uid_to_link, link_idx)."""
     link_idx = [i for i, r in enumerate(rows)
                 if re.search(r'facebook\.com|fb\.com|fb\.watch|^https?://', (r.get("uid") or ""), re.I)]
     resolved = failed = 0
@@ -9244,7 +9244,7 @@ async def _resolve_stock_links(rows, wait, action_text="nhập kho"):
     for i in link_idx:
         if rows[i]["uid"] and str(rows[i]["uid"]).isdigit():
             uid_to_link[rows[i]["uid"]] = (rows[i].get("_orig_link") or "")
-    return resolved, failed, failed_lines, uid_to_link
+    return resolved, failed, failed_lines, uid_to_link, link_idx
 
 
 async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx=None):
@@ -9255,7 +9255,7 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
     for r in rows:
         if not (r.get("password") or "").strip():
             r["password"] = "khai2006"
-    resolved, failed, failed_lines, uid_to_link = await _resolve_stock_links(rows, wait)
+    resolved, failed, failed_lines, uid_to_link, link_idx = await _resolve_stock_links(rows, wait)
     # Chống trùng: bỏ dòng trùng trong file và UID đang còn trong kho
     # (chỉ tính acc AVAILABLE/DIE; acc đã bán SOLD được nhập lại bình thường)
     _seen = set()
@@ -9501,7 +9501,7 @@ async def _update_stock_rows(rows, cat_id, c, msg, wait, source="file"):
     Ô trống trong dữ liệu mới = giữ nguyên giá trị cũ. Chỉ đụng acc còn hàng
     (AVAILABLE/DIE); acc đã bán (SOLD) giữ nguyên làm lịch sử.
     Trả về text báo cáo (đã tự edit vào wait)."""
-    _resolved, _failed, failed_lines, _ = await _resolve_stock_links(rows, wait, "cập nhật")
+    _resolved, _failed, failed_lines, _, _ = await _resolve_stock_links(rows, wait, "cập nhật")
     updated = unchanged = notfound = 0
     changed_total = 0
     notfound_uids, detail_lines = [], []
