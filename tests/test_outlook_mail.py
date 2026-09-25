@@ -74,3 +74,27 @@ def test_short_mc_not_merged():
     r = p(["a@outlook.com", "mk123", "M.C-ngan", UUID])
     assert r["backup_mail"] == "a@outlook.com"
     assert "M.C-ngan" in r["note"]
+
+
+def test_outlook_5part_with_extra_mail():
+    # Format NCC Zalo: outlook|pass|M.C...|uuid|mail_phu@fviainboxes.com
+    p = _load_parser()
+    uuid2 = "4da73655-ebbc-4d24-8f6f-d99e314e64ab"
+    fields = ["josephyoungk21s2ewe@outlook.com", "k21s2ewek21s2ewe@",
+              RT, uuid2, "josephyoungk21s2ewe@fviainboxes.com"]
+    r = p(fields)
+    assert r["backup_mail"] == "|".join(fields)
+    assert r["note"] == ""
+    assert r["password"] == ""
+
+
+def test_outlook_5part_inside_full_row():
+    p = _load_parser()
+    uuid2 = "4da73655-ebbc-4d24-8f6f-d99e314e64ab"
+    mail5 = f"a@outlook.com|mk123|{RT}|{uuid2}|phu@fviainboxes.com"
+    r = p(["61593959792972", "fbpass", "a@outlook.com", "mk123",
+           RT, uuid2, "phu@fviainboxes.com", "ghi chu rieng"])
+    assert r["uid"] == "61593959792972"
+    assert r["backup_mail"] == mail5
+    assert r["password"] == "fbpass"
+    assert r["note"] == "ghi chu rieng"

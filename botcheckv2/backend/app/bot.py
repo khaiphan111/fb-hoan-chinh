@@ -9216,8 +9216,12 @@ def _smart_stock_fields(fields: list) -> dict:
                 and _fields[_i + 2].startswith("M.C")
                 and len(_fields[_i + 2]) > 50
                 and _UUID.match(_fields[_i + 3])):
-            merged.append("|".join(_fields[_i:_i + 4]))
-            _i += 4
+            _j = _i + 4
+            # Bundle mail co the kem them email phu lien sau (vd mail fviainboxes)
+            while _j < _n and _re.search(r"\S+@\S+\.\S+", _fields[_j]):
+                _j += 1
+            merged.append("|".join(_fields[_i:_j]))
+            _i = _j
         else:
             merged.append(_f)
             _i += 1
