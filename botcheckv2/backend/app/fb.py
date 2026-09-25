@@ -186,10 +186,12 @@ async def resolve_fb_uid(link: str) -> tuple:
     # B2.5: thử API id.traodoisub.com (hỗ trợ mọi dạng link, trả cả tên)
     # API hay giới hạn tốc độ khi gọi dồn dập -> retry với backoff; chỉ dừng khi
     # API trả lời dứt khoát "không resolve được" (link chết/không công khai).
+    tds_answered = False  # API đã trả lời dứt khoát (dù được hay không)
     for _att in range(3):
         try:
             async with httpx.AsyncClient(timeout=25) as client:
                 uid2, name2 = await _resolve_via_traodoisub(link, client)
+                tds_answered = True
                 if uid2:
                     return uid2, name2, "traodoisub.com"
                 break
@@ -199,6 +201,12 @@ async def resolve_fb_uid(link: str) -> tuple:
                 continue
         except Exception:
             break
+    if tds_answered:
+        # API đã trả lời dứt khoát "link này không resolve được" -> dừng ngay.
+        # Bỏ qua Graph API + cào HTML vì từ IP máy chủ cả hai luôn fail
+        # (chưa có fb_avatar_token; FB chặn toàn bộ page load từ IP egress),
+        # mỗi link fail sẽ bị đốt thêm ~25s vô ích.
+        return "", "", ""
 
     # B3: link dạng username (facebook.com/ten_user) -> cần resolve
     m = re.search(r"(?:facebook\.com|fb\.com)/+([A-Za-z0-9._-]+)", link)
