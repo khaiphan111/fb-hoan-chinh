@@ -805,6 +805,16 @@ async def on_hopmutile(msg: Message):
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(Command("hopmutoggle"))
+async def on_hopmutoggle(msg: Message):
+    """Admin: /hopmutoggle — bật/tắt từng loại acc tham gia hộp mù (theo gian hàng)."""
+    if not _is_admin(msg.from_user.id):
+        return
+    from .. import shop_menu as _sm
+    await msg.answer(_sm._mystog_stalls_text(), parse_mode="HTML",
+                     reply_markup=_sm._mystog_stalls_kb())
+
+
 @router.message(Command("hopmutilemulti"))
 async def on_hopmutilemulti(msg: Message):
     """Admin: /hopmutilemulti 12:56,17:18 — đặt % cho NHIỀU loại 1 lúc.
@@ -1070,6 +1080,7 @@ __all__ = [
     "on_hopmu",
     "on_hopmugia",
     "on_hopmutile",
+    "on_hopmutoggle",
     "on_hopmutilemulti",
     "on_giovang",
     "on_acc_review",

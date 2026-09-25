@@ -134,6 +134,7 @@ GROUPS = {
         ("mystery_toggle", "🎲 Hộp mù: bật/tắt loại"),
         ("mystery_weight", "🎲 Hộp mù: tỷ lệ trúng"),
         ("mystery_weight_multi", "⚖️ Hộp mù: set % nhiều loại"),
+        ("mystery_toggle", "🔛 Hộp mù: bật/tắt loại"),
         ("mail_app", "📧 Link app mail ảo"),
     ]),
     "orders": ("📋 <b>ĐƠN HÀNG & BẢO HÀNH</b>", [
@@ -515,6 +516,9 @@ FLOWS = {
              "<i>Tổng % không quá 100.</i>", "pct_multi"),
         ],
         "build": lambda v: f"/hopmutilemulti {v[0]}",
+    },
+    "mystery_toggle": {
+        "cat": "price", "handler": "on_hopmutoggle", "custom": "mystog",
     },
     "mail_app": {
         "cat": "price", "handler": "on_setmailapp",
@@ -1059,6 +1063,67 @@ def _autoimp_list_text():
             "Chọn sạp để cấu hình:")
 
 
+def _mystog_stalls():
+    """Nhóm setup hộp mù theo gian hàng — tự hiện sạp/loại mới thêm."""
+    groups = {}
+    for i in db.acc_mystery_setup_list():
+        groups.setdefault(i["stall"], []).append(i)
+    return groups
+
+
+def _mystog_stalls_text():
+    return ("🔛 <b>HỘP MÙ: BẬT/TẮT TỪNG LOẠI</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "Bấm vào <b>gian hàng</b> để xem các loại acc bên trong, "
+            "bật/tắt từng loại tham gia hộp mù.\n"
+            "Sạp hay loại mới thêm sẽ <b>tự hiện</b> ở đây.\n\n"
+            "Chọn gian hàng:")
+
+
+def _mystog_stalls_kb():
+    rows = []
+    for stall, items in _mystog_stalls().items():
+        on = sum(1 for i in items if i["eligible"])
+        rows.append([InlineKeyboardButton(
+            text=f"🏪 {stall} (🟢{on}/{len(items)})",
+            callback_data=f"shopm:mystog:stall:{stall}")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
+                                      callback_data="shopm:back_price")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _mystog_cats_text(stall):
+    items = _mystog_stalls().get(stall, [])
+    on = sum(1 for i in items if i["eligible"])
+    lines = [f"🏪 <b>{html.escape(stall)}</b> — hộp mù: 🟢{on}/{len(items)} loại đang bật\n"]
+    for i in items:
+        mark = "🟢" if i["eligible"] else "⚪"
+        stock = f" (còn {i['stock']})" if i["stock"] else " (hết hàng)"
+        lines.append(f"{mark} #{i['id']} {html.escape(i['name'])}: ~<b>{i['pct']}%</b>{stock}")
+    lines.append("\nBấm vào từng loại để <b>bật/tắt</b>.")
+    return "\n".join(lines)
+
+
+def _mystog_cats_kb(stall):
+    rows = []
+    for i in _mystog_stalls().get(stall, []):
+        mark = "🟢" if i["eligible"] else "⚪"
+        rows.append([InlineKeyboardButton(
+            text=f"{mark} #{i['id']} {i['name']}",
+            callback_data=f"shopm:mystog:tog:{i['id']}")])
+    rows.append([InlineKeyboardButton(text="✅ Bật tất cả",
+                                      callback_data=f"shopm:mystog:allon:{stall}"),
+                 InlineKeyboardButton(text="🚫 Tắt tất cả",
+                                      callback_data=f"shopm:mystog:alloff:{stall}")])
+    rows.append([InlineKeyboardButton(text="◀️ Gian hàng",
+                                      callback_data="shopm:mystog:list")])
+    rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",
+                                      callback_data="shopm:main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def register_shop_menu(target_router):
     """Gắn toàn bộ menu nút /shopadm (callback + nhập liệu FSM) vào router cho trước."""
 
@@ -1277,6 +1342,82 @@ def register_shop_menu(target_router):
             return
         await cb.answer()
 
+    @target_router.callback_query(F.data.startswith("shopm:mystog"))
+    async def _on_shopm_mystog(cb: CallbackQuery, state: FSMContext):
+        # Màn hình bật/tắt từng loại acc tham gia hộp mù (theo gian hàng).
+        # Đăng ký TRƯỚC handler "shopm:" để không bị nuốt callback.
+        if not _is_admin_sync(cb.from_user.id):
+            await cb.answer("🚫 Không có quyền.", show_alert=True)
+            return
+        if not _perms.has_perm(cb.from_user.id, "price"):
+            await cb.answer("🚫 Bạn không có quyền 💲 Giá & Khuyến mãi.",
+                            show_alert=True)
+            return
+        body = (cb.data or "")[len("shopm:mystog"):]
+        parts = body.strip(":").split(":") if body.strip(":") else []
+        sub = parts[0] if parts else ""
+
+        def _audit(action, detail):
+            try:
+                db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                                   action, detail)
+            except Exception:
+                pass
+
+        async def _show_stalls():
+            await state.clear()
+            await cb.message.edit_text(_mystog_stalls_text(), parse_mode="HTML",
+                                       reply_markup=_mystog_stalls_kb())
+
+        async def _show_cats(stall):
+            await cb.message.edit_text(_mystog_cats_text(stall),
+                                       parse_mode="HTML",
+                                       reply_markup=_mystog_cats_kb(stall))
+
+        if sub == "list" or not sub:
+            await _show_stalls()
+            await cb.answer()
+            return
+        if sub == "stall" and len(parts) >= 2:
+            stall = ":".join(parts[1:])
+            if stall not in _mystog_stalls():
+                await cb.answer("❌ Gian hàng không còn.", show_alert=True)
+                return
+            await _show_cats(stall)
+            await cb.answer()
+            return
+        if sub == "tog" and len(parts) >= 2:
+            try:
+                cid = int(parts[1])
+            except Exception:
+                await cb.answer()
+                return
+            cur = next((i for i in db.acc_mystery_setup_list()
+                        if i["id"] == cid), None)
+            if not cur:
+                await cb.answer("❌ Loại acc không còn.", show_alert=True)
+                return
+            new_on = 0 if cur["eligible"] else 1
+            db.acc_mystery_set_eligible(cid, new_on)
+            _audit("hop_mu_toggle",
+                   f"#{cid} {cur['name']}: {'BẬT' if new_on else 'TẮT'} hộp mù")
+            await _show_cats(cur["stall"])
+            await cb.answer(f"{'🟢 Đã bật' if new_on else '⚪ Đã tắt'}: {cur['name']}")
+            return
+        if sub in ("allon", "alloff") and len(parts) >= 2:
+            stall = ":".join(parts[1:])
+            if stall not in _mystog_stalls():
+                await cb.answer("❌ Gian hàng không còn.", show_alert=True)
+                return
+            on = 1 if sub == "allon" else 0
+            n = db.acc_mystery_set_eligible_stall(stall, on)
+            _audit("hop_mu_toggle",
+                   f"{stall}: {'BẬT' if on else 'TẮT'} toàn bộ ({n} loại)")
+            await _show_cats(stall)
+            await cb.answer(f"{'🟢 Đã bật' if on else '🚫 Đã tắt'} {n} loại: {stall}")
+            return
+        await cb.answer()
+
     @target_router.callback_query(F.data.startswith("shopm:"))
     async def _on_shopm_cb(cb: CallbackQuery, state: FSMContext):
         if not _is_admin_sync(cb.from_user.id):
@@ -1327,6 +1468,12 @@ def register_shop_menu(target_router):
                 await state.clear()
                 await cb.message.edit_text(_autoimp_list_text(), parse_mode="HTML",
                                            reply_markup=_autoimp_list_kb())
+                await cb.answer()
+                return
+            if flow.get("custom") == "mystog":
+                await state.clear()
+                await cb.message.edit_text(_mystog_stalls_text(), parse_mode="HTML",
+                                           reply_markup=_mystog_stalls_kb())
                 await cb.answer()
                 return
             await state.update_data(shopm_flow=action[3:], shopm_step=0,

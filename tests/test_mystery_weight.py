@@ -189,3 +189,51 @@ def test_parse_step_pct_multi():
     assert fl and fl["build"](["12:56,17:18"]) == "/hopmutilemulti 12:56,17:18"
     items = dict(sm.GROUPS["price"][1])
     assert "mystery_weight_multi" in items
+
+
+def test_mystery_toggle_single(tdb):
+    db = tdb
+    a = _mk_cat(db, "TA", 60)
+    assert db.acc_mystery_set_eligible(a, 0)
+    items = {i["name"]: i for i in db.acc_mystery_setup_list()}
+    assert items["TA"]["eligible"] == 0
+    assert items["TA"]["pct"] == 0
+    assert db.acc_mystery_set_eligible(a, 1)
+    items = {i["name"]: i for i in db.acc_mystery_setup_list()}
+    assert items["TA"]["eligible"] == 1
+    assert items["TA"]["pct"] == 100.0  # chi 1 loai bat
+
+
+def test_mystery_toggle_stall_all(tdb):
+    db = tdb
+    a = _mk_cat(db, "GA", 50)
+    b = _mk_cat(db, "GB", 50)
+    n = db.acc_mystery_set_eligible_stall("Acc Facebook", 0)
+    assert n == 2
+    assert all(i["eligible"] == 0 for i in db.acc_mystery_setup_list())
+    n = db.acc_mystery_set_eligible_stall("Acc Facebook", 1)
+    assert n == 2
+    assert all(i["eligible"] == 1 for i in db.acc_mystery_setup_list())
+
+
+def test_mystog_groups_dynamic(tdb):
+    import importlib
+    sm = importlib.import_module("app.shop_menu")
+    db = tdb
+    # loai moi / sap moi tu hien trong man hinh bat/tat
+    cid = db.acc_category_add("Gmail moi", 50000, 24, "desc", "Gmail Moi")
+    assert cid > 0
+    groups = sm._mystog_stalls()
+    assert "Gmail Moi" in groups
+    names = [i["name"] for i in groups["Gmail Moi"]]
+    assert "Gmail moi" in names
+    kb = sm._mystog_stalls_kb()
+    texts = [b.text for row in kb.inline_keyboard for b in row]
+    assert any("Gmail Moi" in t for t in texts)
+    kb2 = sm._mystog_cats_kb("Gmail Moi")
+    datas = [b.callback_data for row in kb2.inline_keyboard for b in row]
+    assert any(d == f"shopm:mystog:tog:{cid}" for d in datas)
+    assert any(d == "shopm:mystog:allon:Gmail Moi" for d in datas)
+    assert "mystery_toggle" in sm.FLOWS
+    items = dict(sm.GROUPS["price"][1])
+    assert "mystery_toggle" in items

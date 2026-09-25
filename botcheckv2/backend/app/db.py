@@ -3643,6 +3643,21 @@ def acc_mystery_weights():
     return items
 
 
+def acc_mystery_set_eligible(cid, on: int) -> bool:
+    """Bật/tắt 1 loại acc tham gia hộp mù (giữ nguyên trọng số cũ)."""
+    return bool(acc_category_update(int(cid), mystery_eligible=1 if on else 0))
+
+
+def acc_mystery_set_eligible_stall(stall: str, on: int) -> int:
+    """Bật/tắt toàn bộ loại acc của 1 gian hàng trong hộp mù. Trả số loại đổi."""
+    items = [i for i in acc_mystery_setup_list() if i["stall"] == stall]
+    n = 0
+    for i in items:
+        if acc_category_update(i["id"], mystery_eligible=1 if on else 0):
+            n += 1
+    return n
+
+
 def acc_mystery_set_multi(pct_map):
     """Đặt % cho NHIỀU loại acc 1 lúc. pct_map: {cat_id: pct}.
     - Các loại được chỉ định: đúng bằng % đã cho (tự bật tham gia nếu chưa).
@@ -3744,7 +3759,8 @@ def acc_mystery_setup_list():
     tham gia). eligible=1: đang tham gia (có % trúng); 0: chưa tham gia."""
     c = get_conn()
     rows = c.execute(
-        "SELECT id, name, price, mystery_eligible, COALESCE(mystery_weight,100) AS w "
+        "SELECT id, name, price, COALESCE(stall,'Acc Facebook') AS stall, "
+        "mystery_eligible, COALESCE(mystery_weight,100) AS w "
         "FROM acc_categories WHERE active=1 AND hidden=0 ORDER BY id").fetchall()
     items = []
     for r in rows:
@@ -3752,6 +3768,7 @@ def acc_mystery_setup_list():
             "SELECT COUNT(*) FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
             (r["id"],)).fetchone()[0]
         items.append({"id": r["id"], "name": r["name"], "price": r["price"],
+                      "stall": r["stall"],
                       "eligible": int(r["mystery_eligible"] or 0),
                       "weight": max(1, int(r["w"] or 100)), "stock": n})
     total = sum(i["weight"] for i in items if i["eligible"]) or 1
