@@ -30,7 +30,12 @@ def extract_uid(link: str) -> str:
     for sep in ("@", "?", "/", " ", "|"):
         if sep in link and not ("http" in link):
             link = link.split(sep)[0]
-    return link.replace("https://", "").replace("http://", "").split("/")[0]
+    result = link.replace("https://", "").replace("http://", "").split("/")[0]
+    # UID bị Excel convert thành float ("61593959792972.0") -> cắt đuôi .0
+    # để không check/giao nhầm UID lỗi. Chỉ áp dụng cho chuỗi toàn số.
+    if re.fullmatch(r"\d+\.0+", result):
+        result = result.split(".")[0]
+    return result
 
 
 # Cache kết quả traodoisub để giảm tải API bên thứ 3 và tránh DIE oan khi API sập.

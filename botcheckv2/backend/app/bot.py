@@ -9167,8 +9167,14 @@ def _smart_stock_fields(fields: list) -> dict:
         elif (_re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}", f)
               and not r["created_date"]):
             r["created_date"] = f
-        elif f.isdigit() and len(f) >= 6 and not r["uid"]:
-            r["uid"] = f
+        elif not r["uid"]:
+            # UID số thuần (độ dài >= 6). Chấp nhận cả dạng float do Excel
+            # ("61593959792972.0") -> cắt đuôi .0, tránh check die oan.
+            _m = _re.fullmatch(r"(\d+)(?:\.0+)?", f)
+            if _m and len(_m.group(1)) >= 6:
+                r["uid"] = _m.group(1)
+            else:
+                others.append(f)
         else:
             others.append(f)
     if others:
@@ -9441,9 +9447,19 @@ def _parse_stock_file(raw: bytes, file_name: str):
             ws = wb.active
         except Exception as e:
             return None, f"❌ Không đọc được file Excel: {e}"
+
+        def _cell_str(c):
+            # Excel hay convert UID dài thành số float (61593959792972.0):
+            # ép về số nguyên để không lưu UID lỗi vào kho (gây check die oan).
+            if c is None:
+                return ""
+            if isinstance(c, float) and c.is_integer():
+                return str(int(c))
+            return str(c).strip()
+
         first_row = True
         for vals in ws.iter_rows(values_only=True):
-            cells = [(str(c).strip() if c is not None else "") for c in vals[:8]]
+            cells = [_cell_str(c) for c in vals[:8]]
             while len(cells) < 8:
                 cells.append("")
             if not any(cells):
