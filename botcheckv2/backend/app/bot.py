@@ -6822,6 +6822,7 @@ class AccShopState(StatesGroup):
     waiting_for_cover = State()
     waiting_for_review_comment = State()
     waiting_for_custom_qty = State()
+    waiting_for_pick_uid = State()
     waiting_for_edit_uid = State()
     waiting_for_edit_value = State()
 
@@ -7453,6 +7454,9 @@ async def on_acc_buy(cb: CallbackQuery):
             text="✏️ Nhập số lượng khác",
             callback_data=f"accqty:{cat_id}")])
         kb_rows.append([InlineKeyboardButton(
+            text="🎯 Chọn UID cụ thể",
+            callback_data=f"accpick:{cat_id}:0")])
+        kb_rows.append([InlineKeyboardButton(
             text="🛒 Thêm vào giỏ",
             callback_data=f"accaddcart:{cat_id}")])
         kb_rows.append([InlineKeyboardButton(
@@ -7694,6 +7698,108 @@ async def on_acc_qty_input(msg: Message, state: FSMContext):
     await msg.answer(txt, parse_mode="HTML", reply_markup=kb)
 
 
+
+
+async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: int,
+                              final: int, qty: int, delivered: list,
+                              want_upsell: bool = False, upsell_pct_cfg: int = 0,
+                              wmin: int = 10):
+    """Giao acc + qua tang + bao admin sau khi ban thanh cong (dung chung cho
+    mua thuong va mua theo UID cu the)."""
+    # Giao từng acc — khách chọn cách nhận: hiện thông tin hoặc tải file
+    for order in delivered:
+        order_id = order["id"]
+        await msg.answer(
+            f"🎉 <b>MUA THÀNH CÔNG!</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"{_cat_icon(order['cat_name'])} <b>{html.escape(order['cat_name'])}</b>\n"
+            f"🧾 Đơn hàng: <b>#{order_id}</b>\n"
+            f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
+            f"💰 Đã thanh toán: <b>{vnd(order['price'])}</b>\n"
+            f"{_live_line(cat_id)}"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"{_pickup_suffix()}",
+            parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
+    # Báo admin: thông tin khách + acc đã mua
+    await _notify_purchase_admin(bot, from_user, delivered)
+    # Quà tặng kèm: credits + vé quay
+    extras = []
+    bonus_per = int(c.get("credit_bonus") or 0)
+    if bonus_per > 0:
+        new_credits = db.add_credits(tg_id, bonus_per * qty, f"combo_mua_acc:{cat_id}")
+        extras.append(f"🎁 Tặng <b>{bonus_per * qty} credits</b> (số dư credits: {new_credits})")
+    tickets = db.spin_add_tickets(tg_id, qty)
+    extras.append(f"🎡 Nhận <b>{qty} vé quay</b> may mắn — gõ /quay để thử vận may (đang có {tickets} vé)")
+    # Tích điểm loyalty: 1 điểm / loyalty_per_vnd
+    try:
+        per = int(db.get_setting("loyalty_per_vnd", "100000") or 100000)
+    except Exception:
+        per = 100000
+    pts = final // per if per > 0 else 0
+    if pts > 0:
+        new_pts = db.loyalty_add(tg_id, pts, f"mua_acc:{cat_id}")
+        extras.append(f"⭐ Tích <b>{pts} điểm</b> loyalty (tổng: <b>{new_pts}</b> điểm) — "
+                      f"đủ điểm đổi acc miễn phí bằng /doiqua")
+    if extras:
+        rkey = f"o{min(o['id'] for o in delivered)}" if delivered else None
+        await msg.answer("\n".join(extras), parse_mode="HTML",
+                                reply_markup=_spin_kb(rkey, tg_id, final))
+    # 4.6 Upsell: gợi ý mua thêm trong 10 phút được giảm thêm
+    try:
+        if upsell_pct_cfg > 0 and not want_upsell:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"⚡ Mua thêm 1 acc giảm {upsell_pct_cfg}% (trong {wmin} phút)",
+                    callback_data=f"accconfirm:{cat_id}:1:upsell")],
+            ])
+            await msg.answer(
+                f"⚡ <b>ƯU ĐÃI NÓNG:</b> bạn vừa mua <b>{html.escape(c['name'])}</b> — "
+                f"mua thêm acc cùng loại trong <b>{wmin} phút</b> được "
+                f"<b>giảm thêm {upsell_pct_cfg}%</b>!",
+                parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+    # 5.12 Hướng dẫn sau mua tự động
+    try:
+        guide = db.get_setting("postbuy_guide", "") or (
+            "📋 <b>HƯỚNG DẪN SAU KHI MUA ACC</b>\n"
+            "1️⃣ Đổi mật khẩu ngay sau khi đăng nhập.\n"
+            "2️⃣ Bật xác thực 2 lớp (2FA) cho acc.\n"
+            "3️⃣ 3 ngày đầu: đừng đổi tên/avatar vội, lướt newsfeed nhẹ nhàng.\n"
+            "4️⃣ Không đăng nhập nhiều acc cùng 1 IP/proxy lạ.\n"
+            "💡 Làm đúng các bước trên giúp acc sống lâu, ít bị checkpoint!")
+        await msg.answer(guide, parse_mode="HTML")
+    except Exception:
+        pass
+    # Hoa hồng cho người giới thiệu (F1)
+    try:
+        f1_id, comm = db.ref_shop_commission(tg_id, final)
+        if f1_id and comm:
+            try:
+                await bot.send_message(
+                    f1_id,
+                    f"🎁 <b>Hoa hồng shop acc!</b>\n"
+                    f"Người bạn giới thiệu vừa mua {qty} acc "
+                    f"<b>{html.escape(c['name'])}</b> — bạn nhận <b>{vnd(comm)}</b>.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Cảnh báo hết hàng cho admin
+    try:
+        warn_at = int(db.get_setting("acc_low_stock_warn", "20") or 20)
+    except Exception:
+        warn_at = 20
+    left = db.acc_stock_count(cat_id)
+    if left <= warn_at:
+        await _notify_admin_smart(
+            bot,
+            f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn <b>{left}</b> acc. "
+            f"Nhập thêm bằng /themacc {cat_id}",
+            perm="kho",
+        )
+
 @router.callback_query(F.data.startswith("accconfirm:"))
 async def on_acc_confirm(cb: CallbackQuery):
     await cb.answer()
@@ -7791,100 +7897,310 @@ async def on_acc_confirm(cb: CallbackQuery):
             "Bạn quay lại sau hoặc chọn loại acc khác nhé!",
             parse_mode="HTML")
         return
-    # Giao từng acc — khách chọn cách nhận: hiện thông tin hoặc tải file
-    delivered = sold_orders
-    for order in delivered:
-        order_id = order["id"]
+    await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id, tg_id,
+                              final, qty, sold_orders,
+                              want_upsell, upsell_pct_cfg, wmin)
+
+# ============================ CHỌN UID CỤ THỂ KHI MUA ============================
+_PICK_PAGE_SIZE = 10
+
+
+def _pick_uid_page(cat_id: int, page: int):
+    """1 trang UID còn hàng. Trả (rows, has_next)."""
+    off = max(0, int(page)) * _PICK_PAGE_SIZE
+    rows = [dict(r) for r in db.get_conn().execute(
+        "SELECT id, uid, created_date FROM acc_stock "
+        "WHERE cat_id=? AND status='AVAILABLE' ORDER BY id LIMIT ? OFFSET ?",
+        (cat_id, _PICK_PAGE_SIZE + 1, off)).fetchall()]
+    return rows[:_PICK_PAGE_SIZE], len(rows) > _PICK_PAGE_SIZE
+
+
+def _pick_uid_kb(cat_id: int, page: int):
+    rows, has_next = _pick_uid_page(cat_id, page)
+    kb_rows = []
+    for r in rows:
+        label = f"👤 {r['uid']}"
+        if r.get("created_date"):
+            label += f" ({r['created_date']})"
+        kb_rows.append([InlineKeyboardButton(
+            text=label, callback_data=f"accpickuid:{cat_id}:{r['id']}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            text="‹ Trước", callback_data=f"accpick:{cat_id}:{page - 1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(
+            text="Sau ›", callback_data=f"accpick:{cat_id}:{page + 1}"))
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(
+        text="✏️ Nhập UID tay", callback_data=f"accpicktype:{cat_id}")])
+    kb_rows.append([InlineKeyboardButton(
+        text="🔙 Quay lại", callback_data=f"accbuy:{cat_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
+def _uid_final_price(tg_id: int, c: dict):
+    """Giá mua 1 acc theo UID: giữ nguyên công thức mua lẻ qty=1
+    (giá đơn vị + giảm hạng TV + giảm mua thêm, chưa áp promo)."""
+    up = db.shop_unit_price(c)
+    price = up["price"]
+    tier = db.member_tier_info(tg_id)
+    tier_pct = int(tier["pct"])
+    try:
+        wmin = int(db.get_setting("upsell_window_min", "10") or 10)
+        upsell_pct_cfg = int(db.get_setting("upsell_pct", "5") or 5)
+    except Exception:
+        wmin, upsell_pct_cfg = 10, 5
+    upsell_pct = 0
+    try:
+        last_at = db.acc_last_order_at(tg_id)
+        if upsell_pct_cfg > 0 and last_at and now() - last_at <= wmin * 60:
+            upsell_pct = upsell_pct_cfg
+    except Exception:
+        pass
+    final = price * (100 - tier_pct) // 100
+    final = final * (100 - upsell_pct) // 100
+    return final, price, tier, tier_pct, upsell_pct, wmin, upsell_pct_cfg
+
+
+def _pick_uid_confirm(cat_id: int, stock: dict, tg_id: int):
+    """Dựng (text, keyboard) màn xác nhận mua UID cụ thể."""
+    c = db.acc_category_get(cat_id)
+    c = dict(c)
+    final, price, tier, tier_pct, upsell_pct, wmin, _ = _uid_final_price(tg_id, c)
+    prev, promo_code = db.preview_user_promo(tg_id, final, wallet="shop")
+    u = db.get_user(tg_id)
+    balance = int(u["shop_balance"] or 0) if u else 0
+    disc = []
+    if tier_pct:
+        disc.append(f"giảm {tier_pct}% hạng {tier['tier']}")
+    if upsell_pct:
+        disc.append(f"giảm {upsell_pct}% mua thêm trong {wmin} phút")
+    if promo_code:
+        disc.append(f"mã {promo_code}")
+    txt = (
+        f"🎯 <b>Xác nhận mua UID</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"👤 UID: <code>{html.escape(stock['uid'] or '')}</code>\n"
+        f"📦 Loại: <b>{html.escape(c['name'])}</b>\n"
+    )
+    if stock.get("created_date"):
+        txt += f"📅 Ngày tạo: <code>{html.escape(stock['created_date'])}</code>\n"
+    txt += (
+        f"💰 Thanh toán: <b>{vnd(prev)}</b>"
+        + (f" <i>({', '.join(disc)})</i>" if disc else "") + "\n"
+        f"👛 Ví shop của bạn: <b>{vnd(balance)}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"<i>Acc sẽ được kiểm tra LIVE trước khi giao (sạp Facebook).</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"✅ Mua UID này — {vnd(prev)}",
+            callback_data=f"accbuyuid:{cat_id}:{stock['id']}")],
+        [InlineKeyboardButton(
+            text="‹ Chọn UID khác",
+            callback_data=f"accpick:{cat_id}:0")],
+    ])
+    return txt, kb
+
+
+@router.callback_query(F.data.startswith("accpick:"))
+async def on_acc_pick(cb: CallbackQuery):
+    """Danh sách UID còn hàng (phân trang) để khách chọn."""
+    await cb.answer()
+    try:
+        _, cat_id, page = cb.data.split(":")
+        cat_id, page = int(cat_id), max(0, int(page))
+    except Exception:
+        return
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"]:
+        await cb.message.answer("❌ Loại acc này không còn bán.")
+        return
+    total = db.acc_stock_count(cat_id)
+    if total <= 0:
+        await cb.message.answer("⛔ Loại này vừa hết hàng.")
+        return
+    pages = (total + _PICK_PAGE_SIZE - 1) // _PICK_PAGE_SIZE
+    await cb.message.answer(
+        f"🎯 <b>Chọn UID muốn mua</b> — <i>{html.escape(c['name'])}</i>\n"
+        f"📦 Còn <b>{total}</b> acc (trang {page + 1}/{max(pages, 1)})\n"
+        f"<i>Bấm vào UID để xem giá và xác nhận.</i>",
+        parse_mode="HTML", reply_markup=_pick_uid_kb(cat_id, page),
+        disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("accpickuid:"))
+async def on_acc_pick_uid(cb: CallbackQuery):
+    """Khách bấm 1 UID -> màn xác nhận giá."""
+    await cb.answer()
+    try:
+        _, cat_id, stock_id = cb.data.split(":")
+        cat_id, stock_id = int(cat_id), int(stock_id)
+    except Exception:
+        return
+    c = db.acc_category_get(cat_id)
+    r = db.get_conn().execute(
+        "SELECT id, uid, created_date, status FROM acc_stock "
+        "WHERE id=? AND cat_id=?", (stock_id, cat_id)).fetchone()
+    if not c or not c["active"] or not r:
+        await cb.message.answer("❌ Acc này không còn tồn tại.")
+        return
+    r = dict(r)
+    if r["status"] != "AVAILABLE":
         await cb.message.answer(
-            f"🎉 <b>MUA THÀNH CÔNG!</b>\n"
+            "😔 UID này vừa được mua mất rồi. Bạn chọn UID khác nhé.",
+            parse_mode="HTML",
+            reply_markup=_pick_uid_kb(cat_id, 0))
+        return
+    txt, kb = _pick_uid_confirm(cat_id, r, cb.from_user.id)
+    await cb.message.answer(txt, parse_mode="HTML", reply_markup=kb,
+                            disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("accpicktype:"))
+async def on_acc_pick_type(cb: CallbackQuery, state: FSMContext):
+    """Khách muốn gõ tay UID."""
+    await cb.answer()
+    try:
+        cat_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    c = db.acc_category_get(cat_id)
+    if not c or not c["active"]:
+        await cb.message.answer("❌ Loại acc này không còn bán.")
+        return
+    if db.acc_stock_count(cat_id) <= 0:
+        await cb.message.answer("⛔ Loại này vừa hết hàng.")
+        return
+    await state.set_state(AccShopState.waiting_for_pick_uid)
+    await state.update_data(pick_uid_cat_id=cat_id)
+    await cb.message.answer(
+        "✏️ Nhập <b>UID</b> acc muốn mua:\n<i>Gõ /huy để hủy.</i>",
+        parse_mode="HTML")
+
+
+@router.message(AccShopState.waiting_for_pick_uid)
+async def on_acc_pick_input(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.lower() in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("Đã hủy chọn UID.")
+        return
+    if _t.startswith("/"):
+        await state.clear()
+        return
+    data = await state.get_data()
+    cat_id = data.get("pick_uid_cat_id")
+    await state.clear()
+    _m = re.fullmatch(r"(\d+)(?:\.0+)?", _t)
+    uid = _m.group(1) if _m else _t
+    r = db.get_conn().execute(
+        "SELECT id, uid, created_date, status FROM acc_stock "
+        "WHERE cat_id=? AND uid=?", (cat_id, uid)).fetchone()
+    if not r:
+        await msg.answer(
+            "❌ Không tìm thấy UID này trong kho của loại acc đã chọn.\n"
+            "Bạn kiểm tra lại UID nhé.")
+        return
+    r = dict(r)
+    if r["status"] != "AVAILABLE":
+        await msg.answer("😔 UID này không còn hàng (đã bán hoặc đang cách ly). "
+                         "Bạn chọn UID khác nhé.")
+        return
+    txt, kb = _pick_uid_confirm(cat_id, r, msg.from_user.id)
+    await msg.answer(txt, parse_mode="HTML", reply_markup=kb,
+                     disable_web_page_preview=True)
+
+
+@router.callback_query(F.data.startswith("accbuyuid:"))
+async def on_acc_buy_uid(cb: CallbackQuery):
+    """Mua đúng UID khách đã chọn: trừ ví shop -> check LIVE acc đó -> giao."""
+    await cb.answer()
+    try:
+        _, cat_id, stock_id = cb.data.split(":")
+        cat_id, stock_id = int(cat_id), int(stock_id)
+    except Exception:
+        return
+    tg_id = cb.from_user.id
+    c = db.acc_category_get(cat_id)
+    r = db.get_conn().execute(
+        "SELECT id, uid, cat_id FROM acc_stock "
+        "WHERE id=? AND cat_id=? AND status='AVAILABLE'",
+        (stock_id, cat_id)).fetchone()
+    if not c or not c["active"] or not r:
+        await cb.message.answer(
+            "😔 UID này vừa được mua mất hoặc không còn hàng. "
+            "Bạn chọn UID khác nhé.", parse_mode="HTML")
+        return
+    r = dict(r)
+    c = dict(c)
+    final, price, tier, tier_pct, upsell_pct, wmin, upsell_pct_cfg = \
+        _uid_final_price(tg_id, c)
+    final, promo_code = db.apply_user_promo(tg_id, final, wallet="shop")
+    u = db.get_user(tg_id)
+    balance = int(u["shop_balance"] or 0) if u else 0
+    if balance < final:
+        await cb.message.answer(
+            f"😢 <b>VÍ SHOP KHÔNG ĐỦ</b>\n"
             f"━━━━━━━━━━━━━━\n"
-            f"{_cat_icon(order['cat_name'])} <b>{html.escape(order['cat_name'])}</b>\n"
-            f"🧾 Đơn hàng: <b>#{order_id}</b>\n"
-            f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
-            f"💰 Đã thanh toán: <b>{vnd(order['price'])}</b>\n"
-            f"{_live_line(cat_id)}"
-            f"━━━━━━━━━━━━━━\n\n"
-            f"{_pickup_suffix()}",
-            parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
-    # Báo admin: thông tin khách + acc đã mua
-    await _notify_purchase_admin(cb.bot, cb.from_user, delivered)
-    # Quà tặng kèm: credits + vé quay
-    extras = []
-    bonus_per = int(c.get("credit_bonus") or 0)
-    if bonus_per > 0:
-        new_credits = db.add_credits(tg_id, bonus_per * qty, f"combo_mua_acc:{cat_id}")
-        extras.append(f"🎁 Tặng <b>{bonus_per * qty} credits</b> (số dư credits: {new_credits})")
-    tickets = db.spin_add_tickets(tg_id, qty)
-    extras.append(f"🎡 Nhận <b>{qty} vé quay</b> may mắn — gõ /quay để thử vận may (đang có {tickets} vé)")
-    # Tích điểm loyalty: 1 điểm / loyalty_per_vnd
-    try:
-        per = int(db.get_setting("loyalty_per_vnd", "100000") or 100000)
-    except Exception:
-        per = 100000
-    pts = final // per if per > 0 else 0
-    if pts > 0:
-        new_pts = db.loyalty_add(tg_id, pts, f"mua_acc:{cat_id}")
-        extras.append(f"⭐ Tích <b>{pts} điểm</b> loyalty (tổng: <b>{new_pts}</b> điểm) — "
-                      f"đủ điểm đổi acc miễn phí bằng /doiqua")
-    if extras:
-        rkey = f"o{min(o['id'] for o in delivered)}" if delivered else None
-        await cb.message.answer("\n".join(extras), parse_mode="HTML",
-                                reply_markup=_spin_kb(rkey, tg_id, final))
-    # 4.6 Upsell: gợi ý mua thêm trong 10 phút được giảm thêm
-    try:
-        if upsell_pct_cfg > 0 and not want_upsell:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text=f"⚡ Mua thêm 1 acc giảm {upsell_pct_cfg}% (trong {wmin} phút)",
-                    callback_data=f"accconfirm:{cat_id}:1:upsell")],
-            ])
-            await cb.message.answer(
-                f"⚡ <b>ƯU ĐÃI NÓNG:</b> bạn vừa mua <b>{html.escape(c['name'])}</b> — "
-                f"mua thêm acc cùng loại trong <b>{wmin} phút</b> được "
-                f"<b>giảm thêm {upsell_pct_cfg}%</b>!",
-                parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        pass
-    # 5.12 Hướng dẫn sau mua tự động
-    try:
-        guide = db.get_setting("postbuy_guide", "") or (
-            "📋 <b>HƯỚNG DẪN SAU KHI MUA ACC</b>\n"
-            "1️⃣ Đổi mật khẩu ngay sau khi đăng nhập.\n"
-            "2️⃣ Bật xác thực 2 lớp (2FA) cho acc.\n"
-            "3️⃣ 3 ngày đầu: đừng đổi tên/avatar vội, lướt newsfeed nhẹ nhàng.\n"
-            "4️⃣ Không đăng nhập nhiều acc cùng 1 IP/proxy lạ.\n"
-            "💡 Làm đúng các bước trên giúp acc sống lâu, ít bị checkpoint!")
-        await cb.message.answer(guide, parse_mode="HTML")
-    except Exception:
-        pass
-    # Hoa hồng cho người giới thiệu (F1)
-    try:
-        f1_id, comm = db.ref_shop_commission(tg_id, final)
-        if f1_id and comm:
+            f"Mua UID <code>{html.escape(r['uid'])}</code>: <b>{vnd(final)}</b>\n"
+            f"👛 Ví shop của bạn: <b>{vnd(balance)}</b>\n"
+            f"💸 Còn thiếu: <b>{vnd(final - balance)}</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"Nạp thêm bằng /napshop (tự động, quét QR) rồi mua lại nhé."
+            + _SHOP_WALLET_HINT,
+            parse_mode="HTML")
+        return
+    if not db.adjust_shop_balance(
+            tg_id, -final,
+            f"mua_acc_uid:{cat_id}:{r['uid']}" + (f" (promo {promo_code})" if promo_code else "")):
+        await cb.message.answer(
+            "❌ <b>Ví shop không đủ!</b>\nNạp thêm bằng /napshop rồi mua lại nhé."
+            + _SHOP_WALLET_HINT,
+            parse_mode="HTML")
+        return
+    # Check LIVE đúng acc khách chọn (chỉ sạp Acc Facebook)
+    if _cat_live_check(cat_id):
+        await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>",
+                                parse_mode="HTML")
+        l_ids, d_ids, u_ids = await _check_stock_live([r])
+        if stock_id in d_ids:
+            db.acc_stock_quarantine([stock_id])
             try:
-                await cb.bot.send_message(
-                    f1_id,
-                    f"🎁 <b>Hoa hồng shop acc!</b>\n"
-                    f"Người bạn giới thiệu vừa mua {qty} acc "
-                    f"<b>{html.escape(c['name'])}</b> — bạn nhận <b>{vnd(comm)}</b>.",
-                    parse_mode="HTML")
+                await _notify_die_quarantine(cb.bot, [r])
             except Exception:
                 pass
-    except Exception:
-        pass
-    # Cảnh báo hết hàng cho admin
-    try:
-        warn_at = int(db.get_setting("acc_low_stock_warn", "20") or 20)
-    except Exception:
-        warn_at = 20
-    left = db.acc_stock_count(cat_id)
-    if left <= warn_at:
-        await _notify_admin_smart(
-            cb.bot,
-            f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn <b>{left}</b> acc. "
-            f"Nhập thêm bằng /themacc {cat_id}",
-            perm="kho",
-        )
+            db.add_shop_balance_only(tg_id, final, "hoan_tien_uid_die")
+            await cb.message.answer(
+                "😔 UID này vừa kiểm tra <b>DIE</b> nên không giao được "
+                "(đã cách ly khỏi kho).\n"
+                f"Tiền <b>{vnd(final)}</b> đã được hoàn vào ví shop. "
+                "Bạn chọn UID khác nhé!",
+                parse_mode="HTML")
+            return
+        if stock_id in u_ids:
+            db.add_shop_balance_only(tg_id, final, "hoan_tien_uid_infra")
+            await cb.message.answer(
+                "⚠️ Không kiểm tra được chất lượng acc lúc này (lỗi mạng).\n"
+                f"Tiền <b>{vnd(final)}</b> đã được hoàn vào ví shop. "
+                "Bạn thử lại sau nhé!",
+                parse_mode="HTML")
+            return
+    # Bán đúng acc đã chọn (nguyên tử — chống 2 người mua cùng UID)
+    sold = db.acc_sell_stock_ids(cat_id, tg_id, final, [stock_id])
+    if not sold:
+        db.add_shop_balance_only(tg_id, final, "hoan_tien_uid_race")
+        await cb.message.answer(
+            "😔 UID này vừa được người khác mua mất.\n"
+            f"Tiền <b>{vnd(final)}</b> đã được hoàn vào ví shop. "
+            "Bạn chọn UID khác nhé!",
+            parse_mode="HTML")
+        return
+    orders = [dict(db.acc_get_order(oid)) for oid, _ in sold]
+    await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id, tg_id,
+                              final, 1, orders, False, upsell_pct_cfg, wmin)
 
 
 # ============================ GIỎ HÀNG SHOP ACC ============================
