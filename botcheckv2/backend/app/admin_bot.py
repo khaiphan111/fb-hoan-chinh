@@ -1088,11 +1088,12 @@ def _admm_user_pick_text(page: int, pick_cb: str = None, title: str = None):
 
 class _AdmTextShim:
     """Giả lập Message với text tuỳ chỉnh để tái dùng _handle_adm_cmd cho flow nút bấm."""
-    def __init__(self, msg: Message, text: str, edit_target=None):
+    def __init__(self, msg: Message, text: str, edit_target=None, from_user=None):
         self._msg = msg
         self.text = text
         self._edit_target = edit_target
         self._edited = False
+        self._from_user = from_user
 
     @property
     def chat(self):
@@ -1100,7 +1101,8 @@ class _AdmTextShim:
 
     @property
     def from_user(self):
-        return self._msg.from_user
+        # Ưu tiên user bấm nút (cb.from_user); fallback về sender của tin nhắn
+        return self._from_user if self._from_user is not None else self._msg.from_user
 
     @property
     def bot(self):
@@ -1134,7 +1136,8 @@ async def _admm_exec_via_cb(cb: CallbackQuery, state: FSMContext, cmd_text: str)
                            "menu_adm", (cmd_text or "")[:200])
     except Exception:
         pass
-    shim = _AdmTextShim(cb.message, cmd_text, edit_target=cb.message)
+    shim = _AdmTextShim(cb.message, cmd_text, edit_target=cb.message,
+                        from_user=cb.from_user)
     await _handle_adm_cmd(shim, bot_instance=cb.bot)
     await cb.message.edit_reply_markup(reply_markup=_admm_back_kb())
     await cb.answer()
