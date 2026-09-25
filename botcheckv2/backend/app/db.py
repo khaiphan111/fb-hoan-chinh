@@ -415,13 +415,16 @@ def init_db() -> None:
             """
         )
         # Keys that MUST be force-updated on every restart
-        # (to ensure hardcoded tokens always take effect, even if value is empty)
+        # (to ensure env-configured tokens always take effect).
+        # CHỈ ghi đè khi env có giá trị non-empty: nếu .env thiếu key
+        # (vd ADMIN_TG_ID) thì giữ nguyên giá trị trong DB, tránh mất
+        # quyền admin toàn bot sau mỗi restart.
         _force_keys = {
             "bot_token", "setup_done", "admin_bot_token",
             "admin_tg_id", "zalo_bot_token", "web_domain",
         }
         for k, v in config.DEFAULT_SETTINGS.items():
-            if k in _force_keys:  # Always overwrite these keys (even empty string)
+            if k in _force_keys and v not in (None, ""):
                 c.execute(
                     "INSERT INTO settings(key, value) VALUES(?, ?) "
                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -2806,6 +2809,21 @@ def preview_user_promo(tg_id: int, price: int, wallet: str = "main") -> tuple[in
     pct = int(row["pct"])
     return int(price * (100 - pct) / 100), up["code"]
 
+
+def finalize_user_promo(tg_id: int, code: str) -> bool:
+    """Trừ lượt mã promo SAU khi đơn mua thành công.
+    Chỉ trừ khi mã còn hiệu lực tại thời điểm này; luôn xóa mã đang giữ của user.
+    Trả về True nếu đã trừ lượt. Không raise."""
+    try:
+        if not code:
+            return False
+        ok, _, _ = promo_valid(code)
+        if ok:
+            consume_promo(code)
+        clear_user_promo(tg_id)
+        return ok
+    except Exception:
+        return False
 
 # ─── CHECK ACCURACY STATS ──────────────────────────────────────────────
 def log_check_stat(tg_id: int, platform: str, target: str, result: str, via: str = "") -> None:

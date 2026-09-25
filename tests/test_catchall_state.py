@@ -39,3 +39,31 @@ def test_state_input_handlers_registered():
             pass  # tên handler có thể khác, không bắt buộc
     # ít nhất handler nhập UID phải tồn tại
     _find_handler("on_acc_pick_input")
+
+
+def test_faq_catchall_excludes_slash_commands():
+    """H1: on_shop_faq_auto khong duoc nuot lenh go tay bat dau bang '/'."""
+    import re
+    from app import bot as botmod
+    src = open("botcheckv2/backend/app/bot.py", encoding="utf-8").read()
+    m = re.search(r"(@router\.message\([^\n]*\))\s*\nasync def on_shop_faq_auto", src)
+    assert m, "khong tim thay decorator cua on_shop_faq_auto"
+    deco = m.group(1)
+    assert '~F.text.startswith("/")' in deco or "~F.text.startswith('/')" in deco, \
+        f"filter chua loai tru lenh '/': {deco}"
+    # 12 lenh go tay phai van dang ky trong router (de sau nay filter khong chan)
+    handlers = botmod.router.message.handlers
+    pos_faq = next(i for i, h in enumerate(handlers)
+                   if getattr(h.callback, "__name__", "") == "on_shop_faq_auto")
+    cmd_pos = {}
+    for i, h in enumerate(handlers):
+        for f in h.filters:
+            cb = getattr(f, "callback", None)
+            cmds = getattr(cb, "commands", None) if cb else None
+            if cmds:
+                for c in cmds:
+                    cmd_pos.setdefault(c, i)
+    for c in ["coc", "coclist", "huycoc", "hopmu", "hopmugia", "giovang",
+              "themncc", "ncc", "danhgiancc", "chamdiem", "lo", "nccauto"]:
+        assert c in cmd_pos, f"lenh /{c} khong co handler"
+        assert cmd_pos[c] > pos_faq, f"lenh /{c} dang ky TRUOC faq catch-all"

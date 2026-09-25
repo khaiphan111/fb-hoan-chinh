@@ -178,3 +178,57 @@ def test_loyalty_money_settings_roundtrip(tdb):
     db.credit_wallet(tg, 50000, "Đổi điểm loyalty", wallet)
     u = db.get_user(tg)
     assert u["shop_balance"] == 50000 and u["balance"] == 0
+
+
+# ── M3: promo chỉ bị trừ lượt SAU khi mua thành công ──────────────
+def test_preview_promo_khong_tru_luot(tdb):
+    """preview_user_promo: tinh gia giam nhung KHONG tru luot, KHONG xoa ma dang giu."""
+    db = tdb
+    tg = 920001
+    db.upsert_user(tg, "w", "W")
+    db.create_promo("PREV10", 10, 0, 0, wallet="shop")
+    db.set_user_promo(tg, "PREV10")
+    new_price, code = db.preview_user_promo(tg, 100000, wallet="shop")
+    assert new_price == 90000 and code == "PREV10"
+    row = db.get_promo("PREV10")
+    assert int(row["used_count"]) == 0, "preview khong duoc tru luot!"
+    assert db.get_user_promo(tg) is not None, "preview khong duoc xoa ma dang giu"
+
+
+def test_finalize_promo_chi_tru_khi_thanh_cong(tdb):
+    """finalize_user_promo: tru luot + xoa ma dang giu; ma het hieu luc thi khong tru."""
+    db = tdb
+    tg = 920002
+    db.upsert_user(tg, "w", "W")
+    db.create_promo("FIN10", 10, 0, 0, wallet="shop")
+    db.set_user_promo(tg, "FIN10")
+    # that bai (khong goi finalize) -> luot giu nguyen
+    assert int(db.get_promo("FIN10")["used_count"]) == 0
+    # thanh cong -> tru 1 luot + xoa ma giu
+    assert db.finalize_user_promo(tg, "FIN10") is True
+    assert int(db.get_promo("FIN10")["used_count"]) == 1
+    assert db.get_user_promo(tg) is None
+
+
+def test_finalize_promo_ma_het_han_khong_crash(tdb):
+    db = tdb
+    tg = 920003
+    db.upsert_user(tg, "w", "W")
+    db.create_promo("EXP10", 10, 1, 0, wallet="shop")
+    db.set_user_promo(tg, "EXP10")
+    db.consume_promo("EXP10")  # dung het luot
+    assert db.finalize_user_promo(tg, "EXP10") is False  # khong tru them, khong crash
+    assert int(db.get_promo("EXP10")["used_count"]) == 1
+    assert db.get_user_promo(tg) is None  # van xoa ma giu
+    assert db.finalize_user_promo(tg, "") is False
+    assert db.finalize_user_promo(tg, None) is False
+
+
+def test_cac_luong_mua_dung_preview_va_finalize():
+    """7 luong mua (credit/shop/uid/nhieu uid/gio hang/coc/hop mu) phai dung
+    preview_user_promo luc tinh gia + finalize_user_promo sau khi thanh cong."""
+    import re
+    src = open("botcheckv2/backend/app/bot.py", encoding="utf-8").read()
+    assert "db.apply_user_promo(" not in src, "van con apply_user_promo (tru luot som)!"
+    assert src.count("db.finalize_user_promo(") >= 7, \
+        f"thieu diem finalize (can >=7, thay {src.count('db.finalize_user_promo(')})"

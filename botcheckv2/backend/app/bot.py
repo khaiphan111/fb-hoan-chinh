@@ -43,9 +43,6 @@ class TienIchState(StatesGroup):
     waiting_for_promo = State()
     waiting_for_birthday = State()
     waiting_for_refcode = State()
-    waiting_for_tiktok = State()
-    waiting_for_ig = State()
-    waiting_for_fb = State()
     waiting_for_getuid = State()
     # /ruttien 3 bước
     waiting_withdraw_amount = State()
@@ -3389,47 +3386,6 @@ async def on_toggle_autorenew(cb: CallbackQuery):
     try: await cb.message.edit_reply_markup(reply_markup=new_kb)
     except: pass
 
-@router.callback_query(F.data.startswith("chart_"))
-async def on_chart(cb: CallbackQuery):
-    import time, json, urllib.parse
-    parts = cb.data.split("_")
-    if len(parts) < 4: return
-    platform = parts[1]
-    track_type = parts[2]
-    try: track_id = int(parts[3])
-    except: return
-    
-    c = db.get_conn()
-    rows = c.execute("SELECT stat_value, created_at FROM track_history WHERE track_id=? AND platform=? AND track_type=? ORDER BY created_at ASC LIMIT 50", (track_id, platform, track_type)).fetchall()
-    
-    if len(rows) < 2:
-        await cb.answer("Chưa đủ dữ liệu để vẽ biểu đồ (Cần ít nhất 2 lần quét).", show_alert=True)
-        return
-        
-    labels = [vn_time_str("%d/%m %H:%M", r["created_at"]) for r in rows]
-    data = [r["stat_value"] for r in rows]
-    
-    chart_config = {
-        "type": "line",
-        "data": {
-            "labels": labels,
-            "datasets": [{
-                "label": f"Tăng trưởng {track_type} ({platform})",
-                "data": data,
-                "fill": False,
-                "borderColor": "blue",
-                "backgroundColor": "rgba(0,0,255,0.1)",
-                "borderWidth": 2
-            }]
-        },
-        "options": {
-            "title": {"display": True, "text": f"Biểu đồ {track_type}"}
-        }
-    }
-    url = "https://quickchart.io/chart?c=" + urllib.parse.quote(json.dumps(chart_config))
-    await cb.message.answer_photo(URLInputFile(url), caption=f"📊 Biểu đồ lịch sử {track_type}")
-    await cb.answer()
-
 # ─── BOT MANAGER ─────────────────────────────────────────────
 class BotManager:
     def __init__(self):
@@ -5754,7 +5710,7 @@ async def on_buycredit(cb: CallbackQuery):
     p = packs[idx]
     c_num, price = int(p.get("credits", 0)), int(p.get("price", 0))
     # Áp mã giảm giá flash sale nếu user đã nhập /promo
-    final_price, used_code = db.apply_user_promo(cb.from_user.id, price)
+    final_price, used_code = db.preview_user_promo(cb.from_user.id, price)
     promo_txt = f"\n🎟️ Đã áp mã <b>{used_code}</b>!" if used_code else ""
     user = db.get_user(cb.from_user.id)
     balance = (user["balance"] or 0) if user else 0
@@ -5769,6 +5725,7 @@ async def on_buycredit(cb: CallbackQuery):
         return
     new_credits = db.add_credits(cb.from_user.id, c_num, f"Mua gói {c_num} credits ({vnd(final_price)})")
     db.add_log("credit", f"Mua {c_num} credits (-{vnd(final_price)})", cb.from_user.id)
+    db.finalize_user_promo(cb.from_user.id, used_code)  # trừ lượt promo SAU khi mua thành công
     await cb.answer("✅ Mua thành công!", show_alert=True)
     await cb.message.answer(
         f"✅ <b>MUA CREDITS THÀNH CÔNG!</b>{promo_txt}\n\n"
@@ -7932,7 +7889,7 @@ async def on_acc_confirm(cb: CallbackQuery):
     final = total * (100 - bulk_pct) // 100
     final = final * (100 - tier_pct) // 100
     final = final * (100 - upsell_pct) // 100
-    final, promo_code = db.apply_user_promo(tg_id, final, wallet="shop")
+    final, promo_code = db.preview_user_promo(tg_id, final, wallet="shop")
     if db.acc_stock_count(cat_id) < qty:
         await cb.message.answer(
             f"⛔ Kho chỉ còn <b>{db.acc_stock_count(cat_id)}</b> acc, "
@@ -7986,6 +7943,7 @@ async def on_acc_confirm(cb: CallbackQuery):
             "Bạn quay lại sau hoặc chọn loại acc khác nhé!",
             parse_mode="HTML")
         return
+    db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi giao acc thành công
     await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id, tg_id,
                               final, qty, sold_orders,
                               want_upsell, upsell_pct_cfg, wmin)
@@ -8338,7 +8296,7 @@ async def on_acc_multi_buy(cb: CallbackQuery, state: FSMContext):
             "😔 Các UID vừa chọn đều đã hết hàng. Bạn chọn UID khác nhé.")
         return
     grand = final1 * len(priced)
-    grand, promo_code = db.apply_user_promo(tg_id, grand, wallet="shop")
+    grand, promo_code = db.preview_user_promo(tg_id, grand, wallet="shop")
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
     if balance < grand:
@@ -8376,6 +8334,7 @@ async def on_acc_multi_buy(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML")
         return
     orders = delivered  # _sell_uid_items đã trả list dict đơn hàng
+    db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi giao acc thành công
     await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id,
                               tg_id, paid, len(delivered), orders, False,
                               upsell_pct_cfg, wmin)
@@ -8438,7 +8397,7 @@ async def on_acc_buy_uid(cb: CallbackQuery):
     c = dict(c)
     final, price, tier, tier_pct, upsell_pct, wmin, upsell_pct_cfg = \
         _uid_final_price(tg_id, c)
-    final, promo_code = db.apply_user_promo(tg_id, final, wallet="shop")
+    final, promo_code = db.preview_user_promo(tg_id, final, wallet="shop")
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
     if balance < final:
@@ -8499,6 +8458,7 @@ async def on_acc_buy_uid(cb: CallbackQuery):
             parse_mode="HTML")
         return
     orders = [dict(db.acc_get_order(oid)) for oid, _ in sold]
+    db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi giao acc thành công
     await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id, tg_id,
                               final, 1, orders, False, upsell_pct_cfg, wmin)
 
@@ -8851,7 +8811,7 @@ async def on_cart_confirm(cb: CallbackQuery):
         lp = _line_price(c, 1, tg_id)
         uid_priced.append((c, stock, lp["final"]))
         grand += lp["final"]
-    grand, promo_code = db.apply_user_promo(tg_id, grand, wallet="shop")
+    grand, promo_code = db.preview_user_promo(tg_id, grand, wallet="shop")
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
     if balance < grand:
@@ -8895,6 +8855,7 @@ async def on_cart_confirm(cb: CallbackQuery):
             f"Tiền <b>{vnd(grand)}</b> đã được hoàn vào ví shop.",
             parse_mode="HTML")
         return
+    db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi giao acc thành công
     for order in delivered:
         order_id = order["id"]
         await cb.message.answer(
@@ -11603,7 +11564,7 @@ async def on_accinfo(msg: Message):
     e = html.escape
     s = db.acc_stock_by_uid(parts[1])
     if not s:
-        # acc đã bán (xóa khỏi kho) -> tra trong đơn hàng
+        # acc đã bán (đánh dấu SOLD trong kho) -> tra trong đơn hàng
         o = db.get_conn().execute(
             "SELECT o.*, c.name AS cat_name, u.username FROM acc_orders o "
             "LEFT JOIN acc_categories c ON c.id=o.cat_id "
@@ -11618,7 +11579,7 @@ async def on_accinfo(msg: Message):
             "🔎 <b>HÀNH TRÌNH ACC</b>\n━━━━━━━━━━━━\n"
             f"👤 UID: <code>{e(o['uid'] or '')}</code>\n"
             f"📦 Loại: <b>{e(o['cat_name'] or '')}</b>\n"
-            f"📌 Trạng thái: <b>ĐÃ BÁN (xóa khỏi kho)</b>\n\n"
+            f"📌 Trạng thái: <b>ĐÃ BÁN</b>\n\n"
             f"🧾 Đơn #{o['id']} — khách <code>{o['tg_id']}</code> {e(who)} — "
             f"{vnd(o['price'])} — {vn_time_str(ts=o['created_at'])}",
             parse_mode="HTML")
@@ -11699,14 +11660,12 @@ async def on_xoacauhoi(msg: Message):
         await msg.answer("❌ Không tìm thấy câu này (chỉ xóa được câu tự thêm).")
 
 
-@router.message(StateFilter(None), F.text)
+@router.message(StateFilter(None), F.text & ~F.text.startswith("/"))
 async def on_shop_faq_auto(msg: Message):
     """5.11 Trả lời tự động khi khách hỏi về shop.
     Chỉ chạy ở trạng thái thường (không chen vào lúc đang nhập số tiền/file...),
     và chỉ khi không có handler nào khác bắt tin nhắn."""
     text = msg.text or ""
-    if text.startswith("/"):
-        return
     ans = db.shop_faq_match(text)
     if ans:
         await msg.answer(ans, parse_mode="HTML")
@@ -11925,7 +11884,7 @@ async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
     except Exception:
         dep_pct = 30
     amt = int(c["price"]) * dep_pct // 100
-    amt, promo_code = db.apply_user_promo(tg_id, amt, wallet="shop")
+    amt, promo_code = db.preview_user_promo(tg_id, amt, wallet="shop")
     u = db.get_user(tg_id)
     bal = int(u["shop_balance"] or 0) if u else 0
     if bal < amt:
@@ -11939,6 +11898,7 @@ async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
         await msg.answer("❌ Ví shop không đủ đặt cọc." + _SHOP_WALLET_HINT, parse_mode="HTML")
         return
     dep_id = db.acc_deposit_create(tg_id, cat_id, amt)
+    db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi đặt cọc thành công
     await msg.answer(
         f"✅ <b>ĐẶT CỌC THÀNH CÔNG #{dep_id}</b>\n\n"
         f"📦 Loại: <b>{html.escape(c['name'])}</b>\n"
@@ -12051,7 +12011,7 @@ async def on_mystery_buy(cb: CallbackQuery):
         m_price = 0
     if m_price <= 0:
         return
-    m_price, promo_code = db.apply_user_promo(tg_id, m_price, wallet="shop")
+    m_price, promo_code = db.preview_user_promo(tg_id, m_price, wallet="shop")
     u = db.get_user(tg_id)
     bal = int(u["shop_balance"] or 0) if u else 0
     if bal < m_price:
@@ -12076,6 +12036,7 @@ async def on_mystery_buy(cb: CallbackQuery):
         return
     order = sold_orders[0]
     order_id = order["id"]
+    db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi mở hộp mù thành công
     cat_name = order.get("cat_name") or ""
     db.spin_add_tickets(tg_id, 1)
     try:
