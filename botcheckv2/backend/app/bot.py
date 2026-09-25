@@ -9197,8 +9197,31 @@ async def on_themacc(msg: Message, state: FSMContext):
 def _smart_stock_fields(fields: list) -> dict:
     """Nhận diện trường acc từ 1 dòng .txt theo MẪU nội dung (không phụ thuộc thứ tự cột):
     link FB | email | mã 2FA (base32) | ngày tạo | cookie | token EAAG | UID số.
-    Trường còn lại: trường đầu -> mật khẩu, các trường sau -> ghi chú."""
+    Trường còn lại: trường đầu -> mật khẩu, các trường sau -> ghi chú.
+    Riêng bộ 4 mail Outlook (mail|mật khẩu|refresh_token M.C...|client_id UUID)
+    được gộp lại thành 1 chuỗi "liền mạch" vào backup_mail."""
     import re as _re
+    # Pre-pass: gộp bộ 4 Outlook về 1 trường trước khi nhận diện.
+    _fields = [(f or "").strip() for f in fields]
+    _UUID = _re.compile(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+    merged: list = []
+    _i, _n = 0, len(_fields)
+    while _i < _n:
+        _f = _fields[_i]
+        if (_f and _re.search(r"\S+@\S+\.\S+", _f)
+                and _i + 3 < _n
+                and _fields[_i + 1]
+                and _fields[_i + 2].startswith("M.C")
+                and len(_fields[_i + 2]) > 50
+                and _UUID.match(_fields[_i + 3])):
+            merged.append("|".join(_fields[_i:_i + 4]))
+            _i += 4
+        else:
+            merged.append(_f)
+            _i += 1
+    fields = merged
     r = {"uid": "", "password": "", "created_date": "", "backup_mail": "",
          "note": "", "totp": "", "cookie": "", "token": ""}
     others = []
