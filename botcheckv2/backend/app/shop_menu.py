@@ -133,6 +133,7 @@ GROUPS = {
         ("mystery_price", "🎲 Giá hộp mù"),
         ("mystery_toggle", "🎲 Hộp mù: bật/tắt loại"),
         ("mystery_weight", "🎲 Hộp mù: tỷ lệ trúng"),
+        ("mystery_weight_multi", "⚖️ Hộp mù: set % nhiều loại"),
         ("mail_app", "📧 Link app mail ảo"),
     ]),
     "orders": ("📋 <b>ĐƠN HÀNG & BẢO HÀNH</b>", [
@@ -505,6 +506,16 @@ FLOWS = {
         ],
         "build": lambda v: f"/hopmutile {v[0]} {v[1]}%",
     },
+    "mystery_weight_multi": {
+        "cat": "price", "handler": "on_hopmutilemulti",
+        "steps": [
+            ("⚖️ <b>SET % NHIỀU LOẠI 1 LÚC</b>\n\nGửi các cặp <b>ID + %</b> — mỗi dòng 1 loại, VD:\n"
+             "<code>12 56\n17 18</code>\n\n"
+             "Bot giữ <b>đúng %</b> các loại mik ghi; phần % còn lại tự chia cho các loại khác theo đúng tỷ lệ cũ của chúng.\n"
+             "<i>Tổng % không quá 100.</i>", "pct_multi"),
+        ],
+        "build": lambda v: f"/hopmutilemulti {v[0]}",
+    },
     "mail_app": {
         "cat": "price", "handler": "on_setmailapp",
         "steps": [(_p_mail_app, "text")],
@@ -609,6 +620,35 @@ def _parse_step(kind, raw):
             return True, int(t), ""
         except Exception:
             return False, None, "⚠️ Phải là số, gửi lại nhé."
+    if kind == "pct_multi":
+        # Set % nhiều loại 1 lúc: mỗi dòng "ID %" (chấp nhận "12: 56%").
+        # Trả về chuỗi chuẩn "12:56,17:18" để build lệnh.
+        txt = (raw or "").replace(",", "\n")
+        pairs = {}
+        for ln in txt.split("\n"):
+            ln = ln.strip().strip("%").strip()
+            if not ln:
+                continue
+            ln = ln.replace(":", " ")
+            parts = ln.split()
+            if len(parts) != 2:
+                return False, None, "⚠️ Mỗi dòng ghi <b>ID + %</b>, VD: <code>12 56</code>"
+            try:
+                cid, p = int(parts[0]), int(parts[1])
+            except Exception:
+                return False, None, f"⚠️ ID và % phải là số (lỗi ở dòng '{ln}')."
+            if not (1 <= p <= 99):
+                return False, None, f"⚠️ % của loại #{cid} phải từ 1–99."
+            if cid in pairs:
+                return False, None, f"⚠️ Loại #{cid} bị ghi trùng, gửi lại nhé."
+            pairs[cid] = p
+        if not pairs:
+            return False, None, "⚠️ Chưa nhập cặp ID + % nào, VD: <code>12 56</code>"
+        if sum(pairs.values()) > 100:
+            return False, None, (f"⚠️ Tổng % = {sum(pairs.values())}% vượt quá 100%, "
+                                  "gửi lại nhé.")
+        frag = ",".join(f"{cid}:{p}" for cid, p in pairs.items())
+        return True, frag, ""
     if kind == "pick_weight":
         # % trúng hộp mù: bấm nút preset hoặc gõ tay 1–99
         t = (raw or "").strip().rstrip("%").strip()

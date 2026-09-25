@@ -3643,6 +3643,64 @@ def acc_mystery_weights():
     return items
 
 
+def acc_mystery_set_multi(pct_map):
+    """Đặt % cho NHIỀU loại acc 1 lúc. pct_map: {cat_id: pct}.
+    - Các loại được chỉ định: đúng bằng % đã cho (tự bật tham gia nếu chưa).
+    - Tổng S phải <= 100, mỗi pct 1–99.
+    - Phần còn lại (100-S)% tự chia cho các loại đang tham gia KHÔNG được
+      chỉ định, theo đúng tỷ lệ cũ của chúng.
+    - S == 100 mà còn loại không được chỉ định -> tự tắt chúng khỏi hộp mù.
+    Trả về (True, ghi_chú) / (False, lỗi)."""
+    clean = {}
+    for cid, p in (pct_map or {}).items():
+        try:
+            cid, p = int(cid), int(p)
+        except Exception:
+            return False, f"ID/% phải là số (lỗi ở '{cid}')."
+        if not (1 <= p <= 99):
+            return False, f"% của loại #{cid} phải từ 1–99."
+        c = acc_category_get(cid)
+        c = dict(c) if c else None
+        if not c or not int(c.get("active") or 0) or int(c.get("hidden") or 0):
+            return False, f"Không có loại acc #{cid}."
+        clean[cid] = p
+    if not clean:
+        return False, "Chưa nhập cặp ID + % nào."
+    s = sum(clean.values())
+    if s > 100:
+        return False, f"Tổng % = {s}% vượt quá 100%."
+    for cid in clean:
+        acc_category_update(cid, mystery_eligible=1)
+    items = [i for i in acc_mystery_setup_list() if i["eligible"]]
+    specified = [i for i in items if i["id"] in clean]
+    rest_cats = [i for i in items if i["id"] not in clean]
+    K = 10000
+    assigned = 0
+    for i in specified:
+        w = clean[i["id"]] * (K // 100)
+        acc_category_update(i["id"], mystery_weight=w)
+        assigned += w
+    rest = K - assigned
+    note = ""
+    if rest_cats:
+        if rest <= 0:
+            names = ", ".join(f"#{i['id']}" for i in rest_cats)
+            for i in rest_cats:
+                acc_category_update(i["id"], mystery_eligible=0)
+            note = f"Tổng đã đủ 100% nên tự tắt khỏi hộp mù: {names}."
+        else:
+            old_sum = sum(i["weight"] for i in rest_cats) or 1
+            acc = 0
+            for idx, i in enumerate(rest_cats):
+                if idx < len(rest_cats) - 1:
+                    w = max(1, int(round(i["weight"] * rest / old_sum)))
+                else:
+                    w = max(1, rest - acc)
+                acc += w
+                acc_category_update(i["id"], mystery_weight=w)
+    return True, note
+
+
 def acc_mystery_set_pct(cid, pct):
     """Đặt % trúng TRỰC TIẾP cho 1 loại acc (1–99). Loại được chọn sẽ đúng
     bằng pct%; các loại còn lại tự chia phần % còn lại theo đúng tỷ lệ cũ

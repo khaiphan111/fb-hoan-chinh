@@ -765,6 +765,7 @@ async def on_hopmutile(msg: Message):
         await msg.answer("❌ ID loại phải là số.")
         return
     c = db.acc_category_get(cid)
+    c = dict(c) if c else None
     if not c:
         await msg.answer("❌ Không có loại này.")
         return
@@ -802,6 +803,44 @@ async def on_hopmutile(msg: Message):
         mark = " 👈" if i["id"] == cid else ""
         lines.append(f"#{i['id']} {html.escape(i['name'])}: ~<b>{i['pct']}%</b>{mark}")
     await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.message(Command("hopmutilemulti"))
+async def on_hopmutilemulti(msg: Message):
+    """Admin: /hopmutilemulti 12:56,17:18 — đặt % cho NHIỀU loại 1 lúc.
+    Các loại được chỉ định giữ đúng %; phần còn lại bot tự chia cho các loại
+    khác theo tỷ lệ cũ. Tổng không quá 100%."""
+    if not _is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(None, 1)
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/hopmutilemulti 12:56,17:18</code>\n"
+                         "(mỗi cặp ID:% — tổng không quá 100%)", parse_mode="HTML")
+        return
+    pct_map = {}
+    for tok in parts[1].replace(",", " ").split():
+        if ":" not in tok:
+            await msg.answer(f"❌ Sai định dạng ở '{tok}' (đúng: <code>12:56</code>).",
+                             parse_mode="HTML")
+            return
+        a, b = tok.split(":", 1)
+        try:
+            pct_map[int(a)] = int(b)
+        except Exception:
+            await msg.answer(f"❌ ID/% phải là số (lỗi ở '{tok}').")
+            return
+    ok, note = db.acc_mystery_set_multi(pct_map)
+    if not ok:
+        await msg.answer(f"❌ {html.escape(note)}", parse_mode="HTML")
+        return
+    lines = ["✅ Đã set % hộp mù.\n", "🎲 Tỷ lệ trúng hộp mù hiện tại:"]
+    for i in db.acc_mystery_weights():
+        mark = " 👈" if i["id"] in pct_map else ""
+        lines.append(f"#{i['id']} {html.escape(i['name'])}: ~<b>{i['pct']}%</b>{mark}")
+    if note:
+        lines.append(f"\n<i>{html.escape(note)}</i>")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
 
 @router.message(Command("giovang"))
 async def on_giovang(msg: Message):
@@ -1031,6 +1070,7 @@ __all__ = [
     "on_hopmu",
     "on_hopmugia",
     "on_hopmutile",
+    "on_hopmutilemulti",
     "on_giovang",
     "on_acc_review",
     "on_review_comment",

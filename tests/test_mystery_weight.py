@@ -131,3 +131,61 @@ def test_mystery_set_pct_auto_enable_and_invalid(tdb):
     assert not db.acc_mystery_set_pct(x, 0)
     assert not db.acc_mystery_set_pct(x, 100)
     assert not db.acc_mystery_set_pct(999999, 50)
+
+
+def test_mystery_set_multi_example(tdb):
+    db = tdb
+    a = _mk_cat(db, "MA", 60)
+    b = _mk_cat(db, "MB", 30)
+    c = _mk_cat(db, "MC", 10)
+    ok, note = db.acc_mystery_set_multi({a: 56, c: 18})
+    assert ok, note
+    d = {i["name"]: i for i in db.acc_mystery_weights()}
+    assert d["MA"]["pct"] == 56.0   # giu dung % da set
+    assert d["MC"]["pct"] == 18.0   # giu dung % da set
+    assert abs(d["MB"]["pct"] - 26.0) < 0.2  # phan con lai
+
+
+def test_mystery_set_multi_invalid(tdb):
+    db = tdb
+    a = _mk_cat(db, "NA", 50)
+    b = _mk_cat(db, "NB", 50)
+    ok, err = db.acc_mystery_set_multi({a: 60, b: 50})
+    assert not ok and "100%" in err
+    ok, err = db.acc_mystery_set_multi({a: 0})
+    assert not ok
+    ok, err = db.acc_mystery_set_multi({999999: 50})
+    assert not ok
+
+
+def test_mystery_set_multi_sum100_disables_rest(tdb):
+    db = tdb
+    a = _mk_cat(db, "SA", 50)
+    b = _mk_cat(db, "SB", 50)
+    ok, note = db.acc_mystery_set_multi({a: 100 - 1, b: 1} if False else {a: 99, b: 1})
+    assert ok
+    # S == 100 khong con loai ngoai -> binh thuong
+    d = {i["name"]: i for i in db.acc_mystery_weights()}
+    assert d["SA"]["pct"] == 99.0 and d["SB"]["pct"] == 1.0
+    c = _mk_cat(db, "SC", 50)
+    ok, note = db.acc_mystery_set_multi({a: 60, b: 40})
+    assert ok and "tắt" in note  # SC tu tat vi tong du 100%
+    names = [i["name"] for i in db.acc_mystery_weights()]
+    assert "SC" not in names
+
+
+def test_parse_step_pct_multi():
+    import importlib
+    sm = importlib.import_module("app.shop_menu")
+    ok, v, _ = sm._parse_step("pct_multi", "12 56\n17 18")
+    assert ok and v == "12:56,17:18"
+    ok, v, _ = sm._parse_step("pct_multi", "12: 56%, 17: 18%")
+    assert ok and v == "12:56,17:18"
+    ok, _, _ = sm._parse_step("pct_multi", "12 60\n17 50")
+    assert not ok  # tong > 100
+    ok, _, _ = sm._parse_step("pct_multi", "abc")
+    assert not ok
+    fl = sm.FLOWS.get("mystery_weight_multi")
+    assert fl and fl["build"](["12:56,17:18"]) == "/hopmutilemulti 12:56,17:18"
+    items = dict(sm.GROUPS["price"][1])
+    assert "mystery_weight_multi" in items
