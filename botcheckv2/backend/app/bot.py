@@ -1143,7 +1143,7 @@ async def on_admin_withdraw_approve(cb: CallbackQuery):
             "🎉 <b>RÚT TIỀN HOA HỒNG THÀNH CÔNG!</b>\n\n"
             f"Yêu cầu rút tiền <b>#{actual_req_id}</b> của bạn đã được Admin duyệt và chuyển tiền.\n"
             f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
-            f"🏦 Ngân hàng / STK: <b>{html.escape(req.get('bank_info', '') or '')}</b>\n\n"
+            f"🏦 Ngân hàng / STK: <b>{html.escape(req['bank_info'] or '')}</b>\n\n"
             "Cảm ơn bạn đã đồng hành và phát triển cùng hệ thống! ❤️"
         )
         if manager.bot:
