@@ -3348,6 +3348,48 @@ def acc_stock_get_by_id(stock_id: int) -> dict | None:
         return None
 
 
+def acc_stock_find_by_uid(uid: str) -> dict | None:
+    """Tìm acc trong kho theo UID (mọi trạng thái, mọi loại).
+    Tự strip đuôi '.0' do Excel hay convert UID dài thành float."""
+    u = str(uid or "").strip()
+    if u.endswith(".0"):
+        u = u[:-2]
+    if not u:
+        return None
+    try:
+        r = get_conn().execute(
+            "SELECT * FROM acc_stock WHERE uid=? LIMIT 1", (u,)).fetchone()
+        return _stock_row_to_dict(r)
+    except Exception:
+        return None
+
+
+def acc_mark_sold_manual(stock_id: int) -> tuple[bool, str]:
+    """Đánh dấu 1 acc đã bán thủ công (bán ngoài bot).
+    Chỉ áp dụng cho acc đang AVAILABLE; điều kiện UPDATE chống race
+    (2 admin bấm cùng lúc chỉ 1 người thành công).
+    sheet_marked giữ 0 để poller 5 phút tự đẩy '🛒 ĐÃ BÁN' lên cột J Sheet.
+    Trả (True, "ok") hoặc (False, lý_do)."""
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        row = c.execute(
+            "SELECT id, status FROM acc_stock WHERE id=? LIMIT 1",
+            (int(stock_id),)).fetchone()
+        if not row:
+            return False, "not_found"
+        if row["status"] != "AVAILABLE":
+            return False, f"status_{row['status']}"
+        cur = c.execute(
+            "UPDATE acc_stock SET status='SOLD', sold_to=0, sold_at=?, price_sold=0 "
+            "WHERE id=? AND status='AVAILABLE'",
+            (now, int(stock_id)))
+        c.commit()
+        if cur.rowcount == 0:
+            return False, "race"
+        return True, "ok"
+
+
 def acc_stock_by_sheet_ref(sheet_ref: str) -> dict | None:
     """Tìm acc theo vị trí dòng Sheet ('tab:dòng')."""
     try:

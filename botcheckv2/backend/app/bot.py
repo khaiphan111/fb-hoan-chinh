@@ -10605,6 +10605,81 @@ async def on_hienloai(msg: Message):
         await msg.answer("❌ Không tìm thấy loại này.")
 
 
+@router.message(Command("daban"))
+async def on_daban(msg: Message):
+    """Admin: đánh dấu 1 acc đã bán thủ công (bán ngoài bot).
+    Cú pháp: /daban <uid>"""
+    if not (_perms.is_super(msg.from_user.id)
+            or _perms.has_perm(msg.from_user.id, "kho")):
+        return
+    parts = (msg.text or "").split()
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: <code>/daban &lt;uid&gt;</code>\n"
+                         "Đánh dấu acc bán ngoài bot là đã bán.",
+                         parse_mode="HTML")
+        return
+    acc = db.acc_stock_find_by_uid(parts[1])
+    if not acc:
+        await msg.answer(f"❌ Không tìm thấy acc UID <code>{html.escape(parts[1])}</code> trong kho.",
+                         parse_mode="HTML")
+        return
+    if acc.get("status") != "AVAILABLE":
+        await msg.answer(f"⚠️ Acc UID <code>{html.escape(acc['uid'])}</code> đang ở trạng thái "
+                         f"<b>{html.escape(str(acc.get('status')))}</b>, không cần đánh dấu.",
+                         parse_mode="HTML")
+        return
+    cat = db.acc_category_get(acc.get("cat_id"))
+    cat_txt = (f"#{acc.get('cat_id')} {html.escape(cat['name'])}"
+               if cat else f"#{acc.get('cat_id')}")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Đã bán — đánh dấu",
+                             callback_data=f"daban:ok:{acc['id']}"),
+        InlineKeyboardButton(text="❌ Hủy", callback_data="daban:no"),
+    ]])
+    await msg.answer(
+        f"🛒 <b>ĐÁNH DẤU ĐÃ BÁN THỦ CÔNG</b>\n\n"
+        f"UID: <code>{html.escape(acc['uid'])}</code>\n"
+        f"Loại: {cat_txt}\n"
+        f"Trạng thái: <b>{html.escape(str(acc.get('status')))}</b>\n\n"
+        f"Xác nhận acc này đã bán ngoài bot?\n"
+        f"(Dấu '🛒 ĐÃ BÁN' sẽ tự lên cột J Sheet trong ~5 phút)",
+        parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("daban:"))
+async def on_daban_cb(cb: CallbackQuery):
+    """Xác nhận đánh dấu acc bán thủ công."""
+    if not (_perms.is_super(cb.from_user.id)
+            or _perms.has_perm(cb.from_user.id, "kho")):
+        await cb.answer("🚫 Bạn không có quyền kho.", show_alert=True)
+        return
+    parts = (cb.data or "").split(":")
+    if len(parts) < 2:
+        await cb.answer()
+        return
+    if parts[1] == "no":
+        await cb.message.edit_text("❌ Đã hủy.")
+        return
+    try:
+        sid = int(parts[2])
+    except Exception:
+        await cb.answer("Lỗi dữ liệu.", show_alert=True)
+        return
+    ok, why = db.acc_mark_sold_manual(sid)
+    if ok:
+        acc = db.acc_stock_get_by_id(sid)
+        uid_txt = html.escape(acc["uid"]) if acc else f"#{sid}"
+        db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                           "danh_dau_ban_tay", f"acc #{sid} uid={acc['uid'] if acc else '?'}")
+        await cb.message.edit_text(
+            f"✅ Đã đánh dấu acc <code>{uid_txt}</code> là <b>ĐÃ BÁN</b>.\n"
+            f"🛒 Dấu 'ĐÃ BÁN' sẽ tự lên cột J Google Sheet trong ~5 phút.",
+            parse_mode="HTML")
+    else:
+        await cb.message.edit_text(
+            f"❌ Không đánh dấu được ({html.escape(why)}). Acc có thể đã đổi trạng thái.")
+
+
 @router.message(Command("recheck"))
 async def on_recheck(msg: Message):
     """Admin: chạy re-check LIVE toàn bộ kho ngay (không đợi lịch định kỳ).

@@ -2636,6 +2636,7 @@ async def _show_adm_help(msg: Message):
         "• <code>/setsheet &lt;link&gt; [tab]</code> — Cài đặt Google Sheet nhập kho\n"
         "• <code>/nhapkhosheet &lt;id_loại&gt; [ncc_id] [giá_vốn]</code> — Nhập kho từ Sheet (chỉ quét dòng chưa đánh dấu)\n"
         "• <code>/kho</code> — Xem tồn kho (kể cả loại đã tự ẩn)\n"
+        "• <code>/daban &lt;uid&gt;</code> — Đánh dấu acc bán ngoài bot là đã bán\n"
         "• <code>/xuatkho [id_loại]</code> — <i>Xuất toàn bộ acc ra file .xlsx (sao lưu dự phòng).</i>\n"
         "• <code>/gia &lt;id&gt; &lt;giá_mới&gt;</code> — Đổi giá bán\n"
         "• <code>/creditbonus &lt;id&gt; &lt;số&gt;</code> — Combo mua acc tặng credits\n"
