@@ -63,7 +63,7 @@ def _fake_sell_factory():
 
 def test_doiqua_redeem_acc_ok(tdb, monkeypatch):
     db = tdb
-    monkeypatch.setattr(botmod, "_sell_live_stock", _fake_sell_factory())
+    monkeypatch.setattr("app.handlers.common._sell_live_stock", _fake_sell_factory())
     cid = _mkcat(db, "Via doi qua")
     _add(db, cid, ["dq1"])
     tg = 920001
@@ -77,7 +77,7 @@ def test_doiqua_redeem_acc_ok(tdb, monkeypatch):
 
 def test_doiqua_redeem_acc_out_of_stock_no_consume(tdb, monkeypatch):
     db = tdb
-    monkeypatch.setattr(botmod, "_sell_live_stock", _fake_sell_factory())
+    monkeypatch.setattr("app.handlers.common._sell_live_stock", _fake_sell_factory())
     cid = _mkcat(db, "Via het hang")
     tg = 920002
     db.upsert_user(tg, "dq2", "Doi Qua 2")
@@ -93,7 +93,7 @@ def test_doiqua_redeem_acc_no_live_refunds_points(tdb, monkeypatch):
     async def fake_sell_no_live(bot, tg_id, price_total, qty, pick_fn, check_live=True):
         return None, "short"
 
-    monkeypatch.setattr(botmod, "_sell_live_stock", fake_sell_no_live)
+    monkeypatch.setattr("app.handlers.common._sell_live_stock", fake_sell_no_live)
     cid = _mkcat(db, "Via die")
     _add(db, cid, ["dq3"])
     tg = 920003

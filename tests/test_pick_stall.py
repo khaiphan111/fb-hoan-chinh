@@ -83,7 +83,7 @@ def _cat_by_name(tdb, name):
 
 def test_on_themloai_with_stall(tdb, monkeypatch):
     _mk_stalls(tdb)
-    monkeypatch.setattr(_bot, "_is_admin", lambda uid: True)
+    monkeypatch.setattr("app.handlers.stock._is_admin", lambda uid: True)
 
     m = _FakeMsg("/themloai Gmail Clone | 12000 | 24h | - | Gmail")
     asyncio.run(_bot.on_themloai(m))

@@ -5,22 +5,10 @@ import sys
 
 import pytest
 
-_BOT = None
-
-
 def _load_parser():
-    global _BOT
-    if _BOT is None:
-        # Load _smart_stock_fields ma khong chay toan bo bot.py (can aiogram...)
-        src = open("botcheckv2/backend/app/bot.py", encoding="utf-8").read()
-        m = re.search(
-            r"(def _smart_stock_fields\(fields: list\) -> dict:.*?)\n\n\n",
-            src, re.S)
-        assert m, "khong tim thay _smart_stock_fields"
-        ns = {}
-        exec(m.group(1), ns)
-        _BOT = ns["_smart_stock_fields"]
-    return _BOT
+    # refactor 2026-09-25: _smart_stock_fields chuyen sang app/handlers/common.py
+    from app.handlers.common import _smart_stock_fields
+    return _smart_stock_fields
 
 
 RT = ("M.C537_BL2.0.U.MsaArtifacts.-CqCNi6sGIB!hHoZJXBV5xFrTmcvBArNmu5H*L*"

@@ -1,7 +1,6 @@
 import asyncio, html, logging, time
 from typing import Optional
 from . import config, db, fb
-from . import bot as botmod
 from .util import now, vn_time_str
 from .event_bus import event_bus
 from . import ops
@@ -19,6 +18,7 @@ async def _handle_alerts(platform: str, target: str, condition: str, message: st
                     pass
 
 async def _notify_admin_watch_change(uid: str, old: str, new: str, tg_id: int):
+    import app.bot as botmod  # lazy: tranh circular import voi handlers
     """Báo cho admin qua mọi kênh đang chạy khi UID được theo dõi đổi trạng thái."""
     icon = "🔴" if new == "die" else "🟢"
     msg = (
@@ -200,6 +200,7 @@ class FollowerPoller:
         await self._send_admin_report("\n\n".join(lines))
 
     async def _send_admin_report(self, text: str) -> None:
+        import app.bot as botmod  # lazy: tranh circular import voi handlers
         """Gửi báo cáo cho admin: ưu tiên admin bot, fallback bot chính."""
         sent = False
         try:
@@ -351,6 +352,7 @@ class FollowerPoller:
                      len(done), len(skip))
 
     async def _auto_import_stalls(self):
+        import app.bot as botmod  # lazy: tranh circular import voi handlers
         """Nhập kho tự động từng gian hàng theo chu kỳ riêng.
 
         Cấu hình ở /shopadm → 📦 KHO → ⏰ Nhập kho tự động (mỗi sạp: bật/tắt,
@@ -1108,6 +1110,7 @@ class FollowerPoller:
             await asyncio.sleep(interval)
 
     async def _filter_expired_tracks(self, tracks):
+        import app.bot as botmod  # lazy: tranh circular import voi handlers
         valid = []
         for t in tracks:
             tg_id = t.get("tg_user_id")
@@ -1415,6 +1418,7 @@ class FollowerPoller:
             await asyncio.sleep(4)
 
     async def _check_fb_watches(self):
+        import app.bot as botmod  # lazy: tranh circular import voi handlers
         for w in db.active_watches():
             if w["expire_at"] and now() > w["expire_at"]:
                 db.deactivate_watch(w["id"])

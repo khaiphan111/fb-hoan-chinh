@@ -227,8 +227,11 @@ def test_finalize_promo_ma_het_han_khong_crash(tdb):
 def test_cac_luong_mua_dung_preview_va_finalize():
     """7 luong mua (credit/shop/uid/nhieu uid/gio hang/coc/hop mu) phai dung
     preview_user_promo luc tinh gia + finalize_user_promo sau khi thanh cong."""
-    import re
-    src = open("botcheckv2/backend/app/bot.py", encoding="utf-8").read()
+    # refactor 2026-09-25: handlers tach sang app/handlers/*.py -> quet ca package
+    import glob
+    src = ""
+    for f in glob.glob("botcheckv2/backend/app/handlers/*.py"):
+        src += open(f, encoding="utf-8").read()
     assert "db.apply_user_promo(" not in src, "van con apply_user_promo (tru luot som)!"
     assert src.count("db.finalize_user_promo(") >= 7, \
         f"thieu diem finalize (can >=7, thay {src.count('db.finalize_user_promo(')})"

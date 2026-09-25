@@ -21,12 +21,10 @@ def _add(db, cid, uids):
 
 
 def _load_pick_fn():
-    src = open("botcheckv2/backend/app/bot.py", encoding="utf-8").read()
-    m = re.search(
-        r"(def _pick_uid_page\(cat_id: int, page: int\):.*?)(?=\n\n\ndef |\n\n@router)",
-        src, re.S)
-    assert m, "khong tim thay _pick_uid_page"
-    return m.group(1)
+    # refactor 2026-09-25: _pick_uid_page chuyen sang app/handlers/shop.py
+    from app.handlers.shop import _pick_uid_page
+    import inspect
+    return inspect.getsource(_pick_uid_page)
 
 
 # ── 1. Phân trang UID ─────────────────────────────────────────────

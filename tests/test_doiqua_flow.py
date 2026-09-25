@@ -77,8 +77,8 @@ def test_double_tap_single_redeem(tdb, monkeypatch):
     db = tdb
     _setup_db(db, monkeypatch)
     calls = []
-    monkeypatch.setattr(botmod, "_doiqua_redeem_acc", _fake_redeem_factory(db, calls))
-    monkeypatch.setattr(botmod, "_doiqua_success", _noop_success)
+    monkeypatch.setattr("app.handlers.promo._doiqua_redeem_acc", _fake_redeem_factory(db, calls))
+    monkeypatch.setattr("app.handlers.promo._doiqua_success", _noop_success)
     cid = db.acc_category_add("Via DQ tap", 10000, 24, "mô tả", stall="Acc Facebook")
     tg = 930001
     db.upsert_user(tg, "dq", "DQ")
@@ -104,9 +104,9 @@ def test_doiqua_any_picks_stocked_cat(tdb, monkeypatch):
     monkeypatch.setattr(botmod.db, "acc_category_list", db.acc_category_list)
     monkeypatch.setattr(botmod.db, "acc_stock_count", db.acc_stock_count)
     calls = []
-    monkeypatch.setattr(botmod, "_doiqua_redeem_acc",
+    monkeypatch.setattr("app.handlers.promo._doiqua_redeem_acc",
                         _fake_redeem_factory(db, calls, delay=0))
-    monkeypatch.setattr(botmod, "_doiqua_success", _noop_success)
+    monkeypatch.setattr("app.handlers.promo._doiqua_success", _noop_success)
     c1 = db.acc_category_add("Via DQ any 1", 10000, 24, "m", stall="Acc Facebook")
     c2 = db.acc_category_add("Via DQ any 2", 10000, 24, "m", stall="Acc Facebook")
     db.acc_stock_add_batch(c1, [{"uid": "any1", "password": "p"}], batch="t")
@@ -127,8 +127,8 @@ def test_doiqua_scope_changed_no_redeem(tdb, monkeypatch):
     db = tdb
     _setup_db(db, monkeypatch)
     calls = []
-    monkeypatch.setattr(botmod, "_doiqua_redeem_acc", _fake_redeem_factory(db, calls))
-    monkeypatch.setattr(botmod, "_doiqua_success", _noop_success)
+    monkeypatch.setattr("app.handlers.promo._doiqua_redeem_acc", _fake_redeem_factory(db, calls))
+    monkeypatch.setattr("app.handlers.promo._doiqua_success", _noop_success)
     db.set_setting("loyalty_redeem_scope", "cat")  # admin đổi giữa chừng
     cid = db.acc_category_add("Via DQ scope", 10000, 24, "m", stall="Acc Facebook")
     tg = 930003
