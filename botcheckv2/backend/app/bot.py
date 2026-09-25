@@ -8855,7 +8855,7 @@ async def on_cart_confirm(cb: CallbackQuery):
             f"🧾 Đơn hàng: <b>#{order_id}</b>\n"
             f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
             f"💰 Đã thanh toán: <b>{vnd(order['price'])}</b>\n"
-            f"{_live_line(cat_id)}"
+            f"{_live_line(order['cat_id'])}"
             f"━━━━━━━━━━━━━━\n\n"
             f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))

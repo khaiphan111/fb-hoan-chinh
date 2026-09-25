@@ -177,3 +177,20 @@ def test_cart_uid_sold_elsewhere(tdb):
     assert sold
     # thêm lại phải báo unavailable
     assert db.cart_uid_add(333, cid, acc["id"]) == "unavailable"
+
+
+def test_cart_confirm_no_unbound_cat_id():
+    """Regression 2026-09-25: on_cart_confirm crash UnboundLocalError khi giỏ
+    CHỈ có UID cụ thể (priced rỗng -> biến cat_id trong vòng lặp chưa được gán,
+    nhưng vòng giao acc lại dùng _live_line(cat_id)). Khách đã trừ tiền + tạo
+    đơn nhưng không nhận được tin giao acc."""
+    import inspect
+    import re
+    from app import bot as botmod
+    src = inspect.getsource(botmod.on_cart_confirm)
+    uses = re.findall(r"_live_line\(([^)]+)\)", src)
+    assert uses, "không tìm thấy _live_line trong on_cart_confirm"
+    for u in uses:
+        assert u.strip() != "cat_id", (
+            "on_cart_confirm dùng _live_line(cat_id) trần -> "
+            "UnboundLocalError khi giỏ chỉ có UID cụ thể")
