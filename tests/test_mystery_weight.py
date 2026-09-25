@@ -86,3 +86,20 @@ def test_mystery_weight_flow_registered():
     assert fl["build"]([3, 250]) == "/hopmutile 3 250"
     items = dict(sm.GROUPS["price"][1])
     assert "mystery_weight" in items
+
+
+def test_mystery_setup_list_includes_new_cat(tdb):
+    db = tdb
+    c1 = _mk_cat(db, "WA", 70)          # eligible
+    c2 = _mk_cat(db, "WB", 30, eligible=0)  # loai moi chua tham gia
+    lst = db.acc_mystery_setup_list()
+    d = {i["name"]: i for i in lst}
+    assert d["WA"]["eligible"] == 1 and d["WA"]["pct"] == 100.0
+    assert d["WB"]["eligible"] == 0 and d["WB"]["pct"] == 0
+    assert d["WB"]["stock"] == 5
+    # dat ty trong -> tu bat tham gia (nhu on_hopmutile)
+    assert db.acc_category_update(c2, mystery_weight=50, mystery_eligible=1)
+    d = {i["name"]: i for i in db.acc_mystery_setup_list()}
+    assert d["WB"]["eligible"] == 1
+    total_pct = sum(i["pct"] for i in d.values() if i["eligible"])
+    assert abs(total_pct - 100.0) < 0.2

@@ -3643,6 +3643,27 @@ def acc_mystery_weights():
     return items
 
 
+def acc_mystery_setup_list():
+    """Tất cả loại acc đang hoạt động để setup hộp mù (kể cả loại mới chưa
+    tham gia). eligible=1: đang tham gia (có % trúng); 0: chưa tham gia."""
+    c = get_conn()
+    rows = c.execute(
+        "SELECT id, name, price, mystery_eligible, COALESCE(mystery_weight,100) AS w "
+        "FROM acc_categories WHERE active=1 AND hidden=0 ORDER BY id").fetchall()
+    items = []
+    for r in rows:
+        n = c.execute(
+            "SELECT COUNT(*) FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'",
+            (r["id"],)).fetchone()[0]
+        items.append({"id": r["id"], "name": r["name"], "price": r["price"],
+                      "eligible": int(r["mystery_eligible"] or 0),
+                      "weight": max(1, int(r["w"] or 100)), "stock": n})
+    total = sum(i["weight"] for i in items if i["eligible"]) or 1
+    for i in items:
+        i["pct"] = round(i["weight"] * 100.0 / total, 1) if i["eligible"] else 0
+    return items
+
+
 def acc_stock_quarantine(stock_ids) -> int:
     """Cách ly acc DIE: chuyển status='DIE' (rời kho bán, giữ lại cho admin xem/xóa).
     Trả số dòng đã cách ly."""

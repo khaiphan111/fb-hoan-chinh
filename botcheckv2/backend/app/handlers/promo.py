@@ -769,8 +769,10 @@ async def on_hopmutile(msg: Message):
     if not c:
         await msg.answer("❌ Không có loại này.")
         return
-    db.acc_category_update(cid, mystery_weight=w)
-    lines = [f"✅ <b>{html.escape(c['name'])}</b>: trọng số <b>{w}</b>\n",
+    was_out = not int(c.get("mystery_eligible") or 0)
+    db.acc_category_update(cid, mystery_weight=w, mystery_eligible=1)
+    lines = [f"✅ <b>{html.escape(c['name'])}</b>: trọng số <b>{w}</b>"
+             + (" — đã <b>tự bật</b> tham gia hộp mù" if was_out else "") + "\n",
              "🎲 Tỷ lệ trúng hộp mù hiện tại:"]
     for i in db.acc_mystery_weights():
         mark = " 👈" if i["id"] == cid else ""

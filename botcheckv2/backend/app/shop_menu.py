@@ -498,7 +498,7 @@ FLOWS = {
     "mystery_weight": {
         "cat": "price", "handler": "on_hopmutile",
         "steps": [
-            ("🎲 <b>HỘP MÙ: TỶ LỆ TRÚNG</b>\n\nChọn <b>loại acc</b> bên dưới (kèm tỷ trọng và % trúng hiện tại).", "pick_mystery_cat"),
+            ("🎲 <b>HỘP MÙ: TỶ LỆ TRÚNG</b>\n\nChọn <b>loại acc</b> bên dưới — loại mới chưa tham gia thì bấm vào là tự bật luôn.", "pick_mystery_cat"),
             ("Chọn <b>tỷ trọng</b> mới — số càng lớn càng dễ trúng.\n<i>Hoặc gõ số tay (1–100000), VD: 150.</i>", "pick_weight"),
         ],
         "build": lambda v: f"/hopmutile {v[0]} {v[1]}",
@@ -699,19 +699,25 @@ def _cat_pick_kb(flow_key: str, step_idx: int, cat: str,
 
 
 def _mystery_cat_pick_kb(flow_key: str, step_idx: int, cat: str):
-    """Bàn phím chọn loại acc tham gia hộp mù (hiện tỷ trọng + % trúng)."""
+    """Bàn phím chọn loại acc setup hộp mù: hiện % trúng nếu đang tham gia,
+    loại mới chưa tham gia thì bấm vào là tự bật + đặt tỷ trọng luôn."""
     try:
-        items = db.acc_mystery_weights()
+        items = db.acc_mystery_setup_list()
     except Exception:
         items = []
     rows = []
     for i in items:
-        nm = (i.get("name") or "").strip()[:26] or f"Loại {i['id']}"
+        nm = (i.get("name") or "").strip()[:24] or f"Loại {i['id']}"
+        stock = f" ({i['stock']} acc)" if i.get("stock") else " (hết hàng)"
+        if i.get("eligible"):
+            label = f"#{i['id']} {nm} — ~{i['pct']}%{stock}"
+        else:
+            label = f"#{i['id']} {nm} — ➕ chưa tham gia{stock}"
         rows.append([InlineKeyboardButton(
-            text=f"#{i['id']} {nm} — ~{i['pct']}% (trọng số {i['weight']})",
+            text=label[:60],
             callback_data=f"shopm:pick:{flow_key}:{step_idx}:{i['id']}")])
     if not rows:
-        rows.append([InlineKeyboardButton(text="📭 Chưa có loại nào tham gia hộp mù",
+        rows.append([InlineKeyboardButton(text="📭 Chưa có loại acc nào",
                                           callback_data="shopm:noop")])
     rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
                                       callback_data=f"shopm:back_{cat}")])
