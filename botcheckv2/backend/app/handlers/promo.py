@@ -744,13 +744,15 @@ async def on_hopmugia(msg: Message):
 
 @router.message(Command("hopmutile"))
 async def on_hopmutile(msg: Message):
-    """Admin: /hopmutile <id_loại> <tỷ_trọng> đặt tỷ trọng trúng hộp mù.
-    Số càng lớn càng dễ trúng (mặc định 100 = ngang nhau)."""
+    """Admin: đặt tỷ lệ trúng hộp mù cho 1 loại acc.
+    - /hopmutile <id_loại> <tỷ_trọng>: kiểu cũ (số càng lớn càng dễ trúng).
+    - /hopmutile <id_loại> <pct>%: đặt % trực tiếp, các loại còn lại tự chia
+      phần % còn lại theo đúng tỷ lệ cũ (menu nút dùng kiểu này)."""
     if not _is_admin(msg.from_user.id):
         return
     parts = (msg.text or "").split()
     if len(parts) < 3:
-        lines = ["⚠️ Cú pháp: <code>/hopmutile &lt;id_loại&gt; &lt;tỷ_trọng&gt;</code>\n"]
+        lines = ["⚠️ Cú pháp: <code>/hopmutile &lt;id_loại&gt; &lt;tỷ_trọng&gt;</code> hoặc <code>&lt;phần_trăm&gt;%</code>\n"]
         for i in db.acc_mystery_weights():
             lines.append(f"#{i['id']} {html.escape(i['name'])}: "
                          f"trọng số <b>{i['weight']}</b> (~{i['pct']}%)")
@@ -758,22 +760,44 @@ async def on_hopmutile(msg: Message):
                          parse_mode="HTML")
         return
     try:
-        cid, w = int(parts[1]), int(parts[2])
+        cid = int(parts[1])
     except Exception:
-        await msg.answer("❌ ID và tỷ trọng phải là số.")
-        return
-    if not (1 <= w <= 100000):
-        await msg.answer("❌ Tỷ trọng phải từ 1 đến 100000.")
+        await msg.answer("❌ ID loại phải là số.")
         return
     c = db.acc_category_get(cid)
     if not c:
         await msg.answer("❌ Không có loại này.")
         return
     was_out = not int(c.get("mystery_eligible") or 0)
-    db.acc_category_update(cid, mystery_weight=w, mystery_eligible=1)
-    lines = [f"✅ <b>{html.escape(c['name'])}</b>: trọng số <b>{w}</b>"
-             + (" — đã <b>tự bật</b> tham gia hộp mù" if was_out else "") + "\n",
-             "🎲 Tỷ lệ trúng hộp mù hiện tại:"]
+    tail = (parts[2] or "").strip()
+    if tail.endswith("%"):
+        # Chế độ %: loại này đúng bằng pct%, còn lại tự chia phần còn lại
+        try:
+            pct = int(tail[:-1])
+        except Exception:
+            pct = 0
+        if not (1 <= pct <= 99):
+            await msg.answer("❌ % phải từ 1 đến 99.")
+            return
+        if not db.acc_mystery_set_pct(cid, pct):
+            await msg.answer("❌ Không đặt được %.")
+            return
+        note = " — đã <b>tự bật</b> tham gia hộp mù" if was_out else ""
+        lines = [f"✅ <b>{html.escape(c['name'])}</b>: <b>{pct}%</b>{note}\n",
+                 "🎲 Tỷ lệ trúng hộp mù hiện tại:"]
+    else:
+        try:
+            w = int(tail)
+        except Exception:
+            await msg.answer("❌ Tỷ trọng phải là số (hoặc VD: 60%).")
+            return
+        if not (1 <= w <= 100000):
+            await msg.answer("❌ Tỷ trọng phải từ 1 đến 100000.")
+            return
+        db.acc_category_update(cid, mystery_weight=w, mystery_eligible=1)
+        lines = [f"✅ <b>{html.escape(c['name'])}</b>: trọng số <b>{w}</b>"
+                 + (" — đã <b>tự bật</b> tham gia hộp mù" if was_out else "") + "\n",
+                 "🎲 Tỷ lệ trúng hộp mù hiện tại:"]
     for i in db.acc_mystery_weights():
         mark = " 👈" if i["id"] == cid else ""
         lines.append(f"#{i['id']} {html.escape(i['name'])}: ~<b>{i['pct']}%</b>{mark}")

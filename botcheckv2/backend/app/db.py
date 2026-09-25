@@ -3643,6 +3643,44 @@ def acc_mystery_weights():
     return items
 
 
+def acc_mystery_set_pct(cid, pct):
+    """Đặt % trúng TRỰC TIẾP cho 1 loại acc (1–99). Loại được chọn sẽ đúng
+    bằng pct%; các loại còn lại tự chia phần % còn lại theo đúng tỷ lệ cũ
+    của chúng. Loại chưa tham gia thì tự bật luôn. Trả về True/False."""
+    try:
+        pct = int(pct)
+    except Exception:
+        return False
+    if not (1 <= pct <= 99):
+        return False
+    items = [i for i in acc_mystery_setup_list() if i["eligible"]]
+    if not any(i["id"] == cid for i in items):
+        acc_category_update(cid, mystery_eligible=1)
+        items = [i for i in acc_mystery_setup_list() if i["eligible"]]
+    target = next((i for i in items if i["id"] == cid), None)
+    if not target:
+        return False
+    others = [i for i in items if i["id"] != cid]
+    K = 10000  # thang chuẩn nội bộ
+    new_w_target = pct * (K // 100)
+    if others:
+        old_sum = sum(i["weight"] for i in others) or 1
+        rest = K - new_w_target
+        assigned = 0
+        for idx, o in enumerate(others):
+            if idx < len(others) - 1:
+                w = max(1, int(round(o["weight"] * rest / old_sum)))
+            else:
+                w = max(1, rest - assigned)  # trù/bu trừ phần làm tròn
+            assigned += w
+            acc_category_update(o["id"], mystery_weight=w)
+    else:
+        new_w_target = K  # chỉ còn 1 loại -> 100%
+    acc_category_update(cid, mystery_weight=max(1, int(new_w_target)),
+                        mystery_eligible=1)
+    return True
+
+
 def acc_mystery_setup_list():
     """Tất cả loại acc đang hoạt động để setup hộp mù (kể cả loại mới chưa
     tham gia). eligible=1: đang tham gia (có % trúng); 0: chưa tham gia."""

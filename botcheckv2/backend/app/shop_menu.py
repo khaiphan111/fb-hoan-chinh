@@ -499,9 +499,11 @@ FLOWS = {
         "cat": "price", "handler": "on_hopmutile",
         "steps": [
             ("🎲 <b>HỘP MÙ: TỶ LỆ TRÚNG</b>\n\nChọn <b>loại acc</b> bên dưới — loại mới chưa tham gia thì bấm vào là tự bật luôn.", "pick_mystery_cat"),
-            ("Chọn <b>tỷ trọng</b> mới — số càng lớn càng dễ trúng.\n<i>Hoặc gõ số tay (1–100000), VD: 150.</i>", "pick_weight"),
+            ("Gõ <b>% trúng</b> mik muốn cho loại này (1–99), VD: <b>60</b>.\n"
+             "Các loại còn lại bot tự chia phần % còn lại theo đúng tỷ lệ cũ của chúng.",
+             "pick_weight"),
         ],
-        "build": lambda v: f"/hopmutile {v[0]} {v[1]}",
+        "build": lambda v: f"/hopmutile {v[0]} {v[1]}%",
     },
     "mail_app": {
         "cat": "price", "handler": "on_setmailapp",
@@ -608,14 +610,15 @@ def _parse_step(kind, raw):
         except Exception:
             return False, None, "⚠️ Phải là số, gửi lại nhé."
     if kind == "pick_weight":
-        # Tỷ trọng trúng hộp mù: bấm nút preset hoặc gõ tay 1–100000
+        # % trúng hộp mù: bấm nút preset hoặc gõ tay 1–99
+        t = (raw or "").strip().rstrip("%").strip()
         try:
-            w = int(t)
+            p = int(t)
         except Exception:
-            return False, None, "⚠️ Tỷ trọng phải là số 1–100000, bấm nút hoặc gửi lại nhé."
-        if not (1 <= w <= 100000):
-            return False, None, "⚠️ Tỷ trọng phải từ 1 đến 100000, gửi lại nhé."
-        return True, w, ""
+            return False, None, "⚠️ % phải là số 1–99, bấm nút hoặc gửi lại nhé."
+        if not (1 <= p <= 99):
+            return False, None, "⚠️ % phải từ 1 đến 99, gửi lại nhé."
+        return True, p, ""
     if kind.startswith("pick_"):
         # Chọn bằng nút bấm (loại acc / NCC); gõ tay ID vẫn được
         t = (raw or "").strip()
@@ -727,21 +730,26 @@ def _mystery_cat_pick_kb(flow_key: str, step_idx: int, cat: str):
 
 
 _WEIGHT_PRESETS = [
-    (10, "10 · 🐢 hiếm"),
-    (50, "50 · ít trúng"),
-    (100, "100 · thường (mặc định)"),
-    (250, "250 · 🔥 dễ trúng"),
-    (500, "500 · ⚡ rất dễ trúng"),
+    (5, "5% · 🌱"),
+    (10, "10%"),
+    (20, "20%"),
+    (30, "30% · ⭐"),
+    (50, "50% · 🔥"),
 ]
 
 
 def _weight_pick_kb(flow_key: str, step_idx: int, cat: str):
-    """Bàn phím chọn tỷ trọng trúng hộp mù (số càng lớn càng dễ trúng)."""
-    rows = []
-    for w, label in _WEIGHT_PRESETS:
-        rows.append([InlineKeyboardButton(
+    """Bàn phím chọn % trúng hộp mù (gõ số % mik muốn)."""
+    rows, row = [], []
+    for p, label in _WEIGHT_PRESETS:
+        row.append(InlineKeyboardButton(
             text=label,
-            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{w}")])
+            callback_data=f"shopm:pick:{flow_key}:{step_idx}:{p}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
     rows.append([InlineKeyboardButton(text="◀️ Quay lại nhóm",
                                       callback_data=f"shopm:back_{cat}")])
     rows.append([InlineKeyboardButton(text="🏠 Menu shop acc",

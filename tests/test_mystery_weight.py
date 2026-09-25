@@ -67,13 +67,15 @@ def test_mystery_pick_exclude_ids(tdb):
 def test_parse_step_pick_weight():
     import importlib
     sm = importlib.import_module("app.shop_menu")
-    ok, v, _ = sm._parse_step("pick_weight", "250")
-    assert ok and v == 250
+    ok, v, _ = sm._parse_step("pick_weight", "60")
+    assert ok and v == 60
+    ok, v, _ = sm._parse_step("pick_weight", "60%")
+    assert ok and v == 60
     ok, v, _ = sm._parse_step("pick_weight", "0")
     assert not ok
     ok, v, _ = sm._parse_step("pick_weight", "abc")
     assert not ok
-    ok, v, _ = sm._parse_step("pick_weight", "100001")
+    ok, v, _ = sm._parse_step("pick_weight", "100")
     assert not ok
 
 
@@ -83,7 +85,7 @@ def test_mystery_weight_flow_registered():
     fl = sm.FLOWS.get("mystery_weight")
     assert fl, "thieu flow mystery_weight"
     assert fl["handler"] == "on_hopmutile"
-    assert fl["build"]([3, 250]) == "/hopmutile 3 250"
+    assert fl["build"]([3, 60]) == "/hopmutile 3 60%"
     items = dict(sm.GROUPS["price"][1])
     assert "mystery_weight" in items
 
@@ -103,3 +105,29 @@ def test_mystery_setup_list_includes_new_cat(tdb):
     assert d["WB"]["eligible"] == 1
     total_pct = sum(i["pct"] for i in d.values() if i["eligible"])
     assert abs(total_pct - 100.0) < 0.2
+
+
+def test_mystery_set_pct_rebalance(tdb):
+    db = tdb
+    a = _mk_cat(db, "PA", 60)
+    b = _mk_cat(db, "PB", 30)
+    c = _mk_cat(db, "PC", 10)
+    # dat A = 50% -> A dung 50%, B:C giu ty le 3:1 trong 50% con lai
+    assert db.acc_mystery_set_pct(a, 50)
+    d = {i["name"]: i for i in db.acc_mystery_weights()}
+    assert d["PA"]["pct"] == 50.0
+    assert abs(d["PB"]["pct"] - 37.5) < 0.2
+    assert abs(d["PC"]["pct"] - 12.5) < 0.2
+    total = sum(i["pct"] for i in d.values())
+    assert abs(total - 100.0) < 0.3
+
+
+def test_mystery_set_pct_auto_enable_and_invalid(tdb):
+    db = tdb
+    x = _mk_cat(db, "PX", 50, eligible=0)
+    assert db.acc_mystery_set_pct(x, 25)  # tu bat tham gia
+    d = {i["name"]: i for i in db.acc_mystery_setup_list()}
+    assert d["PX"]["eligible"] == 1
+    assert not db.acc_mystery_set_pct(x, 0)
+    assert not db.acc_mystery_set_pct(x, 100)
+    assert not db.acc_mystery_set_pct(999999, 50)
