@@ -398,21 +398,32 @@ async def _check_with_cookie(uid: str, cookie: str) -> dict:
                 return {"alive": False, "status": "dead", "name": ""}
             
             # Lấy tên người dùng từ title
+            # LƯU Ý: loại trừ các title generic như "Facebook", "Lỗi", "Error"
+            # vì đó là trang lỗi/chặn, không phải profile thật.
             title_m = re.search(r'<title>(.*?)</title>', text, re.IGNORECASE)
             name = ""
             if title_m:
                 raw_title = title_m.group(1)
-                if raw_title and raw_title.lower() not in ["facebook", "log in or sign up"]:
+                if raw_title and raw_title.lower().strip() not in [
+                    "facebook", "log in or sign up", "lỗi", "error",
+                    "facebook - log in or sign up",
+                ]:
                     name = raw_title.strip()
             
             # Nếu đang ở trang profile không bị chặn => LIVE
-            if uid in final_url or (name and name.lower() not in ["facebook"]):
+            # LƯU Ý: FB chặn IP server thường trả về trang generic vẫn chứa
+            # UID trong HTML (script/meta) nhưng không có tên profile thật.
+            # Chỉ báo LIVE khi đọc được TÊN NGƯỜI DÙNG THẬT từ title.
+            # Nếu không có tên -> để fallback Graph API (chỉ kết luận "tồn tại").
+            if name:
                 return {"alive": True, "status": "live", "name": name}
             
             # Fallback: Kiểm tra graph API picture (để phân biệt acc tồn tại hay không)
+            # LƯU Ý: Graph API chỉ biết acc TỒN TẠI hay không, KHÔNG biết acc có bị
+            # khoá/checkpoint/disabled hay không. Nên báo "exists" chứ không phải "live".
             r2 = await client.get(f"https://graph.facebook.com/{uid}/picture?redirect=false")
             if r2.status_code == 200:
-                return {"alive": True, "status": "live", "name": name}
+                return {"alive": True, "status": "exists", "name": name}
             else:
                 return {"alive": False, "status": "dead", "name": ""}
                 
@@ -625,7 +636,14 @@ def build_fb_caption(res: dict) -> str:
             note = ""
     else:
         # Không có cookie => dùng ảnh avatar + tên profile để xác định
-        if res["alive"] or status == "live":
+        # LƯU Ý: khi chỉ biết acc TỒN TẠI (status="exists") mà không xác định
+        # được trạng thái hoạt động (do FB chặn IP server), phải báo "TỒN TẠI"
+        # chứ không được báo "LIVE" để tránh hiểu nhầm.
+        if status == "exists":
+            status_icon = "🟡"
+            status_text = "TỒN TẠI (Chưa rõ trạng thái)"
+            note = "⚠️ <i>Chỉ xác định được acc tồn tại, chưa kiểm tra được có bị khoá/checkpoint hay không (FB chặn IP server)</i>"
+        elif res["alive"] or status == "live":
             status_icon = "🟢"
             if res.get("has_real_avatar"):
                 status_text = "LIVE (Tài khoản đang hoạt động)"
