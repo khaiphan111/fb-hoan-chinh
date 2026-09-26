@@ -630,7 +630,7 @@ class FollowerPoller:
 
 
     async def _followup_orders(self):
-        """5.13 Hỏi thăm sau 24h mua acc: acc ổn không, cần BH không."""
+        """5.13 Hỏi thăm sau 24h mua acc: gộp 1 tin/khách (tránh spam)."""
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         import html as _html
         orders = db.acc_orders_need_followup()
@@ -643,23 +643,33 @@ class FollowerPoller:
             bot = None
         if not bot:
             return
+        # Gộp đơn theo khách: 1 khách chỉ nhận 1 tin dù mua nhiều đơn
+        by_user: dict = {}
         for o in orders:
             o = dict(o)
+            by_user.setdefault(int(o["tg_id"]), []).append(o)
+        for tg_id, uorders in by_user.items():
             try:
+                lines = "\n".join(
+                    f"• {_html.escape(o['cat_name'] or '')} (đơn #{o['id']})"
+                    for o in uorders
+                )
+                n = len(uorders)
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="👍 Acc ổn, cảm ơn!",
-                                          callback_data=f"accok:{o['id']}")],
-                    [InlineKeyboardButton(text="🛡 Acc có vấn đề — bảo hành",
-                                          callback_data=f"accwarranty:{o['id']}")],
+                    [InlineKeyboardButton(text="👍 Tất cả ổn, cảm ơn!",
+                                          callback_data="accok:all")],
+                    [InlineKeyboardButton(text="🛡 Có acc cần bảo hành",
+                                          callback_data="accwarranty:pick")],
                 ])
                 await bot.send_message(
-                    int(o["tg_id"]),
+                    tg_id,
                     f"💬 <b>Chào bạn!</b>\n\n"
-                    f"Acc <b>{_html.escape(o['cat_name'] or '')}</b> (đơn #{o['id']}) "
-                    f"bạn mua hôm qua dùng ổn không?\n\n"
-                    f"Nếu acc lỗi trong thời gian bảo hành, bấm nút bên dưới để được xử lý ngay nhé!",
+                    f"Hôm qua bạn mua {n} acc, dùng ổn không?\n"
+                    f"{lines}\n\n"
+                    f"Nếu acc nào lỗi trong thời gian bảo hành, bấm nút bên dưới để được xử lý ngay nhé!",
                     parse_mode="HTML", reply_markup=kb)
-                db.acc_order_mark_followup(o["id"])
+                for o in uorders:
+                    db.acc_order_mark_followup(o["id"])
             except Exception:
                 continue
 

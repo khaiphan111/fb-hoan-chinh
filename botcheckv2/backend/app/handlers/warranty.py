@@ -46,6 +46,33 @@ from .common import _fmt_warranty, _notify_admin_photo
 class WarrantyClaimState(StatesGroup):
     waiting_for_evidence = State()
 
+@router.callback_query(F.data == "accwarranty:pick")
+async def on_acc_warranty_pick(cb: CallbackQuery):
+    """Khách bấm 'Có acc cần BH' từ tin hỏi thăm gộp -> chọn đơn cần BH."""
+    await cb.answer()
+    tg_id = cb.from_user.id
+    try:
+        rows = db.get_conn().execute(
+            "SELECT o.id, o.created_at, c.name cat_name FROM acc_orders o "
+            "LEFT JOIN acc_categories c ON c.id=o.cat_id "
+            "WHERE o.tg_id=? AND o.delivered_at>0 "
+            "ORDER BY o.delivered_at DESC LIMIT 10", (tg_id,)).fetchall()
+    except Exception:
+        rows = []
+    if not rows:
+        await cb.message.answer("❌ Không tìm thấy đơn hàng nào của bạn.")
+        return
+    kb_rows = []
+    for r in rows:
+        r = dict(r)
+        label = f"#{r['id']} {r['cat_name'] or ''}".strip()
+        kb_rows.append([InlineKeyboardButton(
+            text=f"🛡 {label}", callback_data=f"accwarranty:{r['id']}")])
+    await cb.message.answer(
+        "🛡 <b>Chọn đơn cần bảo hành:</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
 @router.callback_query(F.data.startswith("accwarranty:"))
 async def on_acc_warranty(cb: CallbackQuery, state: FSMContext):
     await cb.answer()

@@ -299,6 +299,7 @@ CALLBACK_ORDER = [
     "on_acc_2fa",
     "on_acc_show",
     "on_acc_file",
+    "on_acc_warranty_pick",
     "on_acc_warranty",
     "on_suaacc_pick_cat",
     "on_suaacc_pick_field",
