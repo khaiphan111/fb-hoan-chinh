@@ -251,8 +251,12 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
                         f"🧾 Mã đơn: <code>{order_code}</code>",
                         parse_mode="HTML",
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.error("Không gửi được tin báo nạp cho admin %s (đơn %s): %s",
+                              admin_id, order_code, e)
+                else:
+                    log.info("Đã báo admin %s về đơn nạp %s (%sđ)",
+                             admin_id, order_code, amount)
     except Exception as e:
         log.error("Không báo admin được: %s", e)
 
