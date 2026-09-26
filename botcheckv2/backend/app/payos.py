@@ -211,10 +211,16 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
         )
         msg_text += "- Hạn sử dụng: <b>VĨNH VIỄN</b>\n\n" if is_lifetime else "\n"
     if manager.running and manager.bot:
-        try:
-            await manager.bot.send_message(tg_id, msg_text, parse_mode="HTML")
-        except Exception as e:
-            log.error("Không gửi được tin báo nạp cho %s: %s", tg_id, e)
+        import asyncio as _aio2
+        for _attempt in range(3):
+            try:
+                await manager.bot.send_message(tg_id, msg_text, parse_mode="HTML")
+                break
+            except Exception as e:
+                log.error("Không gửi được tin báo nạp cho %s (lần %d): %s",
+                          tg_id, _attempt + 1, e)
+                if _attempt < 2:
+                    await _aio2.sleep(2)
     # Báo admin qua bot admin
     try:
         from .admin_bot import manager as admin_manager
@@ -240,23 +246,48 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
                         admins.append(int(v))
                 except Exception:
                     pass
+            # Gửi thông báo cho admin: thử lại 3 lần, mỗi lần cách 2s.
+            # Nếu bot admin gửi thất bại, thử qua bot chính.
+            import asyncio as _aio
+            admin_msg = (
+                "💳 <b>PAYOS: KHÁCH NẠP TIỀN TỰ ĐỘNG</b>\n\n"
+                f"👤 Khách: <b>{who}</b>\n"
+                f"🆔 ID: <code>{tg_id}</code>\n"
+                f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
+                f"🧾 Mã đơn: <code>{order_code}</code>"
+            )
+            senders = []
+            if sender:
+                senders.append(sender)
+            try:
+                if manager.running and manager.bot and manager.bot is not sender:
+                    senders.append(manager.bot)
+            except Exception:
+                pass
             for admin_id in admins:
-                try:
-                    await sender.send_message(
-                        admin_id,
-                        "💳 <b>PAYOS: KHÁCH NẠP TIỀN TỰ ĐỘNG</b>\n\n"
-                        f"👤 Khách: <b>{who}</b>\n"
-                        f"🆔 ID: <code>{tg_id}</code>\n"
-                        f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
-                        f"🧾 Mã đơn: <code>{order_code}</code>",
-                        parse_mode="HTML",
-                    )
-                except Exception as e:
-                    log.error("Không gửi được tin báo nạp cho admin %s (đơn %s): %s",
-                              admin_id, order_code, e)
-                else:
+                ok = False
+                last_err = None
+                for attempt in range(3):
+                    for s in senders:
+                        try:
+                            await s.send_message(admin_id, admin_msg,
+                                                 parse_mode="HTML")
+                            ok = True
+                            break
+                        except Exception as e:
+                            last_err = e
+                            continue
+                    if ok:
+                        break
+                    if attempt < 2:
+                        await _aio.sleep(2)
+                if ok:
                     log.info("Đã báo admin %s về đơn nạp %s (%sđ)",
                              admin_id, order_code, amount)
+                else:
+                    log.error("MẤT thông báo nạp cho admin %s (đơn %s %sđ) "
+                              "sau 3 lần thử: %s",
+                              admin_id, order_code, amount, last_err)
     except Exception as e:
         log.error("Không báo admin được: %s", e)
 
