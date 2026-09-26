@@ -3799,6 +3799,45 @@ def acc_stock_die_count(cat_id: int) -> int:
     return r["n"] if r else 0
 
 
+def acc_stock_exists_count(cat_id: int) -> int:
+    """Đếm acc trạng thái EXISTS (check chỉ biết tồn tại, chưa rõ live/die)."""
+    r = get_conn().execute(
+        "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='EXISTS'",
+        (cat_id,)).fetchone()
+    return r["n"] if r else 0
+
+
+def acc_stock_mark_exists(stock_ids) -> int:
+    """Đánh dấu acc là EXISTS (tồn tại nhưng chưa xác định được live/die).
+    Chuyển status='EXISTS' (rời kho bán, giữ lại cho admin xem/xử lý).
+    Trả số dòng đã đánh dấu."""
+    ids = [int(i) for i in (stock_ids or [])]
+    if not ids:
+        return 0
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE acc_stock SET status='EXISTS' WHERE status='AVAILABLE' AND id IN (%s)"
+            % ",".join("?" for _ in ids), ids)
+        c.commit()
+        return cur.rowcount or 0
+
+
+def acc_stock_unmark_exists(stock_ids) -> int:
+    """Chuyển acc từ EXISTS về AVAILABLE (admin xác nhận bán lại được).
+    Trả số dòng đã chuyển."""
+    ids = [int(i) for i in (stock_ids or [])]
+    if not ids:
+        return 0
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE acc_stock SET status='AVAILABLE' WHERE status='EXISTS' AND id IN (%s)"
+            % ",".join("?" for _ in ids), ids)
+        c.commit()
+        return cur.rowcount or 0
+
+
 def acc_stock_delete_die(cat_id=None) -> int:
     """Xóa hẳn các acc đã cách ly DIE (dọn kho). Trả số dòng đã xóa."""
     with _lock:

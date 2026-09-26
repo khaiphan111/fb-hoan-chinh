@@ -487,8 +487,8 @@ class FollowerPoller:
         die_statuses = {"dead", "disabled", "checkpoint", "checkpoint_282",
                         "checkpoint_956"}
         sem = asyncio.Semaphore(10)
-        live_n, err_n = 0, 0
-        die_ids, die_rows, live_rows = [], [], []
+        live_n, err_n, exists_n = 0, 0, 0
+        die_ids, die_rows, live_rows, exists_ids = [], [], [], []
 
         async def _one(r):
             async with sem:
@@ -510,6 +510,11 @@ class FollowerPoller:
                     elif st in die_statuses:
                         die_ids.append(r["id"])
                         die_rows.append(r)
+                    elif st == "exists":
+                        # Check chỉ biết acc tồn tại, chưa rõ live/die
+                        # -> đánh dấu EXISTS (nút vàng) để admin dễ thấy
+                        exists_n += 1
+                        exists_ids.append(r["id"])
                     else:
                         err_n += 1
                 await asyncio.sleep(2)
@@ -520,6 +525,11 @@ class FollowerPoller:
                 db.acc_stock_quarantine(die_ids)
             except Exception as e:
                 log.warning("stock recheck: cách ly lỗi: %s", e)
+        if exists_ids:
+            try:
+                db.acc_stock_mark_exists(exists_ids)
+            except Exception as e:
+                log.warning("stock recheck: đánh dấu EXISTS lỗi: %s", e)
         try:
             by_cat = {}
             for r in die_rows:
@@ -527,6 +537,7 @@ class FollowerPoller:
             lines = ["🔄 <b>RE-CHECK KHO ĐỊNH KỲ</b>",
                      f"Đã quét: <b>{total}</b> acc | 🟢 Live: <b>{live_n}</b> | "
                      f"🗑 Die (cách ly): <b>{len(die_ids)}</b> | "
+                     f"🟡 Tồn tại (chưa rõ): <b>{exists_n}</b> | "
                      f"❓ Lỗi check: <b>{err_n}</b>"]
             for cid, uids in by_cat.items():
                 try:

@@ -991,6 +991,7 @@ async def on_kho(msg: Message):
         n = db.acc_stock_count(c["id"])
         n_die = db.acc_stock_die_count(c["id"])
         n_sold = db.acc_stock_sold_count(c["id"])
+        n_exists = db.acc_stock_exists_count(c["id"])
         st = "✅ đang bán" if c["active"] else "⏸ đã ẩn"
         if int(c.get("hidden") or 0):
             st += " [ẨN KHỎI SHOP]"
@@ -1000,6 +1001,7 @@ async def on_kho(msg: Message):
             f"#{c['id']} <b>{html.escape(c['name'])}</b> — {vnd(c['price'])} — "
             f"BH {_fmt_warranty(c['warranty_hours'])} — kho: <b>{n}</b>"
             + (f" 🗑<b>{n_die}</b> die" if n_die else "")
+            + (f" 🟡<b>{n_exists}</b> tồn tại" if n_exists else "")
             + (f" 🛒<b>{n_sold}</b> đã bán" if n_sold else "")
             + f"{bonus_txt} — {st}"
         )
