@@ -559,6 +559,27 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
         else:
             await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>!", parse_mode="HTML")
 
+    # ── /adm adddays <id> <ngày> ──────────────────────────────────────────
+    elif subcmd == "adddays":
+        args = rest.split()
+        if len(args) < 2:
+            await msg.answer("❌ HDSD: /adm adddays &lt;id&gt; &lt;ngày&gt;\nVD: /adm adddays 123 30", parse_mode="HTML"); return
+        try:
+            uid = int(args[0]); days = int(args[1])
+            if days <= 0: raise ValueError
+        except ValueError:
+            await msg.answer("❌ Thông số không hợp lệ!"); return
+        u = db.get_user(uid)
+        if not u:
+            await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>!", parse_mode="HTML"); return
+        vip = (u.get("vip_level", 0) if isinstance(u, dict) else 0) or 0
+        if db.admin_set_vip(uid, vip, days):
+            vip_txt = f"VIP {vip}" if vip else "Thường"
+            await msg.answer(f"✅ Đã cấp thêm <b>{days} ngày</b> cho <code>{uid}</code> ({vip_txt}).",
+                             parse_mode="HTML")
+        else:
+            await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>!", parse_mode="HTML")
+
     # ── /adm info <id> ─────────────────────────────────────────────────────
     elif subcmd == "info":
         try:
@@ -854,6 +875,8 @@ class AdmMenuState(StatesGroup):
     unban_uid = State()
     setvip_uid = State()
     setvip_days = State()
+    adddays_uid = State()
+    adddays_days = State()
     info_uid = State()
     find_query = State()
     taopromo_code = State()
@@ -982,6 +1005,7 @@ _USER_PICK_ACTIONS = {
     "go_ban": "ban",
     "go_unban": "unban",
     "go_setvip": "setvip",
+    "go_adddays": "adddays",
 }
 _USER_PICK_FLOWS = {
     "topup": "💰 <b>CỘNG TIỀN</b> (bước 1/2)",
@@ -989,6 +1013,7 @@ _USER_PICK_FLOWS = {
     "ban": "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)",
     "unban": "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>",
     "setvip": "⭐ <b>SET VIP</b> (bước 1/3)",
+    "adddays": "📅 <b>CẤP NGÀY DÙNG</b> (bước 1/2)",
 }
 
 
@@ -1031,6 +1056,21 @@ async def _admm_sel_uid(cb, state, flow: str, uid: int):
         await cb.message.edit_text(
             f"⭐ <b>SET VIP</b> (bước 2/3)\n\nChọn cấp VIP cho <code>{uid}</code>:",
             parse_mode="HTML", reply_markup=kb)
+    elif flow == "adddays":
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.adddays_days)
+        # Lấy thông tin VIP hiện tại để hiển thị
+        try:
+            u = db.get_user(uid)
+            vip = u.get("vip_level", 0) if u else 0
+            vip_txt = f"VIP {vip}" if vip else "Thường"
+        except Exception:
+            vip_txt = "?"
+        await cb.message.edit_text(
+            f"📅 <b>CẤP NGÀY DÙNG</b> (bước 2/2)\n\n"
+            f"👤 User: <code>{uid}</code> ({vip_txt})\n\n"
+            f"Gửi <b>số ngày</b> muốn cấp thêm (VD: 30).\nGõ /huy để huỷ.",
+            parse_mode="HTML", reply_markup=_admm_back_kb())
 
 
 def _admm_user_pick_text(page: int, pick_cb: str = None, title: str = None):
@@ -1420,7 +1460,8 @@ def register_adm_menu(target_router):
                 [InlineKeyboardButton(text="🔎 Tìm user theo @username", callback_data="admm:go_find")],
                 [InlineKeyboardButton(text="🔴 Khoá tài khoản", callback_data="admm:go_ban"),
                  InlineKeyboardButton(text="🟢 Mở khoá", callback_data="admm:go_unban")],
-                [InlineKeyboardButton(text="⭐ Set VIP", callback_data="admm:go_setvip")],
+                [InlineKeyboardButton(text="⭐ Set VIP", callback_data="admm:go_setvip"),
+                 InlineKeyboardButton(text="📅 Cấp ngày dùng", callback_data="admm:go_adddays")],
                 [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
             ])
             await cb.message.edit_text("👤 <b>QUẢN LÝ USER</b>\n\nChọn thao tác:",
@@ -1570,6 +1611,7 @@ def register_adm_menu(target_router):
             "go_ban": (AdmMenuState.ban_uid, "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần khoá."),
             "go_unban": (AdmMenuState.unban_uid, "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>\n\nGửi <b>User ID</b> cần mở khoá."),
             "go_setvip": (AdmMenuState.setvip_uid, "⭐ <b>SET VIP</b> (bước 1/3)\n\nGửi <b>User ID</b> cần set VIP."),
+            "go_adddays": (AdmMenuState.adddays_uid, "📅 <b>CẤP NGÀY DÙNG</b> (bước 1/2)\n\nGửi <b>User ID</b> cần cấp thêm ngày."),
             "go_find": (AdmMenuState.find_query, "🔎 <b>TÌM USER</b>\n\nGửi <b>@username</b>, <b>User ID</b> hoặc tên cần tìm."),
             "go_taopromo": (AdmMenuState.taopromo_code, "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 1/5)\n\nGửi <b>mã</b> (VD: SALE20)."),
             "go_promo": (AdmMenuState.promo_prefix, "💵 <b>TẠO MÃ TIỀN</b> (bước 1/4)\n\nGửi <b>prefix</b> (VD: SALE)."),
@@ -1892,6 +1934,70 @@ def register_adm_menu(target_router):
              f"⭐ Cấp: <b>{labels.get(lv, lv)}</b>",
              f"⏳ Gia hạn thêm: <b>{days} ngày</b>"],
             f"/adm setvip {data['uid']} {lv} {days}")
+
+    @target_router.message(AdmMenuState.adddays_uid)
+    async def _admm_adddays_uid(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        uid = _admm_parse_uid(msg.text)
+        if not uid:
+            await msg.answer("❌ User ID phải là số. Gửi lại hoặc /huy để huỷ.")
+            return
+        u = db.get_user(uid)
+        if not u:
+            await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>! Gửi lại ID khác hoặc /huy để huỷ.",
+                             parse_mode="HTML")
+            return
+        await state.update_data(uid=uid)
+        await state.set_state(AdmMenuState.adddays_days)
+        vip = u.get("vip_level", 0) if isinstance(u, dict) else 0
+        vip_txt = f"VIP {vip}" if vip else "Thường"
+        await msg.answer(
+            f"📅 <b>CẤP NGÀY DÙNG</b> (bước 2/2)\n\n"
+            f"👤 User: <code>{uid}</code> ({vip_txt})\n\n"
+            f"Gửi <b>số ngày</b> muốn cấp thêm (VD: 30).\nGõ /huy để huỷ.",
+            parse_mode="HTML", reply_markup=_admm_back_kb())
+
+    @target_router.message(AdmMenuState.adddays_days)
+    async def _admm_adddays_days(msg: Message, state: FSMContext):
+        if await _admm_guard(msg, state):
+            return
+        try:
+            days = int((msg.text or "").strip())
+            if days <= 0:
+                raise ValueError
+        except ValueError:
+            await msg.answer("❌ Số ngày phải là số > 0. Gửi lại hoặc /huy để huỷ.")
+            return
+        data = await state.get_data()
+        uid = data.get("uid")
+        u = db.get_user(uid)
+        vip = (u.get("vip_level", 0) if isinstance(u, dict) else 0) or 0
+        # Giữ nguyên cấp VIP, chỉ cộng thêm ngày
+        if db.admin_set_vip(uid, vip, days):
+            vip_txt = f"VIP {vip}" if vip else "Thường"
+            await msg.answer(
+                f"✅ Đã cấp thêm <b>{days} ngày</b> cho <code>{uid}</code> ({vip_txt}).",
+                parse_mode="HTML", reply_markup=_admm_back_kb())
+            try:
+                db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                                   "adddays", f"{uid} +{days}d")
+            except Exception:
+                pass
+            # Báo cho user được cấp
+            try:
+                from .bot import manager
+                if manager.running:
+                    import asyncio
+                    asyncio.create_task(manager.bot.send_message(
+                        uid, f"🎉 <b>Bạn được tặng thêm {days} ngày sử dụng!</b>\n"
+                             f"⭐ Cấp hiện tại: {vip_txt}",
+                        parse_mode="HTML"))
+            except Exception:
+                pass
+        else:
+            await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>!", parse_mode="HTML")
+        await state.clear()
 
     @target_router.message(AdmMenuState.info_uid)
     async def _admm_info_uid(msg: Message, state: FSMContext):

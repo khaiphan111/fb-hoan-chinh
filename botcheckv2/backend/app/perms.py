@@ -56,7 +56,7 @@ CMD_PERMS = {
 # Sub-command của /adm -> quyền yêu cầu
 ADM_SUB_PERMS = {
     "topup": "tien", "setbal": "tien",
-    "ban": "user", "unban": "user", "setvip": "user",
+    "ban": "user", "unban": "user", "setvip": "user", "adddays": "user",
     "info": "user", "find": "user",
     "pending": "report", "revenue": "report", "stats": "report",
     "broadcast": "bcast", "webhook": "bcast",
