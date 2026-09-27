@@ -359,6 +359,10 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
 @router.message(BuffState.waiting_for_link)
 async def on_buff_link(msg: Message, state: FSMContext):
     link = (msg.text or "").strip()
+    if link.lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy đơn buff.")
+        return
     if not (link.startswith("http://") or link.startswith("https://")):
         await msg.answer("❌ Link chưa đúng. Gửi link bắt đầu bằng <b>http</b> nhé "
                          "(ví dụ: https://...)",
@@ -381,6 +385,10 @@ async def on_buff_link(msg: Message, state: FSMContext):
 
 @router.message(BuffState.waiting_for_qty)
 async def on_buff_qty(msg: Message, state: FSMContext):
+    if (msg.text or "").strip().lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("❌ Đã hủy đơn buff.")
+        return
     data = await state.get_data()
     svc = db.buff_service_get(data.get("buff_sid"))
     if not svc:
@@ -650,6 +658,9 @@ async def _show_quick_price_list(msg, page: int = 0, edit: bool = False):
             await msg.answer(text, parse_mode="HTML", reply_markup=kb)
     else:
         await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.message(Command("buffadm"))
 async def on_buffadm(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
         return
