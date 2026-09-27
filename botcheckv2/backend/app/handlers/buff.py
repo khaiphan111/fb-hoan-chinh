@@ -788,10 +788,15 @@ async def on_buffadm_margin_input(msg: Message, state: FSMContext):
     if not has_perm(msg.from_user.id, "price"):
         await state.clear()
         return
+    txt = (msg.text or "").strip()
+    if txt.lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("Đã hủy.")
+        return
     data = await state.get_data()
     target = data.get("buffadm_margin_target", "ALL")
     try:
-        mult = float((msg.text or "").strip().replace(",", "."))
+        mult = float(txt.replace(",", "."))
         assert 1 < mult <= 20
     except (ValueError, AssertionError):
         await msg.answer("❌ Hệ số không hợp lệ. Nhập số > 1 và ≤ 20 (ví dụ: 1.4):")
