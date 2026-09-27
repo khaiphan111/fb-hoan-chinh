@@ -662,7 +662,7 @@ async def process_bank_amount(msg: Message, user, amount: int, target: str = "ma
         notified = True
         
     if notified:
-        _w = "🛒 <b>Ví shop</b>" if target == "shop" else "💰 <b>Ví chính</b>"
+        _w = "🛒 <b>Ví shop</b>" if target == "shop" else ("👛 <b>Ví buff</b>" if target == "buff" else "💰 <b>Ví chính</b>")
         await msg.answer(f"✅ Đã gửi thông báo cho Admin xác nhận khoản nạp <b>{vnd(amount)}</b> vào {_w}.\nTiền sẽ được cộng vào tài khoản của bạn sau khi Admin kiểm tra xong (thường trong vòng 1-5 phút)!")
     else:
         await msg.answer(f"✅ Đã ghi nhận báo cáo <b>{vnd(amount)}</b>.\nTiền sẽ được cộng vào tài khoản của bạn sau khi Admin kiểm tra xong!")
