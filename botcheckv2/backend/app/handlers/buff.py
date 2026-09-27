@@ -620,9 +620,11 @@ async def _show_quick_price_list(msg, page: int = 0, edit: bool = False):
     kb_rows = []
     for r in chunk:
         mark = "✅" if int(r["enabled"]) else "🚫"
-        name = r["name"][:28]
+        name = r["name"][:22]
+        cost = vnd(r["cost_price"])
+        sell = vnd(r["sell_price"])
         kb_rows.append([InlineKeyboardButton(
-            text=f"{mark} {name} — {vnd(r['sell_price'])}đ",
+            text=f"{mark} {name} | {cost}→{sell}đ",
             callback_data=f"buffadm:quickprice:{r['id']}:{page}")])
     nav = []
     if page > 0:
@@ -639,6 +641,7 @@ async def _show_quick_price_list(msg, page: int = 0, edit: bool = False):
     text = (f"📝 <b>SỬA GIÁ NHANH</b>\n"
             f"━━━━━━━━━━━━━━\n"
             f"Bấm vào từng gói để sửa giá ngay.\n"
+            f"Format: <i>vốn → bán</i> (đ/1000)\n"
             f"Trang {page + 1}/{total_pages} — Tổng {len(rows)} gói")
     if edit:
         try:
