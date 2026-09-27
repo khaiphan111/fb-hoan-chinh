@@ -502,7 +502,7 @@ def _buffadm_plat_cats_kb(pkey: str):
     for c in cats:
         c = dict(c)
         kb_rows.append([InlineKeyboardButton(
-            text=f"{c['category_name']} ({c['on_n']}/{c['n']})",
+            text=f"{c['category_name'][:25]} ({c['on_n']}/{c['n']})",
             callback_data=f"buffadm:cat:{pkey}:{c['category_key']}:0")])
     kb_rows.append([InlineKeyboardButton(
         text="🔛 Bật TẤT CẢ gói nền tảng này",
@@ -538,7 +538,7 @@ def _buffadm_plat_kb(pkey: str, page: int = 0, ckey: str = ""):
     for r in chunk:
         mark = "✅" if int(r["enabled"]) else "🚫"
         kb_rows.append([InlineKeyboardButton(
-            text=f"{mark} {r['name'][:40]}",
+            text=f"{mark} {r['name'][:18]}",
             callback_data=f"buffadm:pkg:{r['id']}")])
     # Phân trang
     nav = []
@@ -1455,6 +1455,10 @@ async def on_buffadm_topup_amount_input(msg: Message, state: FSMContext):
         await msg.answer("Đã hủy.")
         return
     uid = data.get("buffadm_topup_uid")
+    if not uid:
+        await state.clear()
+        await msg.answer("❌ Phiên nhập liệu đã hết hạn. Bấm lại nút cộng/trừ ví để làm lại.")
+        return
     try:
         amount = int((msg.text or "").strip().replace(".", "").replace(",", ""))
         assert amount != 0

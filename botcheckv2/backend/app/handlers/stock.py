@@ -180,6 +180,10 @@ async def on_sheet_ncc_cost(msg: Message, state: FSMContext):
         return
     data = await state.get_data()
     cat_id = data.get("sheet_cat_id")
+    if (msg.text or "").strip().lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("Đã hủy.")
+        return
     await state.clear()
     if not cat_id:
         return

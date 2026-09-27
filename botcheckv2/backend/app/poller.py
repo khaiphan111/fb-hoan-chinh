@@ -1216,8 +1216,11 @@ class FollowerPoller:
                             int(order["tg_id"]),
                             f"❌ <b>ĐƠN BUFF <code>{order['code']}</code> GẶP LỖI</b>\n\n"
                             f"Lý do: {err[:200]}\n"
-                            f"💸 Đã hoàn <b>{vnd(order['total_price'])}</b> "
-                            f"vào ví buff của bạn.",
+                            + (f"💸 Đã hoàn <b>{vnd(order['total_price'])}</b> "
+                               f"vào ví buff của bạn."
+                               if refunded else
+                               f"⚠️ Hệ thống chưa hoàn được <b>{vnd(order['total_price'])}</b>. "
+                               f"Shop sẽ xử lý thủ công, bạn yên tâm nhé."),
                             parse_mode="HTML")
                     except Exception:
                         pass
@@ -1247,7 +1250,20 @@ class FollowerPoller:
                     
                     if admins and self._bot:
                         from aiogram.types import FSInputFile
+                        # Dùng file backup từ backup API (an toàn) thay vì
+                        # DB đang live (có thể hỏng do WAL khi đang ghi)
+                        import os as _os
+                        backup_dir = _os.path.expanduser(
+                            "~/workspace/fb-hoan-chinh/backups/db")
                         file_path = config.DB_PATH
+                        try:
+                            files = sorted(
+                                f for f in _os.listdir(backup_dir)
+                                if f.startswith("db_") and f.endswith(".db"))
+                            if files:
+                                file_path = _os.path.join(backup_dir, files[-1])
+                        except Exception:
+                            pass
                         for aid in admins:
                             try:
                                 await self._bot.send_document(

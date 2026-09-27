@@ -487,6 +487,12 @@ async def on_checkfile_cmd(msg: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
+@router.message(FileCheckState.waiting_for_file, F.text.in_({"/huy", "/cancel"}))
+async def on_file_check_cancel(msg: Message, state: FSMContext):
+    await state.clear()
+    await msg.answer("Đã hủy.")
+
+
 @router.message(FileCheckState.waiting_for_file, F.document)
 async def on_file_received(msg: Message, state: FSMContext):
     await state.clear()
@@ -856,6 +862,12 @@ async def on_checkcookie_cmd(msg: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
+@router.message(CookieCheckState.waiting_for_file, F.text.in_({"/huy", "/cancel"}))
+async def on_cookie_file_cancel(msg: Message, state: FSMContext):
+    await state.clear()
+    await msg.answer("Đã hủy.")
+
+
 @router.message(CookieCheckState.waiting_for_file, F.document)
 async def on_cookie_file_received(msg: Message, state: FSMContext):
     await state.clear()
@@ -1159,6 +1171,12 @@ async def _save_pool_cookie(msg: Message, state: FSMContext, cookie: str):
     except Exception:
         pass
     await state.clear()
+
+@router.message(CookieAddState.waiting_for_cookie, F.text.in_({"/huy", "/cancel"}))
+async def on_cookieadd_cancel(msg: Message, state: FSMContext):
+    await state.clear()
+    await msg.answer("Đã hủy.")
+
 
 @router.message(CookieAddState.waiting_for_cookie)
 async def on_cookieadd_received(msg: Message, state: FSMContext):

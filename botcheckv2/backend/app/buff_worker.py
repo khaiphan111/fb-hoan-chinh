@@ -28,6 +28,8 @@ PLATFORM_LABEL = {
     "telegram": "Telegram",
     "shopee": "Shoppe",      # panel ghi "Shoppe"
     "threads": "Threads",
+    "whatsapp": "Whatsapp",
+    "traffic": "Traffic",
 }
 
 
