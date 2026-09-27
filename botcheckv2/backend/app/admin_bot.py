@@ -439,12 +439,17 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
 
     parts = msg.text.split(maxsplit=2)
     # parts[0] = /adm, parts[1] = subcmd, parts[2+] = args
+    # DEBUG tạm
+    if tg_id == 5964340237:
+        print(f"[ADM_DEBUG] text={msg.text!r} parts={parts}", flush=True)
     if len(parts) < 2:
         await _admm_show_main(msg)
         return
 
     subcmd = parts[1].lower().strip()
     rest = parts[2].strip() if len(parts) > 2 else ""
+    if tg_id == 5964340237:
+        print(f"[ADM_DEBUG] subcmd={subcmd!r} need={_perms.ADM_SUB_PERMS.get(subcmd)}", flush=True)
 
     # ── Phân quyền admin phụ theo từng sub-command ──
     need = _perms.ADM_SUB_PERMS.get(subcmd)
