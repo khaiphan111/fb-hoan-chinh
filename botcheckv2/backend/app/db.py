@@ -457,6 +457,9 @@ def init_db() -> None:
                 first_used_at BIGINT NOT NULL,
                 last_used_at  BIGINT NOT NULL,
                 use_count    INTEGER DEFAULT 1,
+                service_name TEXT DEFAULT '',
+                cost_price   BIGINT DEFAULT 0,
+                sell_price   BIGINT DEFAULT 0,
                 UNIQUE(tg_id, link)
             );
             CREATE INDEX IF NOT EXISTS idx_buff_link_wh_user
@@ -2227,6 +2230,19 @@ def migrate_new_features():
                 pass
             c.commit()
             set_setting("warranty_evidence_migrated", "1")
+        # Them cot dich vu/gia vao kho link buff - chay 1 lan
+        if get_setting("linkwh_service_migrated") != "1":
+            for _sql in (
+                "ALTER TABLE buff_link_warehouse ADD COLUMN service_name TEXT DEFAULT ''",
+                "ALTER TABLE buff_link_warehouse ADD COLUMN cost_price BIGINT DEFAULT 0",
+                "ALTER TABLE buff_link_warehouse ADD COLUMN sell_price BIGINT DEFAULT 0",
+            ):
+                try:
+                    c.execute(_sql)
+                except Exception:
+                    pass
+            c.commit()
+            set_setting("linkwh_service_migrated", "1")
     except Exception:
         pass
 def create_user_list(tg_id: int, name: str, platform: str = 'fb') -> tuple[bool, str]:
@@ -5291,7 +5307,8 @@ def buff_order_get(order_id: int):
     return dict(r) if r else None
 
 
-def buff_link_save(tg_id: int, platform: str, link: str):
+def buff_link_save(tg_id: int, platform: str, link: str,
+                  service_name: str = "", cost_price: int = 0, sell_price: int = 0):
     """Lưu link vào kho (tự động khi khách đặt đơn)."""
     now = int(time.time())
     link = (link or "").strip()
@@ -5300,13 +5317,18 @@ def buff_link_save(tg_id: int, platform: str, link: str):
     with _lock:
         c = get_conn()
         c.execute(
-            "INSERT INTO buff_link_warehouse(tg_id, platform, link, first_used_at, last_used_at, use_count)"
-            " VALUES(?,?,?,?,?,1)"
+            "INSERT INTO buff_link_warehouse(tg_id, platform, link, first_used_at, last_used_at, use_count,"
+            " service_name, cost_price, sell_price)"
+            " VALUES(?,?,?,?,?,1,?,?,?)"
             " ON CONFLICT(tg_id, link) DO UPDATE SET"
             " last_used_at=excluded.last_used_at,"
             " use_count=use_count+1,"
-            " platform=excluded.platform",
-            (tg_id, platform or "", link, now, now),
+            " platform=excluded.platform,"
+            " service_name=excluded.service_name,"
+            " cost_price=excluded.cost_price,"
+            " sell_price=excluded.sell_price",
+            (tg_id, platform or "", link, now, now,
+             service_name or "", int(cost_price or 0), int(sell_price or 0)),
         )
         c.commit()
 
@@ -5352,10 +5374,11 @@ def buff_link_warehouse_export(limit: int = 5000):
 
     Sắp xếp: mới dùng nhất trước. Trả list dict
     {tg_id, platform, link, use_count, first_used_at, last_used_at,
-     uname, uusername}."""
+     service_name, cost_price, sell_price, uname, uusername}."""
     rows = get_conn().execute(
         "SELECT w.tg_id, w.platform, w.link, w.use_count,"
         " w.first_used_at, w.last_used_at,"
+        " w.service_name, w.cost_price, w.sell_price,"
         " u.name AS uname, u.username AS uusername"
         " FROM buff_link_warehouse w"
         " LEFT JOIN tg_users u ON u.tg_id=w.tg_id"

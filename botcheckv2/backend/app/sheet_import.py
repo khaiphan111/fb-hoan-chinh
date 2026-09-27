@@ -358,9 +358,11 @@ def _fmt_sold(sold_at: int) -> str:
 #: Tab kho link buff trong cùng spreadsheet nhập kho
 LINKWH_TAB = "KhoLinkBuff"
 
-#: Tiêu đề tab kho link (A:G):
-#: STT | Khách hàng | Nền tảng | Link | Số lần dùng | Lần đầu dùng | Lần cuối dùng
-LINKWH_HEADERS = ["STT", "Khách hàng", "Nền tảng", "Link",
+#: Tiêu đề tab kho link (A:J):
+#: STT | Khách hàng | Nền tảng | Dịch vụ | Link |
+#: Giá gốc (/1000) | Giá bot (/1000) | Số lần dùng | Lần đầu dùng | Lần cuối dùng
+LINKWH_HEADERS = ["STT", "Khách hàng", "Nền tảng", "Dịch vụ", "Link",
+                  "Giá gốc (/1000)", "Giá bot (/1000)",
                   "Số lần dùng", "Lần đầu dùng", "Lần cuối dùng"]
 
 
@@ -373,12 +375,14 @@ def _fmt_linkwh_ts(ts) -> str:
 
 
 def build_linkwh_values(rows):
-    """Dựng ma trận giá trị cho tab kho link: [tiêu đề, *dòng dữ liệu].
+    """Dựng ma trận giá trị cho tab kho link: [tiêu đề, *dòng dữ liệu, dòng tổng].
 
     rows: list dict từ db.buff_link_warehouse_export().
     Cột B 'Khách hàng' ưu tiên: Tên (tg_id) → @username (tg_id) → tg_id.
+    Dòng cuối: TỔNG lãi (= tổng (giá bot - giá gốc)).
     """
     out = [LINKWH_HEADERS]
+    total_profit = 0
     for i, r in enumerate(rows or [], 1):
         try:
             tg_id = r.get("tg_id")
@@ -390,17 +394,30 @@ def build_linkwh_values(rows):
                 cust = f"@{uname} ({tg_id})"
             else:
                 cust = str(tg_id)
+            cost = int(r.get("cost_price") or 0)
+            sell = int(r.get("sell_price") or 0)
+            total_profit += (sell - cost)
             out.append([
                 i,
                 cust,
                 (r.get("platform") or "").strip(),
+                (r.get("service_name") or "").strip(),
                 (r.get("link") or "").strip(),
+                cost if cost else "",
+                sell if sell else "",
                 int(r.get("use_count") or 0),
                 _fmt_linkwh_ts(r.get("first_used_at")),
                 _fmt_linkwh_ts(r.get("last_used_at")),
             ])
         except Exception:
             continue
+    # Dòng tổng lãi
+    if out and len(out) > 1:
+        out.append([
+            "📊 TỔNG", "", "", f"{len(out) - 1} link",
+            "", "", "",
+            f"Lãi: {total_profit:,}đ/1000", "", "",
+        ])
     return out
 
 
@@ -423,12 +440,12 @@ async def push_linkwh(spreadsheet_id: str, rows) -> int:
         # Xóa dữ liệu cũ từ dòng 2 trở đi (tránh dòng thừa sót lại)
         await _cli(["sheets", "spreadsheets", "values", "clear", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id,
-                                "range": f"{tab}!A2:G"})])
+                                "range": f"{tab}!A2:J"})])
         # Ghi tiêu đề + toàn bộ dữ liệu
         end = len(values)
         await _cli(["sheets", "spreadsheets", "values", "update", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id,
-                                "range": f"{tab}!A1:G{end}",
+                                "range": f"{tab}!A1:J{end}",
                                 "valueInputOption": "USER_ENTERED"})],
                    {"values": values})
         log.info("push_linkwh: đã ghi %d dòng lên tab '%s'", end - 1, tab)

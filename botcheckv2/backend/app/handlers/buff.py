@@ -278,9 +278,13 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML")
             return
         await state.clear()
-        # Lưu link vào kho (tự động)
+        # Lưu link vào kho (tự động) kèm thông tin dịch vụ/giá
         try:
-            db.buff_link_save(uid, svc.get("platform_name", ""), link)
+            db.buff_link_save(
+                uid, svc.get("platform_name", ""), link,
+                service_name=svc.get("name", ""),
+                cost_price=svc.get("cost_price", 0),
+                sell_price=svc.get("sell_price", 0))
         except Exception:
             pass
         try:
