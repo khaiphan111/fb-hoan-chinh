@@ -841,10 +841,40 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                 callback_data=f"buffadm:linkwh:{page+1}:{platform}"))
         if nav:
             kb_rows.append(nav)
+        kb_rows.append([InlineKeyboardButton(
+            text="🔄 Đồng bộ Google Sheet",
+            callback_data=f"buffadm:linkwhsync:{page}:{platform}")])
         kb_rows.append([InlineKeyboardButton(text="⬅️ Menu", callback_data="buffadm:menu")])
         await cb.message.edit_text(
             "\n".join(lines), parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+        return
+
+    if action == "linkwhsync":
+        if not await _need("orders"):
+            return
+        sheet_id = (db.get_setting("sheet_import_id", "") or "").strip()
+        if not sheet_id:
+            await cb.answer("Chưa cài Google Sheet (gõ /setsheet).",
+                            show_alert=True)
+            return
+        await cb.answer("Đang đồng bộ lên Google Sheet…")
+        try:
+            from app import sheet_import as _si
+            rows = db.buff_link_warehouse_export()
+            n = await _si.push_linkwh(sheet_id, rows)
+            if n < 0:
+                await cb.answer("Đồng bộ thất bại, xem log backend.",
+                                show_alert=True)
+            else:
+                await cb.answer(f"Đã đồng bộ {n} link lên Sheet ✅")
+                try:
+                    db.add_audit_log(cb.from_user.id, "buff_linkwh_sync", "",
+                                     f"Đồng bộ tay {n} link lên Google Sheet")
+                except Exception:
+                    pass
+        except Exception as e:
+            await cb.answer(f"Lỗi: {e}", show_alert=True)
         return
 
     if action == "refund" and len(parts) > 2:

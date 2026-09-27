@@ -160,3 +160,40 @@ def test_payos_buff_target_credits_buff_wallet(tdb):
     assert db.buff_get_balance(tg) == 60000
     u = db.get_user(tg)
     assert int(u["balance"]) == 0  # ví chính không bị cộng
+
+
+# ── 8. Kho link → Google Sheet: export + dựng ma trận giá trị ──
+def test_linkwh_export_and_build_values(tdb):
+    from app import sheet_import as si
+    db = tdb
+    db.upsert_user(111001, "linkuser", "Nguyen Van A")
+    db.buff_link_save(111001, "TikTok", "https://tiktok.com/@a/video/1")
+    db.buff_link_save(111001, "TikTok", "https://tiktok.com/@a/video/1")  # trùng
+    db.buff_link_save(222002, "Facebook", "https://facebook.com/post/2")
+    rows = db.buff_link_warehouse_export()
+    assert len(rows) == 2
+    vals = si.build_linkwh_values(rows)
+    # Tiêu đề 7 cột đúng thứ tự
+    assert vals[0] == ["STT", "Khách hàng", "Nền tảng", "Link",
+                       "Số lần dùng", "Lần đầu dùng", "Lần cuối dùng"]
+    assert len(vals) == 3  # tiêu đề + 2 dòng
+    # Dòng 1: STT=1, có tên khách + tg_id, đủ 7 cột
+    assert vals[1][0] == 1
+    assert "111001" in vals[1][1]
+    assert "Nguyen Van A" in vals[1][1]
+    assert vals[1][2] == "TikTok"
+    assert vals[1][4] == 2  # dùng 2 lần
+    # Cột giờ định dạng dd/mm/yyyy HH:MM
+    import re
+    assert re.match(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", vals[1][5])
+    assert re.match(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", vals[1][6])
+    # Khách không có tên → chỉ hiện tg_id
+    assert vals[2][1] == "222002"
+    assert vals[2][4] == 1
+
+
+def test_linkwh_build_values_empty(tdb):
+    from app import sheet_import as si
+    vals = si.build_linkwh_values([])
+    assert vals == [["STT", "Khách hàng", "Nền tảng", "Link",
+                     "Số lần dùng", "Lần đầu dùng", "Lần cuối dùng"]]

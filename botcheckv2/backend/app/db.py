@@ -5347,6 +5347,23 @@ def buff_link_platforms():
     return [r[0] for r in rows]
 
 
+def buff_link_warehouse_export(limit: int = 5000):
+    """Xuất toàn bộ kho link buff cho Google Sheet, kèm tên khách.
+
+    Sắp xếp: mới dùng nhất trước. Trả list dict
+    {tg_id, platform, link, use_count, first_used_at, last_used_at,
+     uname, uusername}."""
+    rows = get_conn().execute(
+        "SELECT w.tg_id, w.platform, w.link, w.use_count,"
+        " w.first_used_at, w.last_used_at,"
+        " u.name AS uname, u.username AS uusername"
+        " FROM buff_link_warehouse w"
+        " LEFT JOIN tg_users u ON u.tg_id=w.tg_id"
+        " ORDER BY w.last_used_at DESC LIMIT ?",
+        (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def buff_order_update(order_id: int, **fields) -> bool:
     allowed = {"status", "panel_order_id", "total_price", "total_cost", "link", "quantity"}
     sets = {k: v for k, v in fields.items() if k in allowed}

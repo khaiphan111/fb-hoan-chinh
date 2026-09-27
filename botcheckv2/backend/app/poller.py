@@ -317,6 +317,14 @@ class FollowerPoller:
                     await self._push_sold_to_sheet()
                 except Exception as e:
                     log.warning("sheet sold push: %s", e)
+                # Đồng bộ kho link buff lên tab KhoLinkBuff (tối đa 30 phút/lần)
+                try:
+                    now_ts = time.time()
+                    if now_ts - getattr(self, "_linkwh_last", 0) >= 1800:
+                        self._linkwh_last = now_ts
+                        await self._push_linkwh_to_sheet()
+                except Exception as e:
+                    log.warning("sheet linkwh push: %s", e)
                 # Nhập kho tự động từng gian hàng theo chu kỳ riêng (/shopadm)
                 try:
                     await self._auto_import_stalls()
@@ -353,6 +361,23 @@ class FollowerPoller:
             db.acc_mark_sheet_done(done + skip)
             log.info("sheet sold push: %d đã ghi, %d bỏ qua (không khớp UID)",
                      len(done), len(skip))
+
+    async def _push_linkwh_to_sheet(self):
+        """Đồng bộ kho link buff lên tab KhoLinkBuff của Google Sheet.
+
+        Chạy tối đa 30 phút/lần (trong _maintenance_loop): ghi đè toàn bộ
+        tab bằng dữ liệu kho hiện tại, mới nhất trước."""
+        from . import sheet_import as _si
+        sheet_id = (db.get_setting("sheet_import_id", "") or "").strip()
+        if not sheet_id:
+            return
+        try:
+            rows = db.buff_link_warehouse_export()
+            n = await _si.push_linkwh(sheet_id, rows)
+            if n >= 0:
+                log.info("sheet linkwh push: %d dòng", n)
+        except Exception as e:
+            log.warning("push linkwh to sheet: %s", e)
 
     async def _auto_import_stalls(self):
         import app.bot as botmod  # lazy: tranh circular import voi handlers

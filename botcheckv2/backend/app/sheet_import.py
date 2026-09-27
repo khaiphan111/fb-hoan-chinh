@@ -353,6 +353,91 @@ def _fmt_sold(sold_at: int) -> str:
         return "🛒 ĐÃ BÁN"
 
 
+# ── Kho link buff → Google Sheet ──────────────────────────────────────
+
+#: Tab kho link buff trong cùng spreadsheet nhập kho
+LINKWH_TAB = "KhoLinkBuff"
+
+#: Tiêu đề tab kho link (A:G):
+#: STT | Khách hàng | Nền tảng | Link | Số lần dùng | Lần đầu dùng | Lần cuối dùng
+LINKWH_HEADERS = ["STT", "Khách hàng", "Nền tảng", "Link",
+                  "Số lần dùng", "Lần đầu dùng", "Lần cuối dùng"]
+
+
+def _fmt_linkwh_ts(ts) -> str:
+    import time as _t
+    try:
+        return _t.strftime("%d/%m/%Y %H:%M", _t.localtime(int(ts or 0)))
+    except Exception:
+        return ""
+
+
+def build_linkwh_values(rows):
+    """Dựng ma trận giá trị cho tab kho link: [tiêu đề, *dòng dữ liệu].
+
+    rows: list dict từ db.buff_link_warehouse_export().
+    Cột B 'Khách hàng' ưu tiên: Tên (tg_id) → @username (tg_id) → tg_id.
+    """
+    out = [LINKWH_HEADERS]
+    for i, r in enumerate(rows or [], 1):
+        try:
+            tg_id = r.get("tg_id")
+            name = (r.get("uname") or "").strip()
+            uname = (r.get("uusername") or "").strip()
+            if name:
+                cust = f"{name} ({tg_id})"
+            elif uname:
+                cust = f"@{uname} ({tg_id})"
+            else:
+                cust = str(tg_id)
+            out.append([
+                i,
+                cust,
+                (r.get("platform") or "").strip(),
+                (r.get("link") or "").strip(),
+                int(r.get("use_count") or 0),
+                _fmt_linkwh_ts(r.get("first_used_at")),
+                _fmt_linkwh_ts(r.get("last_used_at")),
+            ])
+        except Exception:
+            continue
+    return out
+
+
+async def push_linkwh(spreadsheet_id: str, rows) -> int:
+    """Ghi đè toàn bộ tab KhoLinkBuff bằng kho link hiện tại (mới nhất trước).
+
+    rows: list dict từ db.buff_link_warehouse_export().
+    Trả số dòng dữ liệu đã ghi (không tính tiêu đề), -1 nếu lỗi.
+    """
+    if not spreadsheet_id:
+        return -1
+    tab = LINKWH_TAB
+    try:
+        if not await tab_exists(spreadsheet_id, tab):
+            await _cli(["sheets", "spreadsheets", "batchUpdate", "--params",
+                        json.dumps({"spreadsheetId": spreadsheet_id})],
+                       {"requests": [{"addSheet": {"properties": {"title": tab}}}]})
+            log.info("push_linkwh: đã tạo tab '%s'", tab)
+        values = build_linkwh_values(rows)
+        # Xóa dữ liệu cũ từ dòng 2 trở đi (tránh dòng thừa sót lại)
+        await _cli(["sheets", "spreadsheets", "values", "clear", "--params",
+                    json.dumps({"spreadsheetId": spreadsheet_id,
+                                "range": f"{tab}!A2:G"})])
+        # Ghi tiêu đề + toàn bộ dữ liệu
+        end = len(values)
+        await _cli(["sheets", "spreadsheets", "values", "update", "--params",
+                    json.dumps({"spreadsheetId": spreadsheet_id,
+                                "range": f"{tab}!A1:G{end}",
+                                "valueInputOption": "USER_ENTERED"})],
+                   {"values": values})
+        log.info("push_linkwh: đã ghi %d dòng lên tab '%s'", end - 1, tab)
+        return end - 1
+    except Exception as e:
+        log.warning("push_linkwh lỗi: %s", e)
+        return -1
+
+
 async def push_sold_marks(spreadsheet_id: str, items):
     """Ghi dấu 'đã bán' lên cột J cho các acc đã bán.
 
