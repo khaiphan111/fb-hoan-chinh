@@ -3375,41 +3375,8 @@ async def cmd_broadcast(msg: Message):
 _pending_broadcasts = {}
 
 
-@router.callback_query(F.data == "adm_bcast_confirm")
-async def on_bcast_confirm(cb: CallbackQuery):
-    if not is_admin(cb.message.chat.id, cb.from_user.id):
-        return
-    bcast = _pending_broadcasts.pop(cb.message.chat.id, None)
-    if not bcast:
-        await cb.answer("Đã hết hạn, vui lòng thực hiện lại!", show_alert=True)
-        return
-
-    await cb.answer("Đang gửi...", show_alert=False)
-    await cb.message.edit_reply_markup(reply_markup=None)
-
-    from .bot import manager as main_bot
-    if not main_bot.bot:
-        await cb.message.answer("❌ Main bot chưa khởi động!")
-        return
-
-    success = 0
-    fail = 0
-    for tg_id in bcast["users"]:
-        try:
-            await main_bot.bot.send_message(tg_id, bcast["text"], parse_mode="HTML")
-            success += 1
-            await asyncio.sleep(0.05)
-        except Exception:
-            fail += 1
-
-    await cb.message.answer(f"✅ <b>Broadcast hoàn tất!</b>\n✔ Thành công: {success}\n✘ Lỗi: {fail}", parse_mode="HTML")
-
-
-@router.callback_query(F.data == "adm_bcast_cancel")
-async def on_bcast_cancel(cb: CallbackQuery):
-    _pending_broadcasts.pop(cb.message.chat.id, None)
-    await cb.answer("Đã hủy broadcast.", show_alert=True)
-    await cb.message.edit_reply_markup(reply_markup=None)
+# (Đã xóa bản trùng on_bcast_confirm/on_bcast_cancel ở đây —
+#  bản đang chạy nằm ở trên, dùng manager.bot linh hoạt hơn)
 
 
 @router.message(Command("promo"))

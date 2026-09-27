@@ -706,7 +706,7 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                                    reply_markup=_buffadm_menu_kb(cb.from_user.id))
         return
 
-    if action == "toggle":
+    if action == "toggle" and len(parts) == 2:
         if not await _need_super():
             return
         cur = db.get_setting("buff_enabled", "0") == "1"
@@ -962,11 +962,16 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                     f"• <code>{r['code']}</code> — {html.escape(r.get('service_name') or '')}\n"
                     f"  👤 <code>{r['tg_id']}</code> • 🔢 {vnd(r['quantity'])}\n"
                     f"  💵 {vnd(r['total_price'])} (vốn {vnd(r['total_cost'])}) • {st}")
-                # Nút hoàn tiền cho đơn lỗi (cần quyền tiền)
+                # Nút hoàn tiền cho đơn lỗi (cần quyền tiền) —
+                # ẩn nếu worker đã tự hoàn (có txn buff_refund)
                 if r["status"] == "failed" and has_perm(cb.from_user.id, "tien"):
-                    kb_rows.append([InlineKeyboardButton(
-                        text=f"💸 Hoàn tiền {r['code']}",
-                        callback_data=f"buffadm:refund:{r['id']}")])
+                    refunded = db.get_conn().execute(
+                        "SELECT 1 FROM txns WHERE reason=? LIMIT 1",
+                        (f"buff_refund:{r['code']}",)).fetchone()
+                    if not refunded:
+                        kb_rows.append([InlineKeyboardButton(
+                            text=f"💸 Hoàn tiền {r['code']}",
+                            callback_data=f"buffadm:refund:{r['id']}")])
             kb_rows.append([InlineKeyboardButton(text="⬅️ Menu", callback_data="buffadm:menu")])
             txt = "\n".join(lines)
         await cb.message.edit_text(
@@ -1075,6 +1080,15 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         order = db.buff_order_get(oid)
         if not order or order["status"] != "failed":
             await cb.answer("❌ Đơn không ở trạng thái lỗi.", show_alert=True)
+            return
+        # Chống hoàn 2 lần: worker có thể đã tự hoàn khi đặt panel thất bại
+        already = db.get_conn().execute(
+            "SELECT 1 FROM txns WHERE reason=? LIMIT 1",
+            (f"buff_refund:{order['code']}",)).fetchone()
+        if already:
+            db.buff_order_update(oid, status="refunded")
+            await cb.answer("⚠️ Đơn này đã được hoàn tiền trước đó.",
+                            show_alert=True)
             return
         # Hoàn tiền về ví buff
         if db.buff_adjust_balance(order["tg_id"], order["total_price"],
@@ -1338,6 +1352,10 @@ async def on_buffadm_panel_user_input(msg: Message, state: FSMContext):
         await state.clear()
         return
     user = (msg.text or "").strip()
+    if user.lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("Đã hủy.")
+        return
     if not user:
         await msg.answer("❌ Username trống. Nhập lại:")
         return
@@ -1361,6 +1379,14 @@ async def on_buffadm_panel_pass_input(msg: Message, state: FSMContext):
         await state.clear()
         return
     pw = (msg.text or "").strip()
+    if pw.lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        await msg.answer("Đã hủy.")
+        return
     try:
         await msg.delete()
     except Exception:
@@ -1393,6 +1419,10 @@ async def on_buffadm_topup_uid_input(msg: Message, state: FSMContext):
     if not has_perm(msg.from_user.id, "tien"):
         await state.clear()
         return
+    if (msg.text or "").strip().lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("Đã hủy.")
+        return
     try:
         uid = int((msg.text or "").strip())
     except ValueError:
@@ -1420,6 +1450,10 @@ async def on_buffadm_topup_amount_input(msg: Message, state: FSMContext):
         await state.clear()
         return
     data = await state.get_data()
+    if (msg.text or "").strip().lower().split("@")[0] in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("Đã hủy.")
+        return
     uid = data.get("buffadm_topup_uid")
     try:
         amount = int((msg.text or "").strip().replace(".", "").replace(",", ""))

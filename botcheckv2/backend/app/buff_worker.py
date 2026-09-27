@@ -370,7 +370,19 @@ async def place_buff_order(order: dict, dry_run: bool = False) -> dict:
                 continue
         if not btn_ok:
             return {"ok": False, "error": "không bấm được nút ĐẶT HÀNG"}
-        await page.wait_for_timeout(3000)
+        # Chờ thông báo kết quả (thành công/lỗi) xuất hiện, tối đa 30s.
+        # Không chờ cứng 3s như trước vì panel chậm sẽ bị đánh failed oan
+        # trong khi đơn thực tế đã được tạo.
+        try:
+            await page.wait_for_selector(
+                ".alert-success, .alert-danger, .toast-success, .toast-error, "
+                "[role='alert'], .swal2-popup",
+                timeout=30000,
+            )
+            await page.wait_for_timeout(1000)  # chờ thông báo render xong
+        except Exception:
+            # Timeout: panel chưa hiện thông báo, đọc HTML như cũ
+            await page.wait_for_timeout(2000)
 
         # Đọc kết quả: tìm mã đơn hoặc thông báo lỗi trên trang
         html = await page.content()
