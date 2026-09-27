@@ -39,6 +39,7 @@ class BuffAdmState(StatesGroup):
     waiting_for_panel_pass = State()
     waiting_for_topup_uid = State()
     waiting_for_topup_amount = State()  # data: uid
+    waiting_for_margin = State()        # data: pkey (hoặc "ALL")
 
 
 _BUFF_STATUS_LABEL = {
@@ -339,6 +340,9 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="🔛 Bật TẤT CẢ gói (mọi nền tảng)",
             callback_data="buffadm:enableall:ALL")])
+        rows.append([InlineKeyboardButton(
+            text="📈 Đặt giá theo lợi nhuận (mọi nền tảng)",
+            callback_data="buffadm:margin:ALL")])
     if can_orders:
         rows.append(
             [InlineKeyboardButton(text="📋 10 đơn mới nhất",
@@ -428,6 +432,9 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         kb_rows.append([InlineKeyboardButton(
             text="🔛 Bật TẤT CẢ gói nền tảng này",
             callback_data=f"buffadm:enableall:{pkey}")])
+        kb_rows.append([InlineKeyboardButton(
+            text="📈 Đặt giá theo lợi nhuận (×...)",
+            callback_data=f"buffadm:margin:{pkey}")])
         kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
                                              callback_data="buffadm:menu")])
         await cb.message.edit_text(
@@ -574,6 +581,22 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
         return
 
+    if action == "margin" and len(parts) > 2:
+        if not await _need("price"):
+            return
+        target = parts[2]
+        label = "mọi nền tảng" if target == "ALL" else f"nền tảng {target}"
+        await state.update_data(buffadm_margin_target=target)
+        await state.set_state(BuffAdmState.waiting_for_margin)
+        await cb.message.answer(
+            f"📈 <b>Đặt giá theo lợi nhuận — {label}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "Nhập hệ số lợi nhuận (ví dụ: <code>1.4</code>, <code>2</code>)\n"
+            "→ Giá bán mới = giá vốn × hệ số, làm tròn đẹp.\n\n"
+            "Gõ /huy để hủy.",
+            parse_mode="HTML")
+        return
+
     if action == "orders":
         if not await _need("orders"):
             return
@@ -698,6 +721,59 @@ async def on_buffadm_price_input(msg: Message, state: FSMContext):
                          f"thành <b>{vnd(price)}đ/1k</b>.", parse_mode="HTML")
     else:
         await msg.answer("❌ Không tìm thấy gói.")
+
+
+def _round_price(v: int) -> int:
+    if v >= 10000:
+        v = round(v / 1000) * 1000
+    elif v >= 1000:
+        v = round(v / 500) * 500
+    else:
+        v = round(v / 100) * 100
+    return max(int(v), 100)
+
+
+@router.message(BuffAdmState.waiting_for_margin)
+async def on_buffadm_margin_input(msg: Message, state: FSMContext):
+    if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    if not has_perm(msg.from_user.id, "price"):
+        await state.clear()
+        return
+    data = await state.get_data()
+    target = data.get("buffadm_margin_target", "ALL")
+    try:
+        mult = float((msg.text or "").strip().replace(",", "."))
+        assert 1 < mult <= 20
+    except (ValueError, AssertionError):
+        await msg.answer("❌ Hệ số không hợp lệ. Nhập số > 1 và ≤ 20 (ví dụ: 1.4):")
+        return
+    conn = db.get_conn()
+    if target == "ALL":
+        rows = conn.execute(
+            "SELECT id, cost_price FROM buff_services").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, cost_price FROM buff_services WHERE platform_key=?",
+            (target,)).fetchall()
+    n = 0
+    for r in rows:
+        new_price = _round_price(int(r["cost_price"] * mult))
+        conn.execute("UPDATE buff_services SET sell_price=? WHERE id=?",
+                     (new_price, r["id"]))
+        n += 1
+    conn.commit()
+    await state.clear()
+    label = "mọi nền tảng" if target == "ALL" else f"nền tảng {target}"
+    try:
+        db.add_audit_log(msg.from_user.id, "buff_margin", target,
+                         f"Đặt giá ×{mult} cho {n} gói ({label})")
+    except Exception:
+        pass
+    await msg.answer(
+        f"✅ Đã đặt giá bán = vốn × <b>{mult}</b> cho <b>{n}</b> gói ({label}).",
+        parse_mode="HTML")
 
 
 @router.message(BuffAdmState.waiting_for_panel_user)
