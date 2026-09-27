@@ -39,7 +39,8 @@ def init_db() -> None:
                 trial_activated INTEGER DEFAULT 0,
                 referrer_id  INTEGER DEFAULT 0,
                 ref_earnings INTEGER DEFAULT 0,
-                expired_notified INTEGER DEFAULT 0
+                expired_notified INTEGER DEFAULT 0,
+                buff_balance INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS watches (
@@ -177,6 +178,37 @@ def init_db() -> None:
                 created_at      INTEGER NOT NULL,
                 used_at         INTEGER DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS buff_services (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform_key     TEXT NOT NULL,
+                platform_name    TEXT NOT NULL,
+                category_key     TEXT NOT NULL,
+                category_name    TEXT NOT NULL,
+                panel_service_id INTEGER NOT NULL,
+                name             TEXT NOT NULL,
+                description      TEXT DEFAULT '',
+                cost_price       INTEGER DEFAULT 0,
+                sell_price       INTEGER DEFAULT 0,
+                min_qty          INTEGER DEFAULT 1,
+                max_qty          INTEGER DEFAULT 1000000,
+                enabled          INTEGER DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS buff_orders (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                code         TEXT UNIQUE NOT NULL,
+                tg_id        INTEGER NOT NULL,
+                service_id   INTEGER NOT NULL,
+                link         TEXT NOT NULL,
+                quantity     INTEGER NOT NULL,
+                total_price  INTEGER NOT NULL,
+                total_cost   INTEGER NOT NULL,
+                status       TEXT DEFAULT 'pending',
+                panel_order_id TEXT DEFAULT '',
+                created_at   INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL
+            );
             """
         )
         for k, v in config.DEFAULT_SETTINGS.items():
@@ -208,7 +240,8 @@ def migrate_db():
             "ALTER TABLE fb_tracks ADD COLUMN campaign_id INTEGER",
             "ALTER TABLE fb_tracks ADD COLUMN tags TEXT",
             "CREATE TABLE IF NOT EXISTS daily_checkins (tg_id INTEGER PRIMARY KEY, last_checkin INTEGER, streak INTEGER DEFAULT 1, total_checkins INTEGER DEFAULT 1)",
-            "CREATE TABLE IF NOT EXISTS batch_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER, message TEXT, created_at INTEGER NOT NULL)"
+            "CREATE TABLE IF NOT EXISTS batch_notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER, message TEXT, created_at INTEGER NOT NULL)",
+            "ALTER TABLE tg_users ADD COLUMN buff_balance INTEGER DEFAULT 0"
         ]:
             try:
                 c.execute(sql)
@@ -893,3 +926,36 @@ def delete_campaign(campaign_id: int):
         c.execute("DELETE FROM campaigns WHERE id=?", (campaign_id,))
         c.execute("DELETE FROM campaign_participants WHERE campaign_id=?", (campaign_id,))
         c.commit()
+
+
+# --- SHOP BUFF TƯƠNG TÁC (mirror tối thiểu; module chính là db.py) ---
+def buff_get_balance(tg_id: int) -> int:
+    try:
+        r = get_conn().execute(
+            "SELECT buff_balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+        return int(r["buff_balance"] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def buff_adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
+    with _lock:
+        c = get_conn()
+        if amount < 0:
+            try:
+                r = c.execute("SELECT buff_balance FROM tg_users WHERE tg_id=?",
+                              (tg_id,)).fetchone()
+            except Exception:
+                return False
+            if not r or int(r["buff_balance"] or 0) + amount < 0:
+                return False
+        c.execute("UPDATE tg_users SET buff_balance = buff_balance + ? WHERE tg_id=?",
+                  (amount, tg_id))
+        c.commit()
+    return True
+
+
+def buff_orders_pending(limit: int = 5) -> list:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM buff_orders WHERE status='pending' ORDER BY id LIMIT ?",
+        (limit,)).fetchall()]

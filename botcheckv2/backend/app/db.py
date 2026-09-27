@@ -412,6 +412,43 @@ def init_db() -> None:
                 message      TEXT,
                 triggered_at BIGINT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS buff_services (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform_key     TEXT NOT NULL,
+                platform_name    TEXT NOT NULL,
+                category_key     TEXT NOT NULL,
+                category_name    TEXT NOT NULL,
+                panel_service_id INTEGER NOT NULL,
+                name             TEXT NOT NULL,
+                description      TEXT DEFAULT '',
+                cost_price       BIGINT DEFAULT 0,
+                sell_price       BIGINT DEFAULT 0,
+                min_qty          BIGINT DEFAULT 1,
+                max_qty          BIGINT DEFAULT 1000000,
+                enabled          BIGINT DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_buff_services_plat
+                ON buff_services(platform_key, category_key);
+
+            CREATE TABLE IF NOT EXISTS buff_orders (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                code         TEXT UNIQUE NOT NULL,
+                tg_id        BIGINT NOT NULL,
+                service_id   BIGINT NOT NULL,
+                link         TEXT NOT NULL,
+                quantity     BIGINT NOT NULL,
+                total_price  BIGINT NOT NULL,
+                total_cost   BIGINT NOT NULL,
+                status       TEXT DEFAULT 'pending',
+                panel_order_id TEXT DEFAULT '',
+                created_at   BIGINT NOT NULL,
+                updated_at   BIGINT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_buff_orders_status
+                ON buff_orders(status);
+            CREATE INDEX IF NOT EXISTS idx_buff_orders_user
+                ON buff_orders(tg_id);
             """
         )
         # Keys that MUST be force-updated on every restart
@@ -437,6 +474,28 @@ def init_db() -> None:
                     (k, v),
                 )
         c.commit()
+
+        # 🛍️ Shop buff tương tác: seed dịch vụ + tài khoản panel mặc định
+        # (chỉ ghi khi chưa có — admin đổi qua /buffadm sẽ được giữ nguyên).
+        try:
+            _seed_buff_services()
+        except Exception:
+            pass
+        try:
+            _env_buff_pass = os.environ.get("BUFF_PANEL_PASS", "")
+            c.execute(
+                "INSERT INTO settings(key, value) VALUES('buff_panel_user', 'khaiphan111') "
+                "ON CONFLICT(key) DO NOTHING",
+            )
+            if _env_buff_pass:
+                c.execute(
+                    "INSERT INTO settings(key, value) VALUES('buff_panel_pass', ?) "
+                    "ON CONFLICT(key) DO NOTHING",
+                    (_env_buff_pass,),
+                )
+            c.commit()
+        except Exception:
+            pass
 
         # Seed super admin if empty
         admin_count = c.execute("SELECT COUNT(*) as c FROM admin_users").fetchone()["c"]
@@ -496,6 +555,7 @@ def migrate_db():
             "CREATE TABLE IF NOT EXISTS batch_notifications (id BIGSERIAL PRIMARY KEY, tg_id BIGINT, message TEXT, created_at BIGINT NOT NULL)",
             "ALTER TABLE tg_users ADD COLUMN daily_report_hour INTEGER DEFAULT -1",
             "ALTER TABLE tg_users ADD COLUMN shop_balance BIGINT DEFAULT 0",
+            "ALTER TABLE tg_users ADD COLUMN buff_balance BIGINT DEFAULT 0",
             "ALTER TABLE payos_orders ADD COLUMN target TEXT DEFAULT 'main'",
             "ALTER TABLE acc_restock_subs ADD COLUMN qty INTEGER DEFAULT 1",
             "ALTER TABLE acc_restock_subs ADD COLUMN auto_buy INTEGER DEFAULT 0",
@@ -640,7 +700,7 @@ def _credit_topup_nolock(c, tg_id: int, amount: int, reason: str, wallet: str = 
     'f2': (id, bonus)} cho các mức có bonus > 0 (để caller báo tin nhắn sau).
     """
     now = int(time.time())
-    col = "shop_balance" if wallet == "shop" else "balance"
+    col = "shop_balance" if wallet == "shop" else ("buff_balance" if wallet == "buff" else "balance")
     c.execute(
         f"UPDATE tg_users SET {col} = {col} + ?, total_topup = total_topup + ? WHERE tg_id=?",
         (amount, amount, tg_id),
@@ -2899,7 +2959,7 @@ def create_payos_order(order_code: int, tg_id: int, amount: int,
                        payment_link_id: str = "", checkout_url: str = "",
                        qr_code: str = "", target: str = "main") -> None:
     now = int(time.time())
-    if target not in ("main", "shop"):
+    if target not in ("main", "shop", "buff"):
         target = "main"
     with _lock:
         c = get_conn()
@@ -2983,7 +3043,7 @@ def settle_payos_order(order_code: int) -> dict:
             return {"ok": False}
         tg_id, amount = int(order["tg_id"]), int(order["amount"])
         target = order["target"] or "main"
-        if target not in ("main", "shop"):
+        if target not in ("main", "shop", "buff"):
             target = "main"
         cur = c.execute(
             "UPDATE payos_orders SET status='PAID', updated_at=? "
@@ -5037,3 +5097,205 @@ def db_backup(keep: int = 7) -> str:
         except Exception:
             pass
     return path
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🛍️ SHOP BUFF TƯƠNG TÁC — ví buff riêng + dịch vụ + đơn hàng
+# ═══════════════════════════════════════════════════════════════════
+
+def buff_get_balance(tg_id: int) -> int:
+    """Số dư ví buff của user (0 nếu chưa có cột/user)."""
+    try:
+        r = get_conn().execute(
+            "SELECT buff_balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+        return int(r["buff_balance"] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def buff_adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
+    """Cộng/trừ ví buff. Trừ tiền kiểm tra nguyên tử: không đủ -> False."""
+    with _lock:
+        c = get_conn()
+        if amount < 0:
+            try:
+                r = c.execute("SELECT buff_balance FROM tg_users WHERE tg_id=?",
+                              (tg_id,)).fetchone()
+            except Exception:
+                return False
+            if not r or int(r["buff_balance"] or 0) + amount < 0:
+                return False
+        c.execute("UPDATE tg_users SET buff_balance = buff_balance + ? WHERE tg_id=?",
+                  (amount, tg_id))
+        c.execute(
+            "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+            (int(time.time()), tg_id, amount, reason),
+        )
+        c.commit()
+    return True
+
+
+_BUFF_PLATFORMS = [
+    ("tiktok", "TikTok", "🎵"),
+    ("facebook", "Facebook", "📘"),
+    ("instagram", "Instagram", "📸"),
+    ("youtube", "Youtube", "▶️"),
+    ("telegram", "Telegram", "✈️"),
+    ("shopee", "Shopee", "🛍️"),
+    ("threads", "Threads", "🧵"),
+]
+
+# (platform_key, platform_name, category_key, category_name,
+#  panel_id, name, desc, cost, sell, min, max)
+_BUFF_SEED = [
+    ("tiktok", "TikTok", "views", "👁 Views", 7697, "Siêu rẻ", "Tốc độ 100M/ngày", 100, 500, 100, 10000000),
+    ("tiktok", "TikTok", "views", "👁 Views", 6898, "Không tụt 137 ngày", "Bestseller bảo hành", 1663, 5000, 100, 1000000),
+    ("tiktok", "TikTok", "likes", "❤️ Likes", 7516, "Like Tây", "Lên nhanh", 1290, 5000, 10, 5000000),
+    ("tiktok", "TikTok", "likes", "❤️ Likes", 7452, "Like Việt thật", "Nick Việt thật", 1885, 7000, 10, 1000000),
+    ("tiktok", "TikTok", "followers", "👥 Followers", 7570, "Follow Tây", "Giá rẻ", 1290, 5000, 1, 30000),
+    ("tiktok", "TikTok", "followers", "👥 Followers", 7150, "Follow Việt", "Nick Việt", 28080, 60000, 50, 100000),
+    ("tiktok", "TikTok", "shares", "🔄 Shares", 7489, "Share video", "Chia sẻ video", 468, 2000, 10, 1000000),
+    ("facebook", "Facebook", "views", "👁 Views", 6835, "View video", "View video FB", 518, 2000, 1, 50000000),
+    ("facebook", "Facebook", "likes", "👍 Likes", 7480, "Like Tây", "Đủ 7 loại cảm xúc", 2312, 8000, 10, 5000000),
+    ("facebook", "Facebook", "likes", "👍 Likes", 7609, "Like Việt", "Nick Việt", 7020, 20000, 10, 1000000),
+    ("facebook", "Facebook", "followers", "👥 Follow", 7521, "Follow Tây", "Follow trang cá nhân", 2996, 10000, 100, 1000000),
+    ("facebook", "Facebook", "followers", "👥 Follow", 7133, "Follow Việt", "Nick Việt", 9370, 25000, 10, 1000000),
+    ("facebook", "Facebook", "members", "👨‍👩‍👧‍👦 Member nhóm", 7546, "Member Việt", "Vào nhóm", 18000, 40000, 500, 50000),
+    ("instagram", "Instagram", "views", "👁 Views", 7619, "View siêu rẻ", "Rẻ nhất hệ thống", 19, 200, 10, 1000000),
+    ("instagram", "Instagram", "likes", "❤️ Likes", 7226, "Like Tây", "Lên nhanh", 1011, 4000, 10, 5000000),
+    ("instagram", "Instagram", "followers", "👥 Followers", 7696, "Follow Tây", "Ổn định", 5991, 18000, 10, 5000000),
+    ("instagram", "Instagram", "followers", "👥 Followers", 7652, "Follow Việt", "Nick Việt", 26000, 55000, 10, 1000000),
+    ("youtube", "Youtube", "views", "👁 Views", 6574, "View", "View video", 4056, 12000, 100, 100000),
+    ("youtube", "Youtube", "subs", "🔔 Subscribers", 7651, "Sub", "Tăng sub kênh", 344, 1500, 100, 100000),
+    ("youtube", "Youtube", "likes", "👍 Likes", 7215, "Like video", "Like video", 53368, 110000, 10, 100000),
+    ("telegram", "Telegram", "views", "👁 Views", 7532, "View bài viết", "View post/channel", 32, 300, 10, 100000),
+    ("telegram", "Telegram", "members", "👥 Members", 6809, "Member", "20K/ngày", 1872, 6000, 10, 1000000),
+    ("shopee", "Shopee", "followers", "👥 Followers", 7085, "Follow shop", "Follow gian hàng", 29718, 60000, 100, 1000000),
+    ("threads", "Threads", "followers", "👥 Followers", 7553, "Follow", "Follow Threads", 16549, 35000, 10, 20000),
+    ("threads", "Threads", "likes", "❤️ Likes", 7552, "Like", "Like bài viết", 16549, 35000, 1, 20000),
+]
+
+
+def _seed_buff_services() -> None:
+    """Seed 25 dịch vụ buff — chỉ chạy khi bảng đang trống."""
+    with _lock:
+        c = get_conn()
+        n = c.execute("SELECT COUNT(*) AS n FROM buff_services").fetchone()["n"]
+        if int(n or 0) > 0:
+            return
+        for (pk, pn, ck, cn, pid, name, desc,
+             cost, sell, mn, mx) in _BUFF_SEED:
+            c.execute(
+                "INSERT INTO buff_services(platform_key, platform_name, category_key,"
+                " category_name, panel_service_id, name, description,"
+                " cost_price, sell_price, min_qty, max_qty, enabled)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,1)",
+                (pk, pn, ck, cn, pid, name, desc, cost, sell, mn, mx),
+            )
+        c.commit()
+
+
+def buff_platforms() -> list:
+    return [{"key": k, "name": n, "icon": i} for k, n, i in _BUFF_PLATFORMS]
+
+
+def buff_categories(platform_key: str) -> list:
+    rows = get_conn().execute(
+        "SELECT DISTINCT category_key, category_name FROM buff_services"
+        " WHERE platform_key=? AND enabled=1 ORDER BY category_key",
+        (platform_key,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def buff_services_list(platform_key: str, category_key: str,
+                       only_enabled: bool = True) -> list:
+    q = ("SELECT * FROM buff_services WHERE platform_key=? AND category_key=?"
+         + (" AND enabled=1" if only_enabled else "") + " ORDER BY sell_price")
+    return [dict(r) for r in get_conn().execute(q, (platform_key, category_key)).fetchall()]
+
+
+def buff_service_get(sid: int):
+    r = get_conn().execute("SELECT * FROM buff_services WHERE id=?", (sid,)).fetchone()
+    return dict(r) if r else None
+
+
+def buff_service_set_price(sid: int, sell_price: int) -> bool:
+    with _lock:
+        c = get_conn()
+        cur = c.execute("UPDATE buff_services SET sell_price=? WHERE id=?",
+                        (int(sell_price), sid))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def buff_service_toggle(sid: int) -> bool:
+    """Bật/tắt dịch vụ. Trả True nếu sau toggle đang BẬT."""
+    with _lock:
+        c = get_conn()
+        r = c.execute("SELECT enabled FROM buff_services WHERE id=?", (sid,)).fetchone()
+        if not r:
+            return False
+        new = 0 if int(r["enabled"]) else 1
+        c.execute("UPDATE buff_services SET enabled=? WHERE id=?", (new, sid))
+        c.commit()
+        return bool(new)
+
+
+def buff_order_create(tg_id: int, service_id: int, link: str,
+                      quantity: int, total_price: int, total_cost: int) -> dict:
+    import random as _rnd
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        for _ in range(10):
+            code = "B" + str(_rnd.randint(100000, 999999))
+            try:
+                cur = c.execute(
+                    "INSERT INTO buff_orders(code, tg_id, service_id, link, quantity,"
+                    " total_price, total_cost, status, created_at, updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,'pending',?,?)",
+                    (code, tg_id, service_id, link, quantity,
+                     total_price, total_cost, now, now),
+                )
+                c.commit()
+                break
+            except Exception:
+                continue
+        else:
+            raise RuntimeError("Không tạo được mã đơn buff")
+        oid = cur.lastrowid
+    return buff_order_get(oid)
+
+
+def buff_order_get(order_id: int):
+    r = get_conn().execute("SELECT * FROM buff_orders WHERE id=?", (order_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def buff_order_update(order_id: int, **fields) -> bool:
+    allowed = {"status", "panel_order_id", "total_price", "total_cost", "link", "quantity"}
+    sets = {k: v for k, v in fields.items() if k in allowed}
+    if not sets:
+        return False
+    sets["updated_at"] = int(time.time())
+    with _lock:
+        c = get_conn()
+        cols = ", ".join(f"{k}=?" for k in sets)
+        cur = c.execute(f"UPDATE buff_orders SET {cols} WHERE id=?",
+                        (*sets.values(), order_id))
+        c.commit()
+        return cur.rowcount > 0
+
+
+def buff_orders_pending(limit: int = 5) -> list:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM buff_orders WHERE status='pending' ORDER BY id LIMIT ?",
+        (limit,)).fetchall()]
+
+
+def buff_orders_by_user(tg_id: int, limit: int = 10) -> list:
+    return [dict(r) for r in get_conn().execute(
+        "SELECT o.*, s.name AS service_name, s.platform_name"
+        " FROM buff_orders o LEFT JOIN buff_services s ON s.id=o.service_id"
+        " WHERE o.tg_id=? ORDER BY o.id DESC LIMIT ?",
+        (tg_id, limit)).fetchall()]

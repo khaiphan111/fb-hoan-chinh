@@ -13,3 +13,4 @@ tailscale/
 node_modules/
 watchdog/
 .DS_Store
+buff_session.json

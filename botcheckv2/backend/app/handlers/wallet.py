@@ -49,6 +49,7 @@ class BankState(StatesGroup):
 class PayOSState(StatesGroup):
     waiting_for_amount = State()
     waiting_for_shop_amount = State()
+    waiting_for_buff_amount = State()
 
 _NAP_QUICK_AMOUNTS = [50000, 100000, 200000, 500000, 1000000]
 
@@ -693,7 +694,7 @@ def _parse_payos_amount(raw: str) -> int:
 
 async def _make_payos_order(tg_id: int, amount: int, target: str = "main"):
     """Tạo (hoặc dùng lại) đơn PayOS. Trả (order_code, checkout_url, qr_code, reused)."""
-    if target not in ("main", "shop"):
+    if target not in ("main", "shop", "buff"):
         target = "main"
     from .. import payos as payos_mod
     if not payos_mod.is_configured():
@@ -755,7 +756,12 @@ async def _send_payos_invoice(msg: Message, tg_id: int, amount: int,
           if checkout_url else []),
         [InlineKeyboardButton(text="❌ Hủy đơn", callback_data=f"payos_cancel:{order_code}")],
     ])
-    wallet_txt = "🛒 <b>Ví shop</b> <i>(mua tài khoản)</i>" if target == "shop" else "💰 <b>Ví chính</b> <i>(check UID • mua gói)</i>"
+    if target == "shop":
+        wallet_txt = "🛒 <b>Ví shop</b> <i>(mua tài khoản)</i>"
+    elif target == "buff":
+        wallet_txt = "🚀 <b>Ví buff</b> <i>(buff tương tác MXH)</i>"
+    else:
+        wallet_txt = "💰 <b>Ví chính</b> <i>(check UID • mua gói)</i>"
     caption = (
         "💳 <b>NẠP TIỀN TỰ ĐỘNG</b>" + (" <i>(dùng lại đơn đang chờ)</i>" if reused else "") + "\n"
         "━━━━━━━━━━━━━━\n"
@@ -812,7 +818,12 @@ async def _nap_amount_picker(msg: Message, target: str = "main"):
         rows.append(row)
     rows.append([InlineKeyboardButton(text="✏️ Nhập số khác",
                                       callback_data=f"nap_custom:{target}")])
-    wallet_txt = "🛒 <b>Ví shop</b>" if target == "shop" else "💰 <b>Ví chính</b>"
+    if target == "shop":
+        wallet_txt = "🛒 <b>Ví shop</b>"
+    elif target == "buff":
+        wallet_txt = "🚀 <b>Ví buff</b>"
+    else:
+        wallet_txt = "💰 <b>Ví chính</b>"
     await msg.answer(
         f"💳 <b>NẠP TIỀN</b> → {wallet_txt}\n"
         f"━━━━━━━━━━━━━━\n"
@@ -826,19 +837,19 @@ async def on_nap_amt(cb: CallbackQuery):
     try:
         _, target, amount_s = cb.data.split(":")
         amount = int(amount_s)
-        assert target in ("main", "shop") and amount > 0
+        assert target in ("main", "shop", "buff") and amount > 0
     except Exception:
         await cb.message.answer("❌ Yêu cầu không hợp lệ, gõ /nap lại nhé.")
         return
-    if target == "shop":
+    if target in ("shop", "buff"):
         try:
             order_code, checkout_url, qr_code, reused = await _make_payos_order(
-                cb.from_user.id, amount, "shop")
+                cb.from_user.id, amount, target)
         except Exception as e:
             await cb.message.answer(f"❌ {e}")
             return
         await _send_payos_invoice(cb.message, cb.from_user.id, amount,
-                                  order_code, checkout_url, qr_code, reused, "shop")
+                                  order_code, checkout_url, qr_code, reused, target)
     else:
         await _ask_payos_wallet(cb.message, amount)
 
@@ -850,6 +861,8 @@ async def on_nap_custom(cb: CallbackQuery, state: FSMContext):
                             parse_mode="HTML")
     if target == "shop":
         await state.set_state(PayOSState.waiting_for_shop_amount)
+    elif target == "buff":
+        await state.set_state(PayOSState.waiting_for_buff_amount)
     else:
         await state.set_state(PayOSState.waiting_for_amount)
 
@@ -942,6 +955,49 @@ async def on_napshop_amount(msg: Message, state: FSMContext):
         return
     await _send_payos_invoice(msg, msg.from_user.id, amount,
                               order_code, checkout_url, qr_code, reused, "shop")
+
+@router.message(Command("napbuff"))
+async def on_napbuff(msg: Message):
+    """Nạp thẳng vào ví buff (buff tương tác MXH)."""
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        try:
+            amount = _parse_payos_amount(parts[1])
+        except Exception:
+            await msg.answer("❌ Số tiền không hợp lệ. Ví dụ: <code>/napbuff 50000</code>")
+            return
+        try:
+            order_code, checkout_url, qr_code, reused = await _make_payos_order(
+                msg.from_user.id, amount, "buff")
+        except Exception as e:
+            await msg.answer(f"❌ {e}")
+            return
+        await _send_payos_invoice(msg, msg.from_user.id, amount,
+                                  order_code, checkout_url, qr_code, reused, "buff")
+    else:
+        await _nap_amount_picker(msg, "buff")
+
+@router.message(PayOSState.waiting_for_buff_amount)
+async def on_napbuff_amount(msg: Message, state: FSMContext):
+    _t = (msg.text or "").strip()
+    if _t.startswith("/") and _t.split()[0].lower() not in ("/huy", "/cancel"):
+        await state.clear()
+        await msg.answer("\U0001f6ab \u0110\u00e3 h\u1ee7y thao t\u00e1c \u0111ang nh\u1eadp. B\u1ea1n g\u00f5 l\u1ea1i l\u1ec7nh v\u1eeba r\u1ed3i nh\u00e9.")
+        return
+    try:
+        amount = _parse_payos_amount(msg.text)
+    except Exception:
+        await msg.answer("❌ Số tiền không hợp lệ. Vui lòng nhập lại (ví dụ: 50000):")
+        return
+    await state.clear()
+    try:
+        order_code, checkout_url, qr_code, reused = await _make_payos_order(
+            msg.from_user.id, amount, "buff")
+    except Exception as e:
+        await msg.answer(f"❌ {e}")
+        return
+    await _send_payos_invoice(msg, msg.from_user.id, amount,
+                              order_code, checkout_url, qr_code, reused, "buff")
 
 @router.callback_query(F.data == "payos_auto")
 async def on_payos_auto(cb: CallbackQuery, state: FSMContext):
@@ -1056,7 +1112,7 @@ async def on_balance(msg: Message):
 async def on_wal_nap(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     target = cb.data.split(":", 1)[1]
-    await _nap_amount_picker(cb.message, target if target == "shop" else "main")
+    await _nap_amount_picker(cb.message, target if target in ("shop", "buff") else "main")
 
 @router.callback_query(F.data == "wal_hist")
 async def on_wal_hist(cb: CallbackQuery):
@@ -1071,11 +1127,13 @@ async def on_sodu(msg: Message):
         return
     credits = db.get_credits(msg.from_user.id)
     shop_bal = int(user["shop_balance"] or 0) if "shop_balance" in user.keys() else 0
+    buff_bal = int(user["buff_balance"] or 0) if "buff_balance" in user.keys() else 0
     main_bal = int(user["balance"] or 0)
     points = db.loyalty_get(msg.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Nạp ví chính", callback_data="wal_nap:main"),
          InlineKeyboardButton(text="🛒 Nạp ví shop", callback_data="wal_nap:shop")],
+        [InlineKeyboardButton(text="🚀 Nạp ví buff", callback_data="wal_nap:buff")],
     ])
     await msg.answer(
         "👛 <b>SỐ DƯ CỦA BẠN</b>\n"
@@ -1084,6 +1142,8 @@ async def on_sodu(msg: Message):
         "      <i>→ Check UID, mua gói/VIP, mua credits</i>\n\n"
         f"🛒 <b>Ví shop:</b> {vnd(shop_bal)}\n"
         "      <i>→ Mua acc, đặt cọc, hộp mù (nạp bằng /napshop)</i>\n\n"
+        f"🚀 <b>Ví buff:</b> {vnd(buff_bal)}\n"
+        "      <i>→ Buff like/follow/view MXH (nạp bằng /napbuff)</i>\n\n"
         f"⚡ <b>Credits:</b> {credits} lượt\n"
         "      <i>→ Check UID hàng loạt (/checkfile, /muacredit để mua thêm)</i>\n\n"
         f"🎁 <b>Điểm:</b> {points} điểm\n"
@@ -2193,6 +2253,8 @@ __all__ = [
     "on_napshop",
     "on_nap_amount",
     "on_napshop_amount",
+    "on_napbuff",
+    "on_napbuff_amount",
     "on_payos_auto",
     "on_payos_cancel",
     "on_payos_status",

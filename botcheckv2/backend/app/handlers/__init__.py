@@ -9,6 +9,7 @@ from . import promo  # noqa: F401  (đăng ký handlers)
 from . import stock  # noqa: F401  (đăng ký handlers)
 from . import warranty  # noqa: F401  (đăng ký handlers)
 from . import admin  # noqa: F401  (đăng ký handlers)
+from . import buff  # noqa: F401  (đăng ký handlers: shop buff tương tác)
 from . import fallback  # noqa: F401  (đăng ký handlers)
 
 # Khôi phục đúng thứ tự handler gốc (aiogram ưu tiên handler đăng ký trước).

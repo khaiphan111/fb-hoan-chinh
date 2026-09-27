@@ -93,7 +93,10 @@ class FollowerPoller:
             self._maint_task = asyncio.create_task(self._maintenance_loop())
         if not hasattr(self, '_ops_task') or not (self._ops_task and not self._ops_task.done()):
             self._ops_task = asyncio.create_task(self._ops_loop())
-        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign + maintenance).")
+        if not hasattr(self, '_buff_task') or not (self._buff_task and not self._buff_task.done()):
+            self._buff_task = asyncio.create_task(self._buff_loop())
+            self._buff_running = False
+        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign + maintenance + buff).")
 
     async def _daily_summary_loop(self):
         while True:
@@ -1074,6 +1077,8 @@ class FollowerPoller:
         tasks = [self._account_task, self._video_task, self._backup_task]
         if hasattr(self, '_proxy_task'):
             tasks.append(self._proxy_task)
+        if hasattr(self, '_buff_task'):
+            tasks.append(self._buff_task)
         for t in tasks:
             if t:
                 t.cancel()
@@ -1081,6 +1086,110 @@ class FollowerPoller:
                 except: pass
         self._account_task = self._video_task = self._backup_task = None
         self._proxy_task = None
+        if hasattr(self, '_buff_task'):
+            self._buff_task = None
+
+    # ══ BUFF LOOP: đặt đơn buff hộ trên panel mỗi 2 phút ══
+    async def _buff_loop(self):
+        """Quét đơn buff 'pending' mỗi 120s, đặt hộ trên panel.
+
+        Thành công -> 'running' (panel xử lý tiếp); thất bại -> 'failed'
+        + hoàn tiền vào VÍ BUFF + báo khách/admin. Dùng flag _buff_running
+        và claim nguyên tử (pending -> placing) để tránh đặt trùng.
+        """
+        await asyncio.sleep(30)
+        while True:
+            try:
+                if getattr(self, "_buff_running", False):
+                    await asyncio.sleep(120)
+                    continue
+                self._buff_running = True
+                try:
+                    await self._process_buff_pending()
+                finally:
+                    self._buff_running = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.error("buff_loop lỗi: %s", e)
+                self._buff_running = False
+            await asyncio.sleep(120)
+
+    async def _process_buff_pending(self):
+        from . import buff_worker
+        from .util import vnd
+        # Thu hồi đơn kẹt ở 'placing' quá 10 phút (worker crash giữa chừng)
+        try:
+            c = db.get_conn()
+            c.execute(
+                "UPDATE buff_orders SET status='pending', updated_at=? "
+                "WHERE status='placing' AND updated_at < ?",
+                (int(time.time()), int(time.time()) - 600))
+            c.commit()
+        except Exception:
+            pass
+        pending = db.buff_orders_pending(5)
+        for o in pending:
+            oid = int(o["id"])
+            # Claim nguyên tử: chỉ đứa đầu tiên đổi được pending -> placing
+            try:
+                cur = db.get_conn().execute(
+                    "UPDATE buff_orders SET status='placing', updated_at=? "
+                    "WHERE id=? AND status='pending'",
+                    (int(time.time()), oid))
+                db.get_conn().commit()
+            except Exception:
+                continue
+            if cur.rowcount == 0:
+                continue
+            order = db.buff_order_get(oid)
+            try:
+                res = await buff_worker.place_buff_order(order)
+            except Exception as e:
+                log.exception("buff place lỗi")
+                res = {"ok": False, "error": f"lỗi worker: {e}"}
+            if res.get("ok"):
+                db.buff_order_update(
+                    oid, status="running",
+                    panel_order_id=str(res.get("panel_order_id") or ""))
+                log.info("buff: đơn %s đã đặt trên panel (%s)",
+                         order["code"], res.get("panel_order_id"))
+                if self._bot:
+                    try:
+                        await self._bot.send_message(
+                            int(order["tg_id"]),
+                            f"🔄 <b>ĐƠN BUFF <code>{order['code']}</code> ĐANG CHẠY</b>\n\n"
+                            f"Đơn của bạn đã được đặt lên hệ thống, "
+                            f"đang tăng dần. Xong sẽ báo tiếp nhé!",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+            else:
+                err = str(res.get("error") or "không rõ")
+                db.buff_order_update(oid, status="failed")
+                # Hoàn tiền vào VÍ BUFF
+                refunded = db.buff_adjust_balance(
+                    int(order["tg_id"]), int(order["total_price"]),
+                    f"buff_refund:{order['code']}")
+                log.warning("buff: đơn %s thất bại (%s), hoàn tiền: %s",
+                            order["code"], err, refunded)
+                if self._bot:
+                    try:
+                        await self._bot.send_message(
+                            int(order["tg_id"]),
+                            f"❌ <b>ĐƠN BUFF <code>{order['code']}</code> GẶP LỖI</b>\n\n"
+                            f"Lý do: {err[:200]}\n"
+                            f"💸 Đã hoàn <b>{vnd(order['total_price'])}</b> "
+                            f"vào ví buff của bạn.",
+                            parse_mode="HTML")
+                    except Exception:
+                        pass
+                try:
+                    await self._alert_admin(
+                        f"🛍️ Đơn buff <code>{order['code']}</code> thất bại: "
+                        f"{err[:200]} (đã hoàn ví buff)")
+                except Exception:
+                    pass
 
     # ══ BACKUP LOOP ═══════════════════════════════════════════
     async def _backup_loop(self):

@@ -186,7 +186,10 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
     """Báo user + admin khi đơn được thanh toán."""
     from .bot import manager, vnd
     from . import db
-    wallet_txt = "🛒 <b>Ví shop</b> (mua acc FB)" if target == "shop" else "💰 <b>Ví chính</b> (check UID, mua gói...)"
+    wallet_txt = (
+        "🛒 <b>Ví shop</b> (mua acc FB)" if target == "shop"
+        else "🚀 <b>Ví buff</b> (buff tương tác MXH)" if target == "buff"
+        else "💰 <b>Ví chính</b> (check UID, mua gói...)")
     msg_text = (
         "✅ <b>NẠP TIỀN THÀNH CÔNG</b>\n\n"
         f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
