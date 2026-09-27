@@ -358,11 +358,12 @@ def _fmt_sold(sold_at: int) -> str:
 #: Tab kho link buff trong cùng spreadsheet nhập kho
 LINKWH_TAB = "KhoLinkBuff"
 
-#: Tiêu đề tab kho link (A:J):
+#: Tiêu đề tab kho link (A:K):
 #: STT | Khách hàng | Nền tảng | Dịch vụ | Link |
-#: Giá gốc (/1000) | Giá bot (/1000) | Số lần dùng | Lần đầu dùng | Lần cuối dùng
+#: Giá gốc (/1000) | Giá bot (/1000) | Lãi (/1000) |
+#: Số lần dùng | Lần đầu dùng | Lần cuối dùng
 LINKWH_HEADERS = ["STT", "Khách hàng", "Nền tảng", "Dịch vụ", "Link",
-                  "Giá gốc (/1000)", "Giá bot (/1000)",
+                  "Giá gốc (/1000)", "Giá bot (/1000)", "Lãi (/1000)",
                   "Số lần dùng", "Lần đầu dùng", "Lần cuối dùng"]
 
 
@@ -396,7 +397,8 @@ def build_linkwh_values(rows):
                 cust = str(tg_id)
             cost = int(r.get("cost_price") or 0)
             sell = int(r.get("sell_price") or 0)
-            total_profit += (sell - cost)
+            profit = sell - cost
+            total_profit += profit
             out.append([
                 i,
                 cust,
@@ -405,6 +407,7 @@ def build_linkwh_values(rows):
                 (r.get("link") or "").strip(),
                 cost if cost else "",
                 sell if sell else "",
+                profit if (cost or sell) else "",
                 int(r.get("use_count") or 0),
                 _fmt_linkwh_ts(r.get("first_used_at")),
                 _fmt_linkwh_ts(r.get("last_used_at")),
@@ -415,8 +418,8 @@ def build_linkwh_values(rows):
     if out and len(out) > 1:
         out.append([
             "📊 TỔNG", "", "", f"{len(out) - 1} link",
+            "", "", "", f"{total_profit:,}đ",
             "", "", "",
-            f"Lãi: {total_profit:,}đ/1000", "", "",
         ])
     return out
 
@@ -440,12 +443,12 @@ async def push_linkwh(spreadsheet_id: str, rows) -> int:
         # Xóa dữ liệu cũ từ dòng 2 trở đi (tránh dòng thừa sót lại)
         await _cli(["sheets", "spreadsheets", "values", "clear", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id,
-                                "range": f"{tab}!A2:J"})])
+                                "range": f"{tab}!A2:K"})])
         # Ghi tiêu đề + toàn bộ dữ liệu
         end = len(values)
         await _cli(["sheets", "spreadsheets", "values", "update", "--params",
                     json.dumps({"spreadsheetId": spreadsheet_id,
-                                "range": f"{tab}!A1:J{end}",
+                                "range": f"{tab}!A1:K{end}",
                                 "valueInputOption": "USER_ENTERED"})],
                    {"values": values})
         log.info("push_linkwh: đã ghi %d dòng lên tab '%s'", end - 1, tab)
