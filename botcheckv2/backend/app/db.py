@@ -449,6 +449,22 @@ def init_db() -> None:
                 ON buff_orders(status);
             CREATE INDEX IF NOT EXISTS idx_buff_orders_user
                 ON buff_orders(tg_id);
+            CREATE TABLE IF NOT EXISTS buff_link_warehouse (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id        BIGINT NOT NULL,
+                platform     TEXT DEFAULT '',
+                link         TEXT NOT NULL,
+                first_used_at BIGINT NOT NULL,
+                last_used_at  BIGINT NOT NULL,
+                use_count    INTEGER DEFAULT 1,
+                UNIQUE(tg_id, link)
+            );
+            CREATE INDEX IF NOT EXISTS idx_buff_link_wh_user
+                ON buff_link_warehouse(tg_id);
+            CREATE INDEX IF NOT EXISTS idx_buff_link_wh_platform
+                ON buff_link_warehouse(platform);
+            CREATE INDEX IF NOT EXISTS idx_buff_link_wh_last
+                ON buff_link_warehouse(last_used_at DESC);
             """
         )
         # Keys that MUST be force-updated on every restart
@@ -5273,6 +5289,62 @@ def buff_order_create(tg_id: int, service_id: int, link: str,
 def buff_order_get(order_id: int):
     r = get_conn().execute("SELECT * FROM buff_orders WHERE id=?", (order_id,)).fetchone()
     return dict(r) if r else None
+
+
+def buff_link_save(tg_id: int, platform: str, link: str):
+    """Lưu link vào kho (tự động khi khách đặt đơn)."""
+    now = int(time.time())
+    link = (link or "").strip()
+    if not link:
+        return
+    with _lock:
+        c = get_conn()
+        c.execute(
+            "INSERT INTO buff_link_warehouse(tg_id, platform, link, first_used_at, last_used_at, use_count)"
+            " VALUES(?,?,?,?,?,1)"
+            " ON CONFLICT(tg_id, link) DO UPDATE SET"
+            " last_used_at=excluded.last_used_at,"
+            " use_count=use_count+1,"
+            " platform=excluded.platform",
+            (tg_id, platform or "", link, now, now),
+        )
+        c.commit()
+
+
+def buff_link_by_user(tg_id: int, limit: int = 10):
+    """Link đã dùng của 1 khách (mới nhất trước)."""
+    rows = get_conn().execute(
+        "SELECT * FROM buff_link_warehouse WHERE tg_id=? ORDER BY last_used_at DESC LIMIT ?",
+        (tg_id, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def buff_link_warehouse_list(platform: str = "", search: str = "",
+                             page: int = 0, per_page: int = 10):
+    """Kho link cho admin: lọc theo nền tảng / tìm kiếm."""
+    conds, params = [], []
+    if platform:
+        conds.append("platform=?")
+        params.append(platform)
+    if search:
+        conds.append("(link LIKE ? OR CAST(tg_id AS TEXT) LIKE ?)")
+        params += [f"%{search}%", f"%{search}%"]
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    total = get_conn().execute(
+        f"SELECT COUNT(*) FROM buff_link_warehouse {where}", params).fetchone()[0]
+    rows = get_conn().execute(
+        f"SELECT * FROM buff_link_warehouse {where}"
+        f" ORDER BY last_used_at DESC LIMIT ? OFFSET ?",
+        params + [per_page, page * per_page]).fetchall()
+    return total, [dict(r) for r in rows]
+
+
+def buff_link_platforms():
+    """Danh sách nền tảng có trong kho link."""
+    rows = get_conn().execute(
+        "SELECT DISTINCT platform FROM buff_link_warehouse WHERE platform<>'' ORDER BY platform"
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 def buff_order_update(order_id: int, **fields) -> bool:

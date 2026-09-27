@@ -147,6 +147,15 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
             await cb.message.edit_text(
                 "Chọn loại dịch vụ:", parse_mode="HTML",
                 reply_markup=_cat_kb(parts[3]))
+        elif where == "link":
+            data = await state.get_data()
+            svc = db.buff_service_get(data.get("buff_sid"))
+            if svc:
+                await state.set_state(BuffState.waiting_for_link)
+                await cb.message.edit_text(
+                    f"📦 <b>{html.escape(svc['name'])}</b>\n\n"
+                    "🔗 Gửi <b>link</b> cần buff:",
+                    parse_mode="HTML")
         return
 
     if action == "plat" and len(parts) > 2:
@@ -185,13 +194,24 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
         await state.update_data(buff_sid=sid)
         await state.set_state(BuffState.waiting_for_link)
         bal = db.buff_get_balance(uid)
+        # Nút chọn link đã dùng (nếu có)
+        kb = None
+        try:
+            saved = db.buff_link_by_user(uid, 5)
+            if saved:
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📋 Chọn link đã dùng",
+                                          callback_data="buff:picklink")],
+                ])
+        except Exception:
+            pass
         await cb.message.edit_text(
             f"📦 <b>{html.escape(svc['name'])}</b> — {html.escape(svc['platform_name'])}\n"
             f"💰 Giá: <b>{vnd(svc['sell_price'])}đ/1000</b>\n"
             f"👛 Ví buff của bạn: <b>{vnd(bal)}</b>\n"
             f"📝 <i>{html.escape(svc['description'] or '')}</i>\n\n"
             "🔗 Gửi <b>link</b> cần buff (bài viết/video/trang, phải công khai):",
-            parse_mode="HTML")
+            parse_mode="HTML", reply_markup=kb)
         return
 
     if action == "myorders":
@@ -258,6 +278,11 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML")
             return
         await state.clear()
+        # Lưu link vào kho (tự động)
+        try:
+            db.buff_link_save(uid, svc.get("platform_name", ""), link)
+        except Exception:
+            pass
         try:
             await _notify_admin_smart(
                 cb.bot,
@@ -273,6 +298,51 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
             f"💵 Đã trừ ví buff: <b>{vnd(total)}</b>\n"
             f"👛 Ví buff còn: <b>{vnd(bal - total)}</b>\n\n"
             "⏳ Bot đang đặt đơn trên hệ thống, xong sẽ báo bạn ngay.",
+            parse_mode="HTML")
+        return
+
+    if action == "picklink":
+        saved = db.buff_link_by_user(uid, 10)
+        if not saved:
+            await cb.answer("Chưa có link nào.", show_alert=True)
+            return
+        kb = []
+        for i, s in enumerate(saved):
+            label = s["link"][:40] + ("…" if len(s["link"]) > 40 else "")
+            kb.append([InlineKeyboardButton(
+                text=f"🔗 {label}",
+                callback_data=f"buff:uselink:{s['id']}")])
+        kb.append([InlineKeyboardButton(text="✏️ Nhập link mới",
+                                        callback_data="buff:back:link")])
+        await cb.message.edit_text(
+            "📋 <b>LINK ĐÃ DÙNG</b> (bấm để chọn):",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        return
+
+    if action == "uselink" and len(parts) > 2:
+        try:
+            lid = int(parts[2])
+        except ValueError:
+            await cb.answer("❌ Link không hợp lệ.", show_alert=True)
+            return
+        saved = db.buff_link_by_user(uid, 50)
+        pick = next((s for s in saved if s["id"] == lid), None)
+        if not pick:
+            await cb.answer("❌ Link không tồn tại.", show_alert=True)
+            return
+        data = await state.get_data()
+        svc = db.buff_service_get(data.get("buff_sid"))
+        if not svc:
+            await cb.message.edit_text("❌ Gói đã hết hạn, gõ /buff đặt lại nhé.")
+            await state.clear()
+            return
+        await state.update_data(buff_link=pick["link"])
+        await state.set_state(BuffState.waiting_for_qty)
+        await cb.message.edit_text(
+            f"🔗 Link: <code>{html.escape(pick['link'][:60])}</code>\n\n"
+            f"🔢 Nhập <b>số lượng</b> (tối thiểu {vnd(svc['min_qty'])} — "
+            f"tối đa {vnd(svc['max_qty'])}):",
             parse_mode="HTML")
         return
 
@@ -374,6 +444,9 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(text="📋 10 đơn mới nhất",
                                   callback_data="buffadm:orders")])
+        rows.append(
+            [InlineKeyboardButton(text="🔗 Kho link khách gửi",
+                                  callback_data="buffadm:linkwh:0:")])
     if super_only:
         buff_on = db.get_setting("buff_enabled", "0") == "1"
         rows += [
@@ -710,6 +783,67 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
             txt = "\n".join(lines)
         await cb.message.edit_text(
             txt, parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+        return
+
+    if action == "linkwh":
+        if not await _need("orders"):
+            return
+        # buffadm:linkwh:<page>:<platform>
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        platform = parts[3] if len(parts) > 3 else ""
+        per_page = 8
+        total, rows = db.buff_link_warehouse_list(platform, "", page, per_page)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        from datetime import datetime
+        lines = [f"🔗 <b>KHO LINK KHÁCH GỬI</b> ({total})"]
+        if platform:
+            lines.append(f"📌 Nền tảng: <b>{html.escape(platform)}</b>")
+        lines.append("")
+        kb_rows = []
+        # Lọc nền tảng
+        plats = db.buff_link_platforms()
+        if plats:
+            prow = []
+            for p in plats[:6]:
+                mark = "✅" if p == platform else ""
+                prow.append(InlineKeyboardButton(
+                    text=f"{mark}{p[:12]}",
+                    callback_data=f"buffadm:linkwh:0:{p}"))
+                if len(prow) == 3:
+                    kb_rows.append(prow)
+                    prow = []
+            if prow:
+                kb_rows.append(prow)
+            if platform:
+                kb_rows.append([InlineKeyboardButton(
+                    text="❌ Bỏ lọc", callback_data="buffadm:linkwh:0:")])
+        if not rows:
+            lines.append("<i>Chưa có link nào trong kho.</i>")
+        else:
+            for r in rows:
+                first = datetime.fromtimestamp(r["first_used_at"]).strftime("%d/%m/%y %H:%M")
+                last = datetime.fromtimestamp(r["last_used_at"]).strftime("%d/%m/%y %H:%M")
+                link_short = r["link"][:45] + ("…" if len(r["link"]) > 45 else "")
+                lines.append(
+                    f"• <code>{html.escape(link_short)}</code>\n"
+                    f"  👤 <code>{r['tg_id']}</code> • 📌 {html.escape(r['platform'] or '?')}\n"
+                    f"  🔁 {r['use_count']} lần • 🕐 {first} → {last}")
+        # Phân trang
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(
+                text="⬅️ Trước",
+                callback_data=f"buffadm:linkwh:{page-1}:{platform}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton(
+                text="Tiếp ➡️",
+                callback_data=f"buffadm:linkwh:{page+1}:{platform}"))
+        if nav:
+            kb_rows.append(nav)
+        kb_rows.append([InlineKeyboardButton(text="⬅️ Menu", callback_data="buffadm:menu")])
+        await cb.message.edit_text(
+            "\n".join(lines), parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
         return
 
