@@ -120,6 +120,7 @@ MESSAGE_ORDER = [
     "on_file_check_cancel",
     "on_cookie_file_cancel",
     "on_cookieadd_cancel",
+    "cmd_job",
     "on_other",
     "on_vip",
     "on_zalo",

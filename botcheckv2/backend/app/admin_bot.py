@@ -3379,6 +3379,59 @@ _pending_broadcasts = {}
 #  bản đang chạy nằm ở trên, dùng manager.bot linh hoạt hơn)
 
 
+@router.message(Command("job"))
+async def cmd_job(msg: Message):
+    """Bật/tắt job nền. /job xem danh sách, /job <tên> <on|off>."""
+    if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    jobs = [
+        ("backup_telegram", "📦 Gửi backup DB qua Telegram (0h)"),
+        ("db_backup", "💾 Backup DB ra file (4h)"),
+        ("stock_backup", "📦 Backup kho (3h)"),
+        ("cookie_clean", "🍪 Dọn cookie pool (3h)"),
+        ("clean_stock", "🧹 Dọn kho (2h)"),
+        ("stock_recheck", "🔄 Re-check LIVE toàn kho (3h)"),
+        ("supplier_import", "📥 Nhập kho NCC (6h)"),
+        ("stall_auto_import", "🏪 Nhập kho gian hàng tự động"),
+        ("sheet_sold_push", "📊 Đẩy 'đã bán' lên Sheet"),
+        ("sheet_linkwh", "🔗 Đồng bộ kho link buff lên Sheet"),
+        ("revenue_report", "💰 Báo cáo doanh thu (8h)"),
+        ("morning_report", "🌅 Báo cáo sáng (7h)"),
+        ("birthday", "🎂 Quà sinh nhật (8h)"),
+        ("fraud_scan", "🛡️ Quét gian lận"),
+        ("warranty_remind", "⏰ Nhắc BH quá hạn"),
+        ("followup_24h", "💬 Hỏi thăm sau 24h"),
+        ("review_nudge", "⭐ Xin đánh giá sau mua"),
+        ("stale_stock", "⚠️ Cảnh báo acc nằm kho lâu"),
+    ]
+    parts = (msg.text or "").split()
+    if len(parts) == 1:
+        lines = ["⚙️ <b>JOB NỀN</b> — /job &lt;tên&gt; &lt;on|off&gt;\n"]
+        for name, label in jobs:
+            on = db.get_setting(f"job_{name}", "1") == "1"
+            lines.append(f"{'🟢' if on else '🔴'} <code>{name}</code> — {label}")
+        await msg.answer("\n".join(lines), parse_mode="HTML")
+        return
+    name = parts[1].lower()
+    valid = {n for n, _ in jobs}
+    if name not in valid:
+        await msg.answer(f"❌ Không có job <code>{name}</code>. Gõ /job để xem danh sách.",
+                         parse_mode="HTML")
+        return
+    if len(parts) < 3 or parts[2].lower() not in ("on", "off", "1", "0"):
+        await msg.answer("HDSD: /job &lt;tên&gt; &lt;on|off&gt;", parse_mode="HTML")
+        return
+    new = "1" if parts[2].lower() in ("on", "1") else "0"
+    db.set_setting(f"job_{name}", new)
+    try:
+        db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                           "job_toggle", f"{name}={'on' if new == '1' else 'off'}")
+    except Exception:
+        pass
+    await msg.answer(f"{'🟢 Đã BẬT' if new == '1' else '🔴 Đã TẮT'} job <code>{name}</code>.",
+                     parse_mode="HTML")
+
+
 @router.message(Command("promo"))
 async def cmd_promo(msg: Message):
     """Tạo mã khuyến mãi với nhiều tuỳ chọn. Alias /phatcode nâng cao."""

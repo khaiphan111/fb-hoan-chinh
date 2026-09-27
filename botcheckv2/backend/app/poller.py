@@ -5,6 +5,16 @@ from .util import now, vn_time_str
 from .event_bus import event_bus
 from . import ops
 
+
+def _job_on(name: str) -> bool:
+    """Công tắc job nền (setting job_<name>, mặc định "1" = BẬT).
+    Giữ nguyên hành vi hiện tại; admin tắt bằng /job <tên> off."""
+    try:
+        return db.get_setting(f"job_{name}", "1") == "1"
+    except Exception:
+        return True
+
+
 async def _handle_alerts(platform: str, target: str, condition: str, message: str, bot=None):
     rules = db.get_alert_rules(target=target)
     for rule in rules:
@@ -18,8 +28,7 @@ async def _handle_alerts(platform: str, target: str, condition: str, message: st
                     pass
 
 async def _notify_admin_watch_change(uid: str, old: str, new: str, tg_id: int):
-    import app.bot as botmod  # lazy: tranh circular import voi handlers
-    """Báo cho admin qua mọi kênh đang chạy khi UID được theo dõi đổi trạng thái."""
+    import app.bot as botmod  # lazy: tranh circular import voi handlers    """Báo cho admin qua mọi kênh đang chạy khi UID được theo dõi đổi trạng thái."""
     icon = "🔴" if new == "die" else "🟢"
     msg = (
         f"{icon} <b>WATCH ĐỔI TRẠNG THÁI</b>\n"
@@ -230,11 +239,12 @@ class FollowerPoller:
             try:
                 now_t = time.localtime()
                 if now_t.tm_min < 5:
-                    if now_t.tm_hour == 7:
+                    if now_t.tm_hour == 7 and _job_on("morning_report"):
                         await ops.morning_report()
-                    elif now_t.tm_hour == 8:
+                    elif now_t.tm_hour == 8 and _job_on("birthday"):
                         await ops.birthday_job(getattr(self, '_bot', None))
-                    await ops.fraud_scan()
+                    if _job_on("fraud_scan"):
+                        await ops.fraud_scan()
             except Exception as e:
                 log.exception("ops_loop error: %s", e)
             await asyncio.sleep(60)
@@ -245,44 +255,48 @@ class FollowerPoller:
             try:
                 now_t = time.localtime()
                 today = time.strftime("%Y-%m-%d", now_t)
-                if now_t.tm_hour == 3 and db.get_setting("maint_cookie_clean") != today:
+                if now_t.tm_hour == 3 and db.get_setting("maint_cookie_clean") != today and _job_on("cookie_clean"):
                     try:
                         await self._clean_cookie_pool()
                     finally:
                         db.set_setting("maint_cookie_clean", today)
-                if now_t.tm_hour == 8 and db.get_setting("maint_revenue_report") != today:
+                if now_t.tm_hour == 8 and db.get_setting("maint_revenue_report") != today and _job_on("revenue_report"):
                     try:
                         await self._send_revenue_report()
                     finally:
                         db.set_setting("maint_revenue_report", today)
                 # 5.6 Nhắc claim bảo hành quá hạn chưa xử lý
-                try:
-                    await self._remind_overdue_warranty()
-                except Exception as e:
-                    log.warning("warranty remind: %s", e)
+                if _job_on("warranty_remind"):
+                    try:
+                        await self._remind_overdue_warranty()
+                    except Exception as e:
+                        log.warning("warranty remind: %s", e)
                 # 5.13 Hỏi thăm sau 24h mua acc
-                try:
-                    await self._followup_orders()
-                except Exception as e:
-                    log.warning("followup: %s", e)
+                if _job_on("followup_24h"):
+                    try:
+                        await self._followup_orders()
+                    except Exception as e:
+                        log.warning("followup: %s", e)
                 # Cảm ơn + xin đánh giá sau khi mua ~90 phút
-                try:
-                    await self._nudge_reviews()
-                except Exception as e:
-                    log.warning("review nudge: %s", e)
+                if _job_on("review_nudge"):
+                    try:
+                        await self._nudge_reviews()
+                    except Exception as e:
+                        log.warning("review nudge: %s", e)
                 # 5.10 Cảnh báo acc nằm kho lâu
-                try:
-                    await self._warn_stale_stock()
-                except Exception as e:
-                    log.warning("stale stock: %s", e)
+                if _job_on("stale_stock"):
+                    try:
+                        await self._warn_stale_stock()
+                    except Exception as e:
+                        log.warning("stale stock: %s", e)
                 # 5.5 Dọn kho định kỳ 2h sáng
-                if now_t.tm_hour == 2 and db.get_setting("maint_clean_stock") != today:
+                if now_t.tm_hour == 2 and db.get_setting("maint_clean_stock") != today and _job_on("clean_stock"):
                     try:
                         await self._clean_old_stock()
                     finally:
                         db.set_setting("maint_clean_stock", today)
                 # 5.8 Backup kho sau khi dọn cookie (3h sáng)
-                if now_t.tm_hour == 3 and db.get_setting("maint_stock_backup") != today:
+                if now_t.tm_hour == 3 and db.get_setting("maint_stock_backup") != today and _job_on("stock_backup"):
                     try:
                         await self._backup_stock()
                     except Exception as e:
@@ -290,7 +304,7 @@ class FollowerPoller:
                     finally:
                         db.set_setting("maint_stock_backup", today)
                 # Backup database mỗi đêm (4h sáng, giữ 7 bản gần nhất)
-                if now_t.tm_hour == 4 and db.get_setting("maint_db_backup") != today:
+                if now_t.tm_hour == 4 and db.get_setting("maint_db_backup") != today and _job_on("db_backup"):
                     try:
                         path = db.db_backup(keep=7)
                         if path:
@@ -300,7 +314,7 @@ class FollowerPoller:
                     finally:
                         db.set_setting("maint_db_backup", today)
                 # 5.4 Nhập kho tự động từ NCC (6h sáng)
-                if now_t.tm_hour == 6 and db.get_setting("maint_supplier_import") != today:
+                if now_t.tm_hour == 6 and db.get_setting("maint_supplier_import") != today and _job_on("supplier_import"):
                     try:
                         await self._auto_import_supplier()
                     except Exception as e:
@@ -308,28 +322,32 @@ class FollowerPoller:
                     finally:
                         db.set_setting("maint_supplier_import", today)
                 # Re-check LIVE toàn bộ kho định kỳ (mặc định 3 ngày/lần, 3h sáng)
-                try:
-                    await self._maybe_stock_recheck(now_t, today)
-                except Exception as e:
-                    log.warning("stock recheck schedule: %s", e)
+                if _job_on("stock_recheck"):
+                    try:
+                        await self._maybe_stock_recheck(now_t, today)
+                    except Exception as e:
+                        log.warning("stock recheck schedule: %s", e)
                 # Đẩy dấu "đã bán" ngược lên Google Sheet (cột J) cho acc bán ra
-                try:
-                    await self._push_sold_to_sheet()
-                except Exception as e:
-                    log.warning("sheet sold push: %s", e)
+                if _job_on("sheet_sold_push"):
+                    try:
+                        await self._push_sold_to_sheet()
+                    except Exception as e:
+                        log.warning("sheet sold push: %s", e)
                 # Đồng bộ kho link buff lên tab KhoLinkBuff (tối đa 30 phút/lần)
-                try:
-                    now_ts = time.time()
-                    if now_ts - getattr(self, "_linkwh_last", 0) >= 1800:
-                        self._linkwh_last = now_ts
-                        await self._push_linkwh_to_sheet()
-                except Exception as e:
-                    log.warning("sheet linkwh push: %s", e)
+                if _job_on("sheet_linkwh"):
+                    try:
+                        now_ts = time.time()
+                        if now_ts - getattr(self, "_linkwh_last", 0) >= 1800:
+                            self._linkwh_last = now_ts
+                            await self._push_linkwh_to_sheet()
+                    except Exception as e:
+                        log.warning("sheet linkwh push: %s", e)
                 # Nhập kho tự động từng gian hàng theo chu kỳ riêng (/shopadm)
-                try:
-                    await self._auto_import_stalls()
-                except Exception as e:
-                    log.warning("stall auto import: %s", e)
+                if _job_on("stall_auto_import"):
+                    try:
+                        await self._auto_import_stalls()
+                    except Exception as e:
+                        log.warning("stall auto import: %s", e)
                 # Thu hồi quyền admin phụ hết hạn tạm thời
                 try:
                     await self._sweep_expired_admins()
@@ -1240,7 +1258,7 @@ class FollowerPoller:
                 last_backup_str = db.get_setting("last_backup_date", "")
                 today_str = vn_time_str("%Y-%m-%d")
                 
-                if now_t.tm_hour == 0 and last_backup_str != today_str:
+                if now_t.tm_hour == 0 and last_backup_str != today_str and _job_on("backup_telegram"):
                     admin_tg_id = db.get_setting("admin_tg_id", "")
                     admin_tg_group_id = db.get_setting("admin_tg_group_id", "")
                     

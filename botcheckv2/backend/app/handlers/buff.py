@@ -930,7 +930,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         if not svc:
             return
         await state.update_data(buffadm_sid=sid,
-                                buffadm_back=f"pricelist:{page}")
+                                buffadm_back=f"pricelist:{page}",
+                                buffadm_list_mid=cb.message.message_id)
         await state.set_state(BuffAdmState.waiting_for_price)
         await cb.message.answer(
             f"📦 <b>{html.escape(svc['name'])}</b>\n"
@@ -1192,8 +1193,14 @@ async def on_buffadm_price_input(msg: Message, state: FSMContext):
     data = await state.get_data()
     if (msg.text or "").strip().lower().split("@")[0] in ("/huy", "/cancel"):
         back = data.get("buffadm_back", "")
+        list_mid = data.get("buffadm_list_mid")
         await state.clear()
         await msg.answer("Đã hủy.")
+        if list_mid:
+            try:
+                await msg.bot.delete_message(msg.chat.id, list_mid)
+            except Exception:
+                pass
         if back.startswith("pricelist:"):
             try:
                 page = int(back.split(":")[1])
@@ -1202,6 +1209,7 @@ async def on_buffadm_price_input(msg: Message, state: FSMContext):
             await _show_quick_price_list(msg, page)
         return
     sid = data.get("buffadm_sid")
+    list_mid = data.get("buffadm_list_mid")
     try:
         price = int((msg.text or "").strip().replace(".", "").replace(",", ""))
         assert price > 0
@@ -1212,6 +1220,12 @@ async def on_buffadm_price_input(msg: Message, state: FSMContext):
     svc = db.buff_service_get(sid)
     back = data.get("buffadm_back", "")
     await state.clear()
+    # Xóa tin danh sách cũ để không còn nút bấm với giá cũ
+    if list_mid:
+        try:
+            await msg.bot.delete_message(msg.chat.id, list_mid)
+        except Exception:
+            pass
     if ok:
         try:
             db.add_audit_log(msg.from_user.id, "buff_set_price",
