@@ -447,6 +447,9 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="💰 Bảng giá gốc & lãi",
             callback_data="buffadm:pricetable:0")])
+        rows.append([InlineKeyboardButton(
+            text="📝 Sửa giá nhanh (full danh sách)",
+            callback_data="buffadm:pricelist:0")])
     if can_orders:
         rows.append(
             [InlineKeyboardButton(text="📋 10 đơn mới nhất",
@@ -600,7 +603,50 @@ async def _show_price_table(msg, page: int = 0, edit: bool = False):
         await msg.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
-@router.message(Command("buffadm"))
+_PRICELIST_PAGE_SIZE = 15
+
+
+async def _show_quick_price_list(msg, page: int = 0, edit: bool = False):
+    """Danh sách full dịch vụ con — bấm vào là sửa giá luôn."""
+    rows = db.get_conn().execute(
+        "SELECT * FROM buff_services ORDER BY platform_name, category_name, sell_price"
+    ).fetchall()
+    rows = [dict(r) for r in rows]
+    per_page = _PRICELIST_PAGE_SIZE
+    total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    chunk = rows[page * per_page:(page + 1) * per_page]
+
+    kb_rows = []
+    for r in chunk:
+        mark = "✅" if int(r["enabled"]) else "🚫"
+        name = r["name"][:28]
+        kb_rows.append([InlineKeyboardButton(
+            text=f"{mark} {name} — {vnd(r['sell_price'])}đ",
+            callback_data=f"buffadm:quickprice:{r['id']}:{page}")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Trước",
+                                        callback_data=f"buffadm:pricelist:{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="Tiếp ➡️",
+                                        callback_data=f"buffadm:pricelist:{page + 1}"))
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
+                                         callback_data="buffadm:menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    text = (f"📝 <b>SỬA GIÁ NHANH</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"Bấm vào từng gói để sửa giá ngay.\n"
+            f"Trang {page + 1}/{total_pages} — Tổng {len(rows)} gói")
+    if edit:
+        try:
+            await msg.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await msg.answer(text, parse_mode="HTML", reply_markup=kb)
 async def on_buffadm(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
         return
@@ -850,6 +896,36 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         await _show_price_table(cb.message, page, edit=True)
         return
 
+    if action == "pricelist":
+        if not await _need("price"):
+            return
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _show_quick_price_list(cb.message, page, edit=True)
+        return
+
+    if action == "quickprice" and len(parts) > 3:
+        if not await _need("price"):
+            return
+        try:
+            sid = int(parts[2])
+            page = int(parts[3])
+        except ValueError:
+            return
+        svc = db.buff_service_get(sid)
+        if not svc:
+            return
+        await state.update_data(buffadm_sid=sid,
+                                buffadm_back=f"pricelist:{page}")
+        await state.set_state(BuffAdmState.waiting_for_price)
+        await cb.message.answer(
+            f"📦 <b>{html.escape(svc['name'])}</b>\n"
+            f"💰 Giá vốn: {vnd(svc['cost_price'])}đ/1k\n"
+            f"💵 Giá bán hiện tại: <b>{vnd(svc['sell_price'])}đ/1k</b>\n\n"
+            f"✏️ Nhập <b>giá bán mới</b> (đ/1000):\n"
+            f"Gõ /huy để hủy.",
+            parse_mode="HTML")
+        return
+
     if action == "orders":
         if not await _need("orders"):
             return
@@ -1084,6 +1160,17 @@ async def on_buffadm_price_input(msg: Message, state: FSMContext):
         await state.clear()
         return
     data = await state.get_data()
+    if (msg.text or "").strip().lower().split("@")[0] in ("/huy", "/cancel"):
+        back = data.get("buffadm_back", "")
+        await state.clear()
+        await msg.answer("Đã hủy.")
+        if back.startswith("pricelist:"):
+            try:
+                page = int(back.split(":")[1])
+            except (ValueError, IndexError):
+                page = 0
+            await _show_quick_price_list(msg, page)
+        return
     sid = data.get("buffadm_sid")
     try:
         price = int((msg.text or "").strip().replace(".", "").replace(",", ""))
@@ -1093,6 +1180,7 @@ async def on_buffadm_price_input(msg: Message, state: FSMContext):
         return
     ok = db.buff_service_set_price(sid, price)
     svc = db.buff_service_get(sid)
+    back = data.get("buffadm_back", "")
     await state.clear()
     if ok:
         try:
@@ -1103,6 +1191,12 @@ async def on_buffadm_price_input(msg: Message, state: FSMContext):
             pass
         await msg.answer(f"✅ Đã đổi giá bán gói <b>{html.escape(svc['name'])}</b> "
                          f"thành <b>{vnd(price)}đ/1k</b>.", parse_mode="HTML")
+        if back.startswith("pricelist:"):
+            try:
+                page = int(back.split(":")[1])
+            except (ValueError, IndexError):
+                page = 0
+            await _show_quick_price_list(msg, page)
     else:
         await msg.answer("❌ Không tìm thấy gói.")
 
