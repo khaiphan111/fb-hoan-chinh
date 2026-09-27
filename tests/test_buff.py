@@ -32,7 +32,7 @@ def test_buff_seed_platforms(tdb):
     plats = db.buff_platforms()
     keys = {p["key"] for p in plats}
     assert keys == {"tiktok", "facebook", "instagram", "youtube",
-                    "telegram", "shopee", "threads"}
+                    "telegram", "shopee", "threads", "whatsapp", "traffic"}
     # TikTok có 4 loại, 7 gói
     assert len(db.buff_categories("tiktok")) == 4
     n_tiktok = sum(len(db.buff_services_list("tiktok", c["category_key"]))

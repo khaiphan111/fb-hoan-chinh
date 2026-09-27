@@ -5143,6 +5143,8 @@ _BUFF_PLATFORMS = [
     ("telegram", "Telegram", "✈️"),
     ("shopee", "Shopee", "🛍️"),
     ("threads", "Threads", "🧵"),
+    ("whatsapp", "WhatsApp", "💬"),
+    ("traffic", "Traffic", "🚗"),
 ]
 
 # (platform_key, platform_name, category_key, category_name,
