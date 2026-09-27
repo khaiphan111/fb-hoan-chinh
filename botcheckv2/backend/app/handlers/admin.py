@@ -59,11 +59,13 @@ async def on_main_admin_confirm(cb: CallbackQuery):
     parts = cb.data.split("_")
     user_id = int(parts[3])
     amount = int(parts[4])
-    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop") else "main"
+    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop", "buff") else "main"
 
     try:
         if target == "shop":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="shop")
+        elif target == "buff":
+            db.credit_topup(user_id, amount, reason="bank_transfer", wallet="buff")
         else:
             db.adjust_balance(user_id, amount, reason="bank_transfer")
         success = True
@@ -78,7 +80,7 @@ async def on_main_admin_confirm(cb: CallbackQuery):
         
         # Notify user via main bot
         try:
-            _w = "🛒 <b>Ví shop</b>" if target == "shop" else "💰 <b>Ví chính</b>"
+            _w = "🛒 <b>Ví shop</b>" if target == "shop" else ("👛 <b>Ví buff</b>" if target == "buff" else "💰 <b>Ví chính</b>")
             msg_text = (
                 f"✅ <b>NẠP TIỀN THÀNH CÔNG</b>\n\n"
                 f"Bạn vừa được cộng <b>{amount:,.0f} VNĐ</b> vào {_w}.\n"
@@ -86,7 +88,7 @@ async def on_main_admin_confirm(cb: CallbackQuery):
             )
             try:
                 _u = db.get_user(user_id)
-                _bal = (_u["shop_balance"] if target == "shop" else _u["balance"]) if _u is not None else 0
+                _bal = (_u["shop_balance"] if target == "shop" else (_u["buff_balance"] if target == "buff" else _u["balance"])) if _u is not None else 0
                 msg_text += f"\n\n{_w} số dư hiện tại: <b>{_bal:,.0f} VNĐ</b>"
             except Exception:
                 pass

@@ -576,6 +576,7 @@ async def _ask_bank_wallet(msg, amount: int):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Ví chính", callback_data=f"bank_wallet:main:{amount}")],
         [InlineKeyboardButton(text="🛒 Ví shop", callback_data=f"bank_wallet:shop:{amount}")],
+        [InlineKeyboardButton(text="👛 Ví buff", callback_data=f"bank_wallet:buff:{amount}")],
     ])
     await msg.answer(f"💳 Cộng <b>{vnd(amount)}</b> vào ví nào (sau khi admin duyệt)?",
                      parse_mode="HTML", reply_markup=kb)
@@ -604,7 +605,7 @@ async def on_bank_wallet(cb: CallbackQuery):
     try:
         _, target, amount_s = cb.data.split(":")
         amount = int(amount_s)
-        assert target in ("main", "shop") and amount > 0
+        assert target in ("main", "shop", "buff") and amount > 0
     except Exception:
         await cb.message.answer("❌ Yêu cầu không hợp lệ.")
         return
@@ -620,7 +621,7 @@ async def process_bank_amount(msg: Message, user, amount: int, target: str = "ma
         f"👤 Khách: {html.escape(username_str)}\n"
         f"🆔 ID Telegram: {user.id}\n"
         f"💰 Số tiền: {vnd(amount)}\n"
-        f"👛 Ví: {'🛒 Ví shop' if target == 'shop' else '💰 Ví chính'}\n\n"
+        f"👛 Ví: {'🛒 Ví shop' if target == 'shop' else ('👛 Ví buff' if target == 'buff' else '💰 Ví chính')}\n\n"
         f"👉 ĐỂ TẠO & PHÁT CODE, gửi lệnh:\n/phatcode {user.id} {amount}\n\n"
         f"👉 Cú pháp cộng thẳng: /topup {user.id} {amount}\n"
         "👉 Hoặc cộng thủ công trên trang Quản lý."
