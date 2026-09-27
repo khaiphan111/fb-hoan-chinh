@@ -47,11 +47,21 @@ def clear_session() -> None:
 
 
 async def _new_context(pw, **kw):
-    """Tạo browser context: dùng session cũ nếu còn hiệu lực."""
+    """Tạo browser context: dùng session cũ nếu còn hiệu lực.
+
+    Dùng proxy local (app.egress_proxy) để vượt proxy egress có auth —
+    Chromium không tự gắn Proxy-Authorization được. Bỏ qua lỗi cert vì
+    proxy egress MITM TLS (CA đã tin cậy ở tầng hệ thống, bot chạy server).
+    """
     from playwright.async_api import async_playwright
+    from . import egress_proxy
     apw = await async_playwright().start()
-    browser = await apw.chromium.launch(headless=True, **kw)
-    ctx_kw = {"viewport": {"width": 1280, "height": 900}}
+    launch_kw = dict(kw)
+    if egress_proxy.ensure_running():
+        launch_kw.setdefault("proxy", {"server": egress_proxy.proxy_server()})
+    browser = await apw.chromium.launch(headless=True, **launch_kw)
+    ctx_kw = {"viewport": {"width": 1280, "height": 900},
+              "ignore_https_errors": True}
     if os.path.exists(SESSION_PATH):
         ctx_kw["storage_state"] = SESSION_PATH
     ctx = await browser.new_context(**ctx_kw)
@@ -197,9 +207,11 @@ async def _find_select(page, label_hint: str):
     return None
 
 
-async def place_buff_order(order: dict) -> dict:
+async def place_buff_order(order: dict, dry_run: bool = False) -> dict:
     """Đặt 1 đơn buff trên panel. order: dict từ db.buff_order_get
-    (cần service join thêm panel_service_id, platform_key)."""
+    (cần service join thêm panel_service_id, platform_key).
+    dry_run=True: điền form tới bước cuối nhưng KHÔNG bấm ĐẶT HÀNG
+    (dùng để test), trả về tổng tiền panel hiển thị."""
     from . import db
     svc = db.buff_service_get(order["service_id"])
     if not svc:
@@ -220,57 +232,59 @@ async def place_buff_order(order: dict) -> dict:
         await page.goto(PANEL_NEW_ORDER, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(1200)
 
-        selects = await page.locator("select").all()
-        if len(selects) < 3:
+        # Tìm dropdown theo id (panel dùng sl-platform/sl-category/sl-service;
+        # còn có sl-quick-search, sl-loop-* nên không được lấy theo index)
+        async def _sel_by_id(sid):
+            loc = page.locator(f"select#{sid}")
+            return loc.first if await loc.count() > 0 else None
+
+        sel_platform = await _sel_by_id("sl-platform")
+        sel_category = await _sel_by_id("sl-category")
+        sel_service = await _sel_by_id("sl-service")
+        if not (sel_platform and sel_category and sel_service):
             return {"ok": False,
-                    "error": f"form đặt đơn lạ (chỉ thấy {len(selects)} dropdown)"}
-        # B2: Nền tảng, B3: Phân loại, B4: dịch vụ
-        if not await _select_option_by_text(selects[0], plat_label):
+                    "error": "form đặt đơn lạ (không thấy đủ 3 dropdown platform/category/service)"}
+        # B2: Nền tảng
+        if not await _select_option_by_text(sel_platform, plat_label):
             return {"ok": False, "error": f"không thấy nền tảng '{plat_label}'"}
         await page.wait_for_timeout(1200)
-        # Phân loại: chọn option đầu tiên có service (bỏ option rỗng/placeholder)
-        cat_ok = False
-        for opt in await selects[1].locator("option").all():
-            try:
-                t = (await opt.inner_text() or "").strip().lower()
-                v = await opt.get_attribute("value")
-                if t and v and t not in ("chọn", "select", "--", "phân loại"):
-                    await selects[1].select_option(value=v)
-                    cat_ok = True
-                    break
-            except Exception:
-                continue
-        if not cat_ok:
-            # Thử chọn option thứ 2 (bỏ placeholder đầu)
-            try:
-                opts = await selects[1].locator("option").all()
-                if len(opts) > 1:
-                    v = await opts[1].get_attribute("value")
-                    await selects[1].select_option(value=v)
-                    cat_ok = True
-            except Exception:
-                pass
-        await page.wait_for_timeout(1200)
-        # Dịch vụ: option bắt đầu bằng "<panel_id> -" hoặc "<panel_id> "
+        # Phân loại + Dịch vụ: panel để ID gói ở value của option dịch vụ
+        # (text không có ID). Duyệt từng phân loại tới khi thấy value == panel_id.
         svc_ok = False
-        for opt in await selects[2].locator("option").all():
+        cat_opts = []
+        for opt in await sel_category.locator("option").all():
             try:
                 t = (await opt.inner_text() or "").strip()
-                if t.startswith(f"{panel_id} -") or t.startswith(f"{panel_id} "):
-                    v = await opt.get_attribute("value")
-                    await selects[2].select_option(value=v)
-                    svc_ok = True
-                    break
+                v = await opt.get_attribute("value")
+                if t and v and t.lower() not in ("chọn", "select", "--", "phân loại"):
+                    cat_opts.append((t, v))
             except Exception:
                 continue
+        for _t, _v in cat_opts:
+            try:
+                await sel_category.select_option(value=_v)
+            except Exception:
+                continue
+            await page.wait_for_timeout(1000)
+            for sopt in await sel_service.locator("option").all():
+                try:
+                    sv = await sopt.get_attribute("value")
+                    if sv and sv.strip() == str(panel_id):
+                        await sel_service.select_option(value=sv)
+                        svc_ok = True
+                        break
+                except Exception:
+                    continue
+            if svc_ok:
+                break
         if not svc_ok:
             return {"ok": False,
                     "error": f"không thấy gói panel ID {panel_id}"}
         await page.wait_for_timeout(800)
 
-        # B6: link — tìm input theo label "Liên Kết" hoặc input url/text trống
+        # B6: link — panel dùng input#ipt-link
         link_ok = False
-        for loc in [page.get_by_label("Liên Kết", exact=False),
+        for loc in [page.locator("input#ipt-link"),
                     page.get_by_label("Link", exact=False),
                     page.locator('input[type="url"]')]:
             try:
@@ -296,9 +310,9 @@ async def place_buff_order(order: dict) -> dict:
         if not link_ok:
             return {"ok": False, "error": "không điền được link"}
 
-        # B7: số lượng — input number hoặc text cạnh chữ "Số lượng"
+        # B7: số lượng — panel dùng input#ipt-quantity (type=text)
         qty_ok = False
-        for loc in [page.get_by_label("Số lượng", exact=False),
+        for loc in [page.locator("input#ipt-quantity"),
                     page.locator('input[type="number"]')]:
             try:
                 if await loc.count() > 0 and await loc.first.is_visible():
@@ -310,6 +324,19 @@ async def place_buff_order(order: dict) -> dict:
         if not qty_ok:
             return {"ok": False, "error": "không điền được số lượng"}
         await page.wait_for_timeout(500)
+
+        if dry_run:
+            # Đọc tổng tiền panel hiển thị, không bấm đặt
+            total_txt = ""
+            try:
+                body = (await page.locator("body").inner_text())[:3000]
+                import re
+                m = re.search(r"(tổng[^₫\n]{0,40}₫|total[^$\n]{0,40})", body, re.I)
+                total_txt = m.group(1).strip() if m else body[-200:]
+            except Exception:
+                pass
+            await ctx.close()
+            return {"ok": True, "dry_run": True, "panel_total": total_txt}
 
         # B9: bấm ĐẶT HÀNG
         btn_ok = False
