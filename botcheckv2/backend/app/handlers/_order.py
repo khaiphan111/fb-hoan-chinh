@@ -38,6 +38,7 @@ MESSAGE_ORDER = [
     "on_sheet_ncc_cost",
     "cmd_web",
     "on_start",
+    "on_myid",
     "on_ref",
     "on_daily",
     "on_scan_all",

@@ -817,6 +817,12 @@ async def cmd_web(msg: Message):
     ]])
     await msg.answer("🔗 Bấm vào nút bên dưới để tự động đăng nhập vào Web:", reply_markup=kb)
 
+@router.message(Command("myid"))
+async def on_myid(msg: Message):
+    u = msg.from_user
+    await msg.answer(f"🆔 Telegram ID của bạn: <code>{u.id}</code>",
+                     parse_mode="HTML")
+
 @router.message(CommandStart())
 async def on_start(msg: Message):
     u = msg.from_user
