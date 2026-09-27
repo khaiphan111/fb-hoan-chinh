@@ -320,6 +320,7 @@ CALLBACK_ORDER = [
     "on_doiqua_any",
     "on_acc_2fa",
     "on_acc_show",
+    "on_acc_full",
     "on_acc_file",
     "on_acc_warranty_pick",
     "on_acc_warranty",

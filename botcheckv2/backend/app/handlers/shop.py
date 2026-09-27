@@ -1313,7 +1313,7 @@ async def on_acc_2fa(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("accshow:"))
 async def on_acc_show(cb: CallbackQuery):
-    """Hiện toàn bộ thông tin acc để sao chép."""
+    """Hiện thông tin acc (che mờ MK/Mail/2FA) + nút xem đầy đủ."""
     await cb.answer()
     try:
         order_id = int(cb.data.split(":", 1)[1])
@@ -1323,7 +1323,29 @@ async def on_acc_show(cb: CallbackQuery):
     if not order or int(order["tg_id"]) != cb.from_user.id:
         await cb.answer("❌ Không tìm thấy đơn hàng.", show_alert=True)
         return
-    await cb.message.answer(_acc_delivery_caption(dict(order)), parse_mode="HTML")
+    await cb.message.answer(
+        _acc_delivery_caption(dict(order), masked=True),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👁 Hiện đầy đủ",
+                                 callback_data=f"accfull:{order_id}"),
+        ]]),
+    )
+
+@router.callback_query(F.data.startswith("accfull:"))
+async def on_acc_full(cb: CallbackQuery):
+    """Hiện toàn bộ thông tin acc (bỏ che mờ) — chỉ chủ đơn xem được."""
+    await cb.answer()
+    try:
+        order_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        return
+    order = db.acc_get_order(order_id)
+    if not order or int(order["tg_id"]) != cb.from_user.id:
+        await cb.answer("❌ Không tìm thấy đơn hàng.", show_alert=True)
+        return
+    await cb.message.answer(_acc_delivery_caption(dict(order), masked=False),
+                            parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("accfile:"))
 async def on_acc_file(cb: CallbackQuery):

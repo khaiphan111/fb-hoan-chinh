@@ -501,6 +501,23 @@ def _is_cancel(text: str) -> bool:
     t = (text or "").strip().lower()
     return t in ("/huy", "/cancel", "hủy", "huỷ")
 
+def _mask_secret(s: str, keep: int = 2) -> str:
+    """Che mờ chuỗi nhạy cảm: giữ `keep` ký tự đầu/cuối, giữa thay bằng •."""
+    s = str(s or "")
+    if len(s) <= keep * 2:
+        return "•" * 4
+    return s[:keep] + "•" * 6 + s[-keep:]
+
+def _mask_email(s: str) -> str:
+    """Che phần tên của email, chỉ giữ ký tự đầu + domain."""
+    s = (s or "").strip()
+    if "@" in s:
+        local, domain = s.split("@", 1)
+        if local:
+            return (local[:1] + "•" * 4 + "@" + domain)
+        return s
+    return _mask_secret(s)
+
 def _purchase_alert_text(buyer, orders: list) -> str:
     """Tin báo admin: thông tin khách + chi tiết acc đã mua."""
     e = html.escape
@@ -515,13 +532,14 @@ def _purchase_alert_text(buyer, orders: list) -> str:
                   f"🆔 Mã đơn: <code>{o['id']}</code>",
                   f"📦 {e(o.get('cat_name') or '')} | 💰 {vnd(o.get('price') or 0)}",
                   f"👤 UID: <code>{e(o.get('uid') or '')}</code>",
-                  f"🔑 MK: <code>{e(o.get('password') or '')}</code>"]
+                  f"🔑 MK: <code>{e(_mask_secret(o.get('password')))}</code>",
+                  "🔒 <i>MK/Mail/2FA đã che mờ để bảo mật.</i>"]
         if o.get("created_date"):
             lines.append(f"📅 Ngày tạo: <code>{e(o['created_date'])}</code>")
         if o.get("backup_mail"):
-            lines.append(f"📧 Mail thay: <code>{e(o['backup_mail'])}</code>")
+            lines.append(f"📧 Mail thay: <code>{e(_mask_email(o['backup_mail']))}</code>")
         if o.get("totp"):
-            lines.append(f"🔐 2FA: <code>{e(o['totp'])}</code>")
+            lines.append(f"🔐 2FA: <code>{e(_mask_secret(o['totp']))}</code>")
         if o.get("note"):
             lines.append(f"📝 Ghi chú: {e(o['note'])}")
         if o.get("cookie"):
@@ -814,25 +832,32 @@ def _pickup_suffix() -> str:
     line = _mail_app_line()
     return (line + "\n" if line else "") + "👇 <b>Chọn cách nhận acc:</b>"
 
-def _acc_delivery_caption(o) -> str:
+def _acc_delivery_caption(o, masked: bool = True) -> str:
+    """Caption tin giao acc. masked=True: che mờ MK/Mail/2FA để bảo mật."""
     e = html.escape
+    pw = o["password"] or ""
+    mail = o["backup_mail"] or ""
+    totp = o["totp"] or ""
     parts = [
         f"🎉 <b>MUA THÀNH CÔNG!</b>",
         f"{_cat_icon(o['cat_name'])} <b>{e(o['cat_name'])}</b>",
         f"🧾 Đơn hàng: <b>#{o['id']}</b>  •  💰 <b>{vnd(o['price'])}</b>",
         "━━━━━━━━━━━━━━",
         f"👤 UID: <code>{e(o['uid'] or '')}</code>",
-        f"🔑 Mật khẩu: <code>{e(o['password'] or '')}</code>",
+        f"🔑 Mật khẩu: <code>{e(_mask_secret(pw) if masked else pw)}</code>",
     ]
     if o["created_date"]:
         parts.append(f"📅 Ngày tạo: <code>{e(o['created_date'])}</code>")
-    if o["backup_mail"]:
-        parts.append(f"📧 Mail thay: <code>{e(o['backup_mail'])}</code>")
-    if o["totp"]:
-        _code = _totp_now(o["totp"])
-        _code_txt = f" — mã hiện tại: <code>{_code}</code>" if _code else ""
-        parts.append(f"🔐 2FA: <code>{e(o['totp'])}</code>{_code_txt}")
-        parts.append("   <i>Mã đổi 30s/lần — lấy mã mới trong /damua.</i>")
+    if mail:
+        parts.append(f"📧 Mail thay: <code>{e(_mask_email(mail) if masked else mail)}</code>")
+    if totp:
+        if masked:
+            parts.append(f"🔐 2FA: <code>{e(_mask_secret(totp))}</code>")
+        else:
+            _code = _totp_now(totp)
+            _code_txt = f" — mã hiện tại: <code>{_code}</code>" if _code else ""
+            parts.append(f"🔐 2FA: <code>{e(totp)}</code>{_code_txt}")
+            parts.append("   <i>Mã đổi 30s/lần — lấy mã mới trong /damua.</i>")
     if o["note"]:
         parts.append(f"📝 Ghi chú: {e(o['note'])}")
     if o["cookie"]:
@@ -848,6 +873,8 @@ def _acc_delivery_caption(o) -> str:
     mail_line = _mail_app_line()
     if mail_line:
         parts += ["", mail_line]
+    if masked:
+        parts += ["", "🔒 <i>MK / Mail / 2FA đã che mờ để bảo mật — bấm nút <b>👁 Hiện đầy đủ</b> bên dưới để xem và sao chép.</i>"]
     return "\n".join(parts)
 
 def _cat_icon(name: str) -> str:
@@ -1373,7 +1400,7 @@ async def _do_spin(msg, tg_id: int, tickets: int):
 def _acc_delivery_kb(order_id: int) -> InlineKeyboardMarkup:
     """Bàn phím chọn cách nhận acc: hiện thông tin để sao chép / tải file."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Hiện thông tin (sao chép)",
+        [InlineKeyboardButton(text="🔒 Xem thông tin acc",
                               callback_data=f"accshow:{order_id}")],
         [InlineKeyboardButton(text="📄 Tải file .txt",
                               callback_data=f"accfile:{order_id}:txt"),
