@@ -184,7 +184,8 @@ async def cancel_payment_link(order_code: int, reason: str = "User hủy") -> di
 # ---------------------------------------------------------------- cộng tiền
 async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "main"):
     """Báo user + admin khi đơn được thanh toán."""
-    from .bot import manager, vnd
+    from .bot import manager
+    from .util import vnd
     from . import db
     wallet_txt = (
         "🛒 <b>Ví shop</b> (mua acc FB)" if target == "shop"

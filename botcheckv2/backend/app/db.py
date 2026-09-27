@@ -683,7 +683,8 @@ def notify_commission_bonus(ref_id: int, bonus: int, level: int) -> None:
     """Báo tin nhắn hoa hồng F1/F2 (gọi sau khi commit, ngoài lock)."""
     try:
         import asyncio
-        from .bot import manager, vnd
+        from .bot import manager
+        from .util import vnd
         if manager.running:
             asyncio.create_task(manager.bot.send_message(
                 ref_id,

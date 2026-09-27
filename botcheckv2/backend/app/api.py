@@ -677,7 +677,8 @@ async def topup(tg_id: int, body: AmountIn, _=Depends(auth)):
     upgraded, new_vip, is_lifetime = db.check_vip_upgrade(tg_id)
     
     try:
-        from .bot import manager, vnd
+        from .bot import manager
+        from .util import vnd
         if manager.running:
             import asyncio
             asyncio.create_task(manager.bot.send_message(tg_id, f"💵 Admin vừa nạp cho bạn <b>{vnd(body.amount)}</b> vào tài khoản!", parse_mode="HTML"))

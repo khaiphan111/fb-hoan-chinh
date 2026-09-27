@@ -338,7 +338,8 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> None:
                     )
                     try:
                         import asyncio
-                        from .bot import manager, vnd
+                        from .bot import manager
+                        from .util import vnd
                         if manager.running:
                             asyncio.create_task(manager.bot.send_message(ref_id, f"🎁 <b>Hoa hồng giới thiệu!</b>\nBạn vừa nhận được <b>{vnd(ref_bonus)}</b> từ lượt nạp của bạn bè!", parse_mode="HTML"))
                     except: pass
