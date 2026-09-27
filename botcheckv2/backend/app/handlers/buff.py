@@ -111,6 +111,14 @@ def _calc_total(qty: int, sell_price: int) -> int:
 @router.message(Command("buff"))
 @router.message(Command("shopbuff"))
 async def on_buff(msg: Message, state: FSMContext):
+    # Kiểm tra công tắc tổng
+    if db.get_setting("buff_enabled", "0") != "1":
+        await msg.answer(
+            "🛍️ <b>SHOP BUFF TƯƠNG TÁC</b>\n\n"
+            "⏸️ Hiện tại shop đang tạm dừng nhận đơn buff.\n"
+            "Vui lòng quay lại sau nhé!",
+            parse_mode="HTML")
+        return
     await state.clear()
     await msg.answer(
         "🛍️ <b>SHOP BUFF TƯƠNG TÁC</b>\n"
@@ -210,6 +218,11 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "confirm":
+        # Chặn nếu công tắc tổng tắt
+        if db.get_setting("buff_enabled", "0") != "1":
+            await cb.message.answer("⏸️ Shop đang tạm dừng nhận đơn buff.")
+            await state.clear()
+            return
         data = await state.get_data()
         sid, link, qty = data.get("buff_sid"), data.get("buff_link"), data.get("buff_qty")
         svc = db.buff_service_get(sid) if sid else None
@@ -362,7 +375,11 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="📋 10 đơn mới nhất",
                                   callback_data="buffadm:orders")])
     if super_only:
+        buff_on = db.get_setting("buff_enabled", "0") == "1"
         rows += [
+            [InlineKeyboardButton(
+                text=f"{'🟢 TẮT hệ thống buff' if buff_on else '🔴 BẬT hệ thống buff'}",
+                callback_data="buffadm:toggle")],
             [InlineKeyboardButton(text="⚙️ Tài khoản panel",
                                   callback_data="buffadm:panel"),
              InlineKeyboardButton(text="🧪 Test đăng nhập",
@@ -492,6 +509,26 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         await cb.message.edit_text("🛍️ <b>QUẢN LÝ SHOP BUFF</b>\nChọn nền tảng:",
                                    parse_mode="HTML",
                                    reply_markup=_buffadm_menu_kb(cb.from_user.id))
+        return
+
+    if action == "toggle":
+        if not await _need_super():
+            return
+        cur = db.get_setting("buff_enabled", "0") == "1"
+        new = "0" if cur else "1"
+        db.set_setting("buff_enabled", new)
+        try:
+            db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                               "buff_toggle", f"buff_enabled={new}")
+        except Exception:
+            pass
+        status = "🟢 ĐÃ BẬT" if new == "1" else "🔴 ĐÃ TẮT"
+        await cb.message.edit_text(
+            f"🛍️ <b>QUẢN LÝ SHOP BUFF</b>\n\nHệ thống buff: <b>{status}</b>\n\n"
+            f"{'⚠️ Khách có thể đặt đơn. Đảm bảo automation sẵn sàng!' if new == '1' else '✅ Khách không thể đặt đơn mới.'}\n\n"
+            f"Chọn nền tảng:",
+            parse_mode="HTML",
+            reply_markup=_buffadm_menu_kb(cb.from_user.id))
         return
 
     if action == "plat" and len(parts) > 2:
@@ -653,8 +690,10 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
             " ORDER BY o.id DESC LIMIT 10").fetchall()
         if not rows:
             txt = "📋 Chưa có đơn buff nào."
+            kb_rows = [[InlineKeyboardButton(text="⬅️ Menu", callback_data="buffadm:menu")]]
         else:
             lines = ["📋 <b>10 ĐƠN BUFF MỚI NHẤT</b>\n"]
+            kb_rows = []
             for r in rows:
                 r = dict(r)
                 st = _BUFF_STATUS_LABEL.get(r["status"], r["status"])
@@ -662,12 +701,50 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                     f"• <code>{r['code']}</code> — {html.escape(r.get('service_name') or '')}\n"
                     f"  👤 <code>{r['tg_id']}</code> • 🔢 {vnd(r['quantity'])}\n"
                     f"  💵 {vnd(r['total_price'])} (vốn {vnd(r['total_cost'])}) • {st}")
+                # Nút hoàn tiền cho đơn lỗi (cần quyền tiền)
+                if r["status"] == "failed" and has_perm(cb.from_user.id, "tien"):
+                    kb_rows.append([InlineKeyboardButton(
+                        text=f"💸 Hoàn tiền {r['code']}",
+                        callback_data=f"buffadm:refund:{r['id']}")])
+            kb_rows.append([InlineKeyboardButton(text="⬅️ Menu", callback_data="buffadm:menu")])
             txt = "\n".join(lines)
         await cb.message.edit_text(
             txt, parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="⬅️ Menu",
-                                     callback_data="buffadm:menu")]]))
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+        return
+
+    if action == "refund" and len(parts) > 2:
+        if not await _need("tien"):
+            return
+        try:
+            oid = int(parts[2])
+        except ValueError:
+            return
+        order = db.buff_order_get(oid)
+        if not order or order["status"] != "failed":
+            await cb.answer("❌ Đơn không ở trạng thái lỗi.", show_alert=True)
+            return
+        # Hoàn tiền về ví buff
+        if db.buff_adjust_balance(order["tg_id"], order["total_price"],
+                                  f"buff_refund:{order['code']}"):
+            db.buff_order_update(oid, status="refunded")
+            try:
+                db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                                   "buff_refund", f"{order['code']} {vnd(order['total_price'])}")
+            except Exception:
+                pass
+            # Báo cho khách
+            try:
+                await cb.bot.send_message(
+                    order["tg_id"],
+                    f"💸 <b>Đơn buff <code>{order['code']}</code> lỗi đã được hoàn tiền.</b>\n"
+                    f"💵 Số tiền hoàn: <b>{vnd(order['total_price'])}</b> vào ví buff.",
+                    parse_mode="HTML")
+            except Exception:
+                pass
+            await cb.answer("✅ Đã hoàn tiền.", show_alert=True)
+        else:
+            await cb.answer("❌ Hoàn tiền thất bại.", show_alert=True)
         return
 
     if action == "panel":
