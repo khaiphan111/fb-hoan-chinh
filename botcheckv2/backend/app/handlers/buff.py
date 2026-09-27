@@ -628,11 +628,11 @@ async def _show_quick_price_list(msg, page: int = 0, edit: bool = False):
     kb_rows = []
     for r in chunk:
         mark = "✅" if int(r["enabled"]) else "🚫"
-        name = r["name"][:22]
+        name = r["name"][:18]
         cost = vnd(r["cost_price"])
         sell = vnd(r["sell_price"])
         kb_rows.append([InlineKeyboardButton(
-            text=f"{mark} {name} | {cost}→{sell}đ",
+            text=f"{mark} #{r['panel_service_id']} {name} | {cost}→{sell}đ",
             callback_data=f"buffadm:quickprice:{r['id']}:{page}")])
     nav = []
     if page > 0:
@@ -933,6 +933,7 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         await state.set_state(BuffAdmState.waiting_for_price)
         await cb.message.answer(
             f"📦 <b>{html.escape(svc['name'])}</b>\n"
+            f"🆔 ID: <code>{svc['id']}</code> | Panel ID: <code>{svc['panel_service_id']}</code>\n"
             f"💰 Giá vốn: {vnd(svc['cost_price'])}đ/1k\n"
             f"💵 Giá bán hiện tại: <b>{vnd(svc['sell_price'])}đ/1k</b>\n\n"
             f"✏️ Nhập <b>giá bán mới</b> (đ/1000):\n"
