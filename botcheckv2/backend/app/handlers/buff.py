@@ -21,6 +21,7 @@ from aiogram.types import (
 
 from .. import db
 from ..util import vnd
+from ..perms import has_perm, is_super
 from .core import _is_admin, router
 from .common import _notify_admin_smart
 
@@ -318,28 +319,41 @@ async def on_buff_qty(msg: Message, state: FSMContext):
 
 # ─────────────────────────── ADMIN: /buffadm ───────────────────────────
 
-def _buffadm_menu_kb() -> InlineKeyboardMarkup:
+def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
     plats = db.buff_platforms()
     rows, row = [], []
-    for p in plats:
-        row.append(InlineKeyboardButton(
-            text=f"{p['icon']} {p['name']}",
-            callback_data=f"buffadm:plat:{p['key']}"))
-        if len(row) == 2:
+    can_price = has_perm(tg_id, "price")
+    can_orders = has_perm(tg_id, "orders")
+    can_tien = has_perm(tg_id, "tien")
+    super_only = is_super(tg_id)
+    if can_price:
+        for p in plats:
+            row.append(InlineKeyboardButton(
+                text=f"{p['icon']} {p['name']}",
+                callback_data=f"buffadm:plat:{p['key']}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
             rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    rows += [
-        [InlineKeyboardButton(text="📋 10 đơn mới nhất",
-                              callback_data="buffadm:orders")],
-        [InlineKeyboardButton(text="⚙️ Tài khoản panel",
-                              callback_data="buffadm:panel"),
-         InlineKeyboardButton(text="🧪 Test đăng nhập",
-                              callback_data="buffadm:testlogin")],
-        [InlineKeyboardButton(text="💰 Cộng/trừ ví buff user",
-                              callback_data="buffadm:topup")],
-    ]
+    if can_orders:
+        rows.append(
+            [InlineKeyboardButton(text="📋 10 đơn mới nhất",
+                                  callback_data="buffadm:orders")])
+    if super_only:
+        rows += [
+            [InlineKeyboardButton(text="⚙️ Tài khoản panel",
+                                  callback_data="buffadm:panel"),
+             InlineKeyboardButton(text="🧪 Test đăng nhập",
+                                  callback_data="buffadm:testlogin")],
+        ]
+    if can_tien:
+        rows.append(
+            [InlineKeyboardButton(text="💰 Cộng/trừ ví buff user",
+                                  callback_data="buffadm:topup")])
+    if not rows:
+        rows.append([InlineKeyboardButton(text="⛔ Không có quyền nào",
+                                          callback_data="buffadm:noop")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -357,7 +371,7 @@ async def on_buffadm(msg: Message, state: FSMContext):
         "━━━━━━━━━━━━━━\n"
         f"📦 Dịch vụ: <b>{n_svc}</b> • ⏳ Đơn chờ: <b>{n_pend}</b>\n\n"
         "Chọn nền tảng để xem/sửa giá:",
-        parse_mode="HTML", reply_markup=_buffadm_menu_kb())
+        parse_mode="HTML", reply_markup=_buffadm_menu_kb(msg.from_user.id))
 
 
 @router.callback_query(F.data.startswith("buffadm:"))
@@ -368,14 +382,29 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
     parts = cb.data.split(":")
     action = parts[1] if len(parts) > 1 else ""
+    _uid = cb.from_user.id
+
+    async def _need(perm: str) -> bool:
+        if has_perm(_uid, perm):
+            return True
+        await cb.message.answer("⛔ Bạn không có quyền này.")
+        return False
+
+    async def _need_super() -> bool:
+        if is_super(_uid):
+            return True
+        await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
+        return False
 
     if action == "menu":
         await cb.message.edit_text("🛍️ <b>QUẢN LÝ SHOP BUFF</b>\nChọn nền tảng:",
                                    parse_mode="HTML",
-                                   reply_markup=_buffadm_menu_kb())
+                                   reply_markup=_buffadm_menu_kb(cb.from_user.id))
         return
 
     if action == "plat" and len(parts) > 2:
+        if not await _need("price"):
+            return
         pkey = parts[2]
         rows = db.get_conn().execute(
             "SELECT * FROM buff_services WHERE platform_key=? ORDER BY category_key, sell_price",
@@ -401,6 +430,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "pkg" and len(parts) > 2:
+        if not await _need("price"):
+            return
         try:
             sid = int(parts[2])
         except ValueError:
@@ -429,6 +460,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "price" and len(parts) > 2:
+        if not await _need("price"):
+            return
         try:
             sid = int(parts[2])
         except ValueError:
@@ -440,6 +473,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "toggle" and len(parts) > 2:
+        if not await _need("price"):
+            return
         try:
             sid = int(parts[2])
         except ValueError:
@@ -476,6 +511,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "orders":
+        if not await _need("orders"):
+            return
         rows = db.get_conn().execute(
             "SELECT o.*, s.name AS service_name FROM buff_orders o"
             " LEFT JOIN buff_services s ON s.id=o.service_id"
@@ -500,6 +537,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "panel":
+        if not await _need_super():
+            return
         user = db.get_setting("buff_panel_user", "")
         has_pass = bool(db.get_setting("buff_panel_pass", ""))
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -521,12 +560,16 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "paneluser":
+        if not await _need_super():
+            return
         await state.set_state(BuffAdmState.waiting_for_panel_user)
         await cb.message.answer("👤 Nhập <b>username</b> panel mới:",
                                 parse_mode="HTML")
         return
 
     if action == "panelpass":
+        if not await _need_super():
+            return
         await state.set_state(BuffAdmState.waiting_for_panel_pass)
         await cb.message.answer("🔑 Nhập <b>mật khẩu</b> panel mới "
                                 "(tin nhắn sẽ bị xóa ngay sau khi gửi):",
@@ -534,6 +577,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "testlogin":
+        if not await _need_super():
+            return
         await cb.message.answer("🧪 Đang test đăng nhập panel, đợi chút...")
         try:
             from .. import buff_worker
@@ -547,6 +592,8 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "topup":
+        if not await _need("tien"):
+            return
         await state.set_state(BuffAdmState.waiting_for_topup_uid)
         await cb.message.answer("💰 Nhập <b>Telegram ID</b> của user cần cộng/trừ ví buff:",
                                 parse_mode="HTML")
@@ -560,6 +607,9 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
 @router.message(BuffAdmState.waiting_for_price)
 async def on_buffadm_price_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    if not has_perm(msg.from_user.id, "price"):
         await state.clear()
         return
     data = await state.get_data()
@@ -591,6 +641,9 @@ async def on_buffadm_panel_user_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
         await state.clear()
         return
+    if not is_super(msg.from_user.id):
+        await state.clear()
+        return
     user = (msg.text or "").strip()
     if not user:
         await msg.answer("❌ Username trống. Nhập lại:")
@@ -609,6 +662,9 @@ async def on_buffadm_panel_user_input(msg: Message, state: FSMContext):
 @router.message(BuffAdmState.waiting_for_panel_pass)
 async def on_buffadm_panel_pass_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    if not is_super(msg.from_user.id):
         await state.clear()
         return
     pw = (msg.text or "").strip()
@@ -641,6 +697,9 @@ async def on_buffadm_topup_uid_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
         await state.clear()
         return
+    if not has_perm(msg.from_user.id, "tien"):
+        await state.clear()
+        return
     try:
         uid = int((msg.text or "").strip())
     except ValueError:
@@ -662,6 +721,9 @@ async def on_buffadm_topup_uid_input(msg: Message, state: FSMContext):
 @router.message(BuffAdmState.waiting_for_topup_amount)
 async def on_buffadm_topup_amount_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    if not has_perm(msg.from_user.id, "tien"):
         await state.clear()
         return
     data = await state.get_data()
