@@ -439,21 +439,17 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
 
     parts = msg.text.split(maxsplit=2)
     # parts[0] = /adm, parts[1] = subcmd, parts[2+] = args
-    # DEBUG tạm
-    if tg_id == 5964340237:
-        print(f"[ADM_DEBUG] text={msg.text!r} parts={parts}", flush=True)
     if len(parts) < 2:
         await _admm_show_main(msg)
         return
 
     subcmd = parts[1].lower().strip()
     rest = parts[2].strip() if len(parts) > 2 else ""
-    if tg_id == 5964340237:
-        print(f"[ADM_DEBUG] subcmd={subcmd!r} need={_perms.ADM_SUB_PERMS.get(subcmd)}", flush=True)
 
     # ── Phân quyền admin phụ theo từng sub-command ──
+    # (chủ shop bỏ qua kiểm tra)
     need = _perms.ADM_SUB_PERMS.get(subcmd)
-    if need and not _perms.has_perm(tg_id, need):
+    if need and not _perms.is_super(tg_id) and not _perms.has_perm(tg_id, need):
         await msg.answer(
             f"🚫 Bạn không có quyền <b>{_perms.perm_label(need)}</b>.\n"
             f"Liên hệ chủ shop để được cấp thêm quyền.",
@@ -1416,7 +1412,7 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Quản lý user ──
         if action == "cat_user":
-            if not _perms.has_perm(cb.from_user.id, "user"):
+            if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "user"):
                 await cb.answer("🚫 Bạn không có quyền 👤 Quản lý user.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
