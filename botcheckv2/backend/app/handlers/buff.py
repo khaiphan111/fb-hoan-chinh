@@ -378,26 +378,55 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _buffadm_plat_cats_kb(pkey: str):
+    """Bàn phím chọn loại dịch vụ của 1 nền tảng (kiểu gọn như phía khách)."""
+    cats = db.get_conn().execute(
+        """SELECT category_key, category_name, COUNT(*) n,
+                  SUM(enabled) on_n
+           FROM buff_services WHERE platform_key=?
+           GROUP BY category_key, category_name
+           ORDER BY category_name""",
+        (pkey,)).fetchall()
+    pname = next((p["name"] for p in db.buff_platforms()
+                  if p["key"] == pkey), pkey)
+    kb_rows = []
+    for c in cats:
+        c = dict(c)
+        kb_rows.append([InlineKeyboardButton(
+            text=f"{c['category_name']} ({c['on_n']}/{c['n']})",
+            callback_data=f"buffadm:cat:{pkey}:{c['category_key']}:0")])
+    kb_rows.append([InlineKeyboardButton(
+        text="🔛 Bật TẤT CẢ gói nền tảng này",
+        callback_data=f"buffadm:enableall:{pkey}")])
+    kb_rows.append([InlineKeyboardButton(
+        text="📈 Đặt giá theo lợi nhuận (×...)",
+        callback_data=f"buffadm:margin:{pkey}")])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
+                                         callback_data="buffadm:menu")])
+    pname_esc = html.escape(pname)
+    return (f"📁 <b>{pname_esc}</b> — chọn loại dịch vụ:",
+            InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+
 _BUFFADM_PAGE_SIZE = 25
 
 
-def _buffadm_plat_kb(pkey: str, page: int = 0):
-    """Bàn phím danh sách gói 1 nền tảng, có phân trang. Trả về (kb_rows, total_pages)."""
-    rows = db.get_conn().execute(
-        "SELECT * FROM buff_services WHERE platform_key=? ORDER BY category_key, sell_price",
-        (pkey,)).fetchall()
+def _buffadm_plat_kb(pkey: str, page: int = 0, ckey: str = ""):
+    """Bàn phím danh sách gói 1 loại dịch vụ, có phân trang. Trả về (kb_rows, total_pages)."""
+    if ckey:
+        rows = db.get_conn().execute(
+            "SELECT * FROM buff_services WHERE platform_key=? AND category_key=? ORDER BY sell_price",
+            (pkey, ckey)).fetchall()
+    else:
+        rows = db.get_conn().execute(
+            "SELECT * FROM buff_services WHERE platform_key=? ORDER BY category_key, sell_price",
+            (pkey,)).fetchall()
     rows = [dict(r) for r in rows]
     total_pages = max(1, (len(rows) + _BUFFADM_PAGE_SIZE - 1) // _BUFFADM_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
     chunk = rows[page * _BUFFADM_PAGE_SIZE:(page + 1) * _BUFFADM_PAGE_SIZE]
     kb_rows = []
-    cur_cat = None
     for r in chunk:
-        if r["category_key"] != cur_cat:
-            cur_cat = r["category_key"]
-            kb_rows.append([InlineKeyboardButton(
-                text=f"── {r['category_name']} ──",
-                callback_data="buffadm:noop")])
         mark = "✅" if int(r["enabled"]) else "🚫"
         kb_rows.append([InlineKeyboardButton(
             text=f"{mark} {r['name'][:40]}",
@@ -406,18 +435,15 @@ def _buffadm_plat_kb(pkey: str, page: int = 0):
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="⬅️ Trước",
-                                        callback_data=f"buffadm:plat:{pkey}:{page-1}"))
+                                        callback_data=f"buffadm:cat:{pkey}:{ckey}:{page-1}"))
     if page < total_pages - 1:
         nav.append(InlineKeyboardButton(text="Tiếp ➡️",
-                                        callback_data=f"buffadm:plat:{pkey}:{page+1}"))
+                                        callback_data=f"buffadm:cat:{pkey}:{ckey}:{page+1}"))
     if nav:
         kb_rows.append(nav)
     kb_rows.append([InlineKeyboardButton(
-        text="🔛 Bật TẤT CẢ gói nền tảng này",
-        callback_data=f"buffadm:enableall:{pkey}")])
-    kb_rows.append([InlineKeyboardButton(
-        text="📈 Đặt giá theo lợi nhuận (×...)",
-        callback_data=f"buffadm:margin:{pkey}")])
+        text="⬅️ Chọn loại dịch vụ",
+        callback_data=f"buffadm:plat:{pkey}")])
     kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
                                          callback_data="buffadm:menu")])
     return kb_rows, total_pages
@@ -472,8 +498,16 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         if not await _need("price"):
             return
         pkey = parts[2]
-        page = int(parts[3]) if len(parts) > 3 else 0
-        kb_rows, total_pages = _buffadm_plat_kb(pkey, page)
+        text, kb = _buffadm_plat_cats_kb(pkey)
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        return
+
+    if action == "cat" and len(parts) > 4:
+        if not await _need("price"):
+            return
+        pkey, ckey = parts[2], parts[3]
+        page = int(parts[4]) if parts[4].isdigit() else 0
+        kb_rows, total_pages = _buffadm_plat_kb(pkey, page, ckey)
         await cb.message.edit_text(
             f"Bấm vào gói để sửa giá / bật-tắt (trang {page+1}/{total_pages}):",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
@@ -497,7 +531,7 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                  text="🔛 Bật" if not int(svc["enabled"]) else "🔴 Tắt",
                  callback_data=f"buffadm:toggle:{sid}")],
             [InlineKeyboardButton(text="⬅️ Quay lại",
-                                  callback_data=f"buffadm:plat:{svc['platform_key']}")],
+                                  callback_data=f"buffadm:cat:{svc['platform_key']}:{svc['category_key']}:0")],
         ])
         await cb.message.edit_text(
             f"📦 <b>{html.escape(svc['name'])}</b> ({html.escape(svc['platform_name'])})\n"
@@ -548,7 +582,7 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                  text="🔛 Bật" if not int(svc["enabled"]) else "🔴 Tắt",
                  callback_data=f"buffadm:toggle:{sid}")],
             [InlineKeyboardButton(text="⬅️ Quay lại",
-                                  callback_data=f"buffadm:plat:{svc['platform_key']}")],
+                                  callback_data=f"buffadm:cat:{svc['platform_key']}:{svc['category_key']}:0")],
         ])
         await cb.message.edit_text(
             f"📦 <b>{html.escape(svc['name'])}</b> ({html.escape(svc['platform_name'])})\n"
@@ -589,11 +623,9 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
                 parse_mode="HTML",
                 reply_markup=_buffadm_menu_kb(cb.from_user.id))
         else:
-            # Quay lại danh sách gói của nền tảng (trang 1)
-            kb_rows, total_pages = _buffadm_plat_kb(target, 0)
-            await cb.message.edit_text(
-                f"Bấm vào gói để sửa giá / bật-tắt (trang 1/{total_pages}):",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+            # Quay lại màn hình chọn loại dịch vụ của nền tảng
+            text, kb = _buffadm_plat_cats_kb(target)
+            await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
         return
 
     if action == "margin" and len(parts) > 2:
