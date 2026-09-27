@@ -1181,9 +1181,21 @@ class FollowerPoller:
                          order["code"], res.get("panel_order_id"))
                 if self._bot:
                     try:
+                        import datetime
+                        _now = datetime.datetime.now() + datetime.timedelta(hours=7)
+                        _time_str = _now.strftime("%H:%M %d/%m/%Y")
+                        _svc = db.buff_service_get(int(order["service_id"]))
+                        _svc_name = _svc["name"] if _svc else f"#{order['service_id']}"
+                        _link_short = (order["link"][:50] + "...") if len(order["link"]) > 50 else order["link"]
                         await self._bot.send_message(
                             int(order["tg_id"]),
                             f"🔄 <b>ĐƠN BUFF <code>{order['code']}</code> ĐANG CHẠY</b>\n\n"
+                            f"📦 Dịch vụ: {_svc_name}\n"
+                            f"🔗 Link: {_link_short}\n"
+                            f"🔢 Số lượng: {int(order['quantity']):,}\n"
+                            f"💰 Đã trừ: {vnd(order['total_price'])} (ví buff)\n"
+                            f"🕐 Đặt lúc: {_time_str}\n"
+                            f"🆔 Mã panel: <code>{res.get('panel_order_id') or '—'}</code>\n\n"
                             f"Đơn của bạn đã được đặt lên hệ thống, "
                             f"đang tăng dần. Xong sẽ báo tiếp nhé!",
                             parse_mode="HTML")

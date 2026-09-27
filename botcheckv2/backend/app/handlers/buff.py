@@ -440,6 +440,9 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="📈 Đặt giá theo lợi nhuận (mọi nền tảng)",
             callback_data="buffadm:margin:ALL")])
+        rows.append([InlineKeyboardButton(
+            text="💰 Bảng giá gốc & lãi",
+            callback_data="buffadm:pricetable:0")])
     if can_orders:
         rows.append(
             [InlineKeyboardButton(text="📋 10 đơn mới nhất",
@@ -537,6 +540,56 @@ def _buffadm_plat_kb(pkey: str, page: int = 0, ckey: str = ""):
     kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
                                          callback_data="buffadm:menu")])
     return kb_rows, total_pages
+
+
+async def _show_price_table(msg, page: int = 0, edit: bool = False):
+    """Bảng giá: dịch vụ | giá gốc panel | giá bot | lãi."""
+    rows = db.get_conn().execute(
+        "SELECT * FROM buff_services ORDER BY platform_name, sell_price"
+    ).fetchall()
+    rows = [dict(r) for r in rows]
+    per_page = 10
+    total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    chunk = rows[page * per_page:(page + 1) * per_page]
+
+    lines = ["💰 <b>BẢNG GIÁ GỐC & LÃI</b> (giá/1000)"]
+    lines.append("━━━━━━━━━━━━━━")
+    for r in chunk:
+        cost = int(r["cost_price"] or 0)
+        sell = int(r["sell_price"] or 0)
+        profit = sell - cost
+        pct = f"{profit * 100 // cost}%" if cost > 0 else "—"
+        mark = "✅" if int(r["enabled"]) else "🚫"
+        lines.append(
+            f"{mark} <b>{r['name'][:35]}</b>\n"
+            f"   🌐 Panel: {vnd(cost)} | 🤖 Bot: {vnd(sell)}\n"
+            f"   💵 Lãi: {vnd(profit)} ({pct})"
+        )
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append(f"Trang {page + 1}/{total_pages} — Tổng {len(rows)} dịch vụ")
+    text = "\n".join(lines)
+
+    kb_rows = []
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Trước",
+                                        callback_data=f"buffadm:pricetable:{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="Tiếp ➡️",
+                                        callback_data=f"buffadm:pricetable:{page + 1}"))
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
+                                         callback_data="buffadm:menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    if edit:
+        try:
+            await msg.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await msg.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
 @router.message(Command("buffadm"))
@@ -752,6 +805,13 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
             "→ Giá bán mới = giá vốn × hệ số, làm tròn đẹp.\n\n"
             "Gõ /huy để hủy.",
             parse_mode="HTML")
+        return
+
+    if action == "pricetable":
+        if not await _need("price"):
+            return
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _show_price_table(cb.message, page, edit=True)
         return
 
     if action == "orders":
