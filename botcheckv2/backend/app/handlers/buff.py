@@ -538,6 +538,10 @@ def _buffadm_plat_kb(pkey: str, page: int = 0, ckey: str = ""):
                                         callback_data=f"buffadm:cat:{pkey}:{ckey}:{page+1}"))
     if nav:
         kb_rows.append(nav)
+    if ckey:
+        kb_rows.append([InlineKeyboardButton(
+            text="📈 Đặt giá loại này (mọi nền tảng)",
+            callback_data=f"buffadm:margincat:{pkey}:{ckey}")])
     kb_rows.append([InlineKeyboardButton(
         text="⬅️ Chọn loại dịch vụ",
         callback_data=f"buffadm:plat:{pkey}")])
@@ -793,6 +797,34 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
             # Quay lại màn hình chọn loại dịch vụ của nền tảng
             text, kb = _buffadm_plat_cats_kb(target)
             await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        return
+
+    if action == "margincat" and len(parts) > 3:
+        if not await _need("price"):
+            return
+        pkey, ckey = parts[2], parts[3]
+        group_cats = _find_same_group_cats(pkey, ckey)
+        if not group_cats:
+            await cb.answer("❌ Không tìm thấy loại dịch vụ.", show_alert=True)
+            return
+        group = _cat_group_of(group_cats[0][2])
+        plats = {p["key"]: p["name"] for p in db.buff_platforms()}
+        cat_lines = "\n".join(
+            f"• {plats.get(pk, pk)}: {html.escape(cn)}"
+            for pk, _, cn in group_cats[:15])
+        more = f"\n…và {len(group_cats) - 15} loại nữa" if len(group_cats) > 15 else ""
+        await state.update_data(
+            buffadm_margin_target=f"CATGROUP:{pkey}:{ckey}")
+        await state.set_state(BuffAdmState.waiting_for_margin)
+        await cb.message.answer(
+            f"📈 <b>Đặt giá loại {html.escape(group)} — mọi nền tảng</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"Sẽ áp dụng cho {len(group_cats)} loại dịch vụ:\n"
+            f"{cat_lines}{more}\n\n"
+            f"Nhập hệ số lợi nhuận (ví dụ: <code>1.4</code>, <code>2</code>)\n"
+            f"→ Giá bán mới = giá vốn × hệ số, làm tròn đẹp.\n\n"
+            f"Gõ /huy để hủy.",
+            parse_mode="HTML")
         return
 
     if action == "margin" and len(parts) > 2:
@@ -1085,6 +1117,47 @@ def _round_price(v: int) -> int:
     return max(int(v), 100)
 
 
+#: Nhóm loại dịch vụ chung giữa các nền tảng (dựa trên từ khóa trong tên phân loại
+#: panel). Dùng cho tính năng đặt giá 1 loại dịch vụ áp dụng mọi nền tảng.
+_CAT_GROUPS = [
+    ("👁 Views", ["view", "mắt xem", "lượt xem", "mắt live"]),
+    ("❤️ Likes", ["like", "tim", "cảm xúc", "yêu thích"]),
+    ("👥 Followers", ["follow", "sub", "đăng ký", "theo dõi"]),
+    ("👥 Members", ["member", "thành viên"]),
+    ("🔄 Shares", ["share", "chia s"]),
+    ("💬 Comments", ["comment", "bình luận", "cmt"]),
+    ("🔁 Reposts", ["repost"]),
+    ("🔖 Saves", ["save"]),
+    ("⚡ PK/Điểm", ["pk", "điểm"]),
+]
+
+
+def _cat_group_of(category_name: str) -> str:
+    """Trả về tên nhóm chung của 1 phân loại panel, hoặc tên gốc nếu không khớp."""
+    low = (category_name or "").lower()
+    for gname, keywords in _CAT_GROUPS:
+        if any(k in low for k in keywords):
+            return gname
+    return category_name or "Khác"
+
+
+def _find_same_group_cats(pkey: str, ckey: str) -> list:
+    """Tìm tất cả (platform_key, category_key, category_name) cùng nhóm loại
+    với category đang xem, trên mọi nền tảng."""
+    conn = db.get_conn()
+    cur = conn.execute(
+        "SELECT category_name FROM buff_services WHERE platform_key=? AND category_key=? LIMIT 1",
+        (pkey, ckey)).fetchone()
+    if not cur:
+        return []
+    group = _cat_group_of(cur["category_name"])
+    rows = conn.execute(
+        "SELECT DISTINCT platform_key, category_key, MIN(category_name) AS category_name"
+        " FROM buff_services GROUP BY platform_key, category_key").fetchall()
+    return [(r["platform_key"], r["category_key"], r["category_name"])
+            for r in rows if _cat_group_of(r["category_name"]) == group]
+
+
 @router.message(BuffAdmState.waiting_for_margin)
 async def on_buffadm_margin_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
@@ -1110,10 +1183,24 @@ async def on_buffadm_margin_input(msg: Message, state: FSMContext):
     if target == "ALL":
         rows = conn.execute(
             "SELECT id, cost_price FROM buff_services").fetchall()
+        label = "mọi nền tảng"
+    elif target.startswith("CATGROUP:"):
+        _, pkey, ckey = target.split(":", 2)
+        group_cats = _find_same_group_cats(pkey, ckey)
+        pairs = [(pk, ck) for pk, ck, _ in group_cats]
+        rows = []
+        for pk, ck in pairs:
+            rows += conn.execute(
+                "SELECT id, cost_price FROM buff_services"
+                " WHERE platform_key=? AND category_key=?",
+                (pk, ck)).fetchall()
+        group = _cat_group_of(group_cats[0][2]) if group_cats else ""
+        label = f"loại {group} ({len(pairs)} loại, mọi nền tảng)"
     else:
         rows = conn.execute(
             "SELECT id, cost_price FROM buff_services WHERE platform_key=?",
             (target,)).fetchall()
+        label = f"nền tảng {target}"
     n = 0
     for r in rows:
         new_price = _round_price(int(r["cost_price"] * mult))
@@ -1122,7 +1209,6 @@ async def on_buffadm_margin_input(msg: Message, state: FSMContext):
         n += 1
     conn.commit()
     await state.clear()
-    label = "mọi nền tảng" if target == "ALL" else f"nền tảng {target}"
     try:
         db.add_audit_log(msg.from_user.id, "buff_margin", target,
                          f"Đặt giá ×{mult} cho {n} gói ({label})")
