@@ -204,11 +204,13 @@ async def on_admin_confirm(cb: CallbackQuery):
     parts = cb.data.split("_")
     user_id = int(parts[3])
     amount = int(parts[4])
-    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop") else "main"
+    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop", "buff") else "main"
 
     try:
         if target == "shop":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="shop")
+        elif target == "buff":
+            db.credit_topup(user_id, amount, reason="bank_transfer", wallet="buff")
         else:
             db.adjust_balance(user_id, amount, reason="bank_transfer")
         success = True
@@ -227,7 +229,7 @@ async def on_admin_confirm(cb: CallbackQuery):
             try:
                 # Kiem tra VIP upgrade
                 upgraded, new_vip, is_lifetime = db.check_vip_upgrade(user_id)
-                wallet_txt = "🛒 Ví shop" if target == "shop" else "tài khoản"
+                wallet_txt = "🛒 Ví shop" if target == "shop" else ("👛 Ví buff" if target == "buff" else "tài khoản")
                 msg_text = (
                     f"✅ <b>NẠP TIỀN THÀNH CÔNG</b>\n\n"
                     f"Bạn vừa được cộng <b>{amount:,.0f} VNĐ</b> vào {wallet_txt}.\n"
