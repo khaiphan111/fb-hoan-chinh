@@ -430,8 +430,6 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     Xử lý tất cả sub-commands của /adm.
     Dùng chung cho cả admin_bot.py và bot.py.
     """
-    # LOG TẠM - xóa sau
-    print(f"[ADM_TRACE] uid={msg.from_user.id} text={msg.text!r}", flush=True)
     from . import util
     tg_id = msg.from_user.id
 
@@ -1552,7 +1550,8 @@ def register_adm_menu(target_router):
                                    "menu_adm", f"/adm info {uid}")
             except Exception:
                 pass
-            shim = _AdmTextShim(cb.message, f"/adm info {uid}", edit_target=cb.message)
+            shim = _AdmTextShim(cb.message, f"/adm info {uid}", edit_target=cb.message,
+                                from_user=cb.from_user)
             await _handle_adm_cmd(shim, bot_instance=cb.bot)
             rm = cb.message.reply_markup
             rows = [list(r) for r in rm.inline_keyboard] if rm and rm.inline_keyboard else []
