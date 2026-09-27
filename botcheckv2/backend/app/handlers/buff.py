@@ -381,10 +381,10 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
 def _buffadm_plat_cats_kb(pkey: str):
     """Bàn phím chọn loại dịch vụ của 1 nền tảng (kiểu gọn như phía khách)."""
     cats = db.get_conn().execute(
-        """SELECT category_key, category_name, COUNT(*) n,
-                  SUM(enabled) on_n
+        """SELECT category_key, MIN(category_name) category_name,
+                  COUNT(*) n, SUM(enabled) on_n
            FROM buff_services WHERE platform_key=?
-           GROUP BY category_key, category_name
+           GROUP BY category_key
            ORDER BY category_name""",
         (pkey,)).fetchall()
     pname = next((p["name"] for p in db.buff_platforms()
