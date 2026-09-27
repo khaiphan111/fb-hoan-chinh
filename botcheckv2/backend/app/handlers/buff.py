@@ -336,6 +336,9 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
                 row = []
         if row:
             rows.append(row)
+        rows.append([InlineKeyboardButton(
+            text="🔛 Bật TẤT CẢ gói (mọi nền tảng)",
+            callback_data="buffadm:enableall:ALL")])
     if can_orders:
         rows.append(
             [InlineKeyboardButton(text="📋 10 đơn mới nhất",
@@ -422,6 +425,9 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
             kb_rows.append([InlineKeyboardButton(
                 text=f"{mark} {r['name']} — vốn {vnd(r['cost_price'])}/bán {vnd(r['sell_price'])}",
                 callback_data=f"buffadm:pkg:{r['id']}")])
+        kb_rows.append([InlineKeyboardButton(
+            text="🔛 Bật TẤT CẢ gói nền tảng này",
+            callback_data=f"buffadm:enableall:{pkey}")])
         kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
                                              callback_data="buffadm:menu")])
         await cb.message.edit_text(
@@ -508,6 +514,64 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
             f"📊 Trạng thái: {st}\n"
             f"🔢 SL: {vnd(svc['min_qty'])} – {vnd(svc['max_qty'])}",
             parse_mode="HTML", reply_markup=kb)
+        return
+
+    if action == "enableall" and len(parts) > 2:
+        if not await _need("price"):
+            return
+        target = parts[2]
+        conn = db.get_conn()
+        if target == "ALL":
+            n = conn.execute(
+                "UPDATE buff_services SET enabled=1 WHERE enabled=0").rowcount
+            conn.commit()
+            label = "tất cả nền tảng"
+        else:
+            n = conn.execute(
+                "UPDATE buff_services SET enabled=1 WHERE enabled=0 AND platform_key=?",
+                (target,)).rowcount
+            conn.commit()
+            label = f"nền tảng {target}"
+        try:
+            db.add_audit_log(cb.from_user.id, "buff_enableall", target,
+                             f"Bật {n} gói ({label})")
+        except Exception:
+            pass
+        await cb.answer(f"Đã bật {n} gói ({label}).", show_alert=True)
+        # Vẽ lại
+        if target == "ALL":
+            await cb.message.edit_text(
+                "🛍️ <b>QUẢN LÝ SHOP BUFF</b>\nChọn nền tảng:",
+                parse_mode="HTML",
+                reply_markup=_buffadm_menu_kb(cb.from_user.id))
+        else:
+            # Quay lại danh sách gói của nền tảng
+            cb.data = f"buffadm:plat:{target}"
+            # Gọi lại logic plat bằng cách edit trực tiếp
+            rows = conn.execute(
+                "SELECT * FROM buff_services WHERE platform_key=? ORDER BY category_key, sell_price",
+                (target,)).fetchall()
+            kb_rows = []
+            cur_cat = None
+            for r in rows:
+                r = dict(r)
+                if r["category_key"] != cur_cat:
+                    cur_cat = r["category_key"]
+                    kb_rows.append([InlineKeyboardButton(
+                        text=f"── {r['category_name']} ──",
+                        callback_data="buffadm:noop")])
+                mark = "✅" if int(r["enabled"]) else "🚫"
+                kb_rows.append([InlineKeyboardButton(
+                    text=f"{mark} {r['name']} — vốn {vnd(r['cost_price'])}/bán {vnd(r['sell_price'])}",
+                    callback_data=f"buffadm:pkg:{r['id']}")])
+            kb_rows.append([InlineKeyboardButton(
+                text="🔛 Bật TẤT CẢ gói nền tảng này",
+                callback_data=f"buffadm:enableall:{target}")])
+            kb_rows.append([InlineKeyboardButton(text="⬅️ Menu",
+                                                 callback_data="buffadm:menu")])
+            await cb.message.edit_text(
+                "Bấm vào gói để sửa giá / bật-tắt:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
         return
 
     if action == "orders":
