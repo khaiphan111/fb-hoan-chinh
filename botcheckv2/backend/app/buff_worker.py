@@ -340,14 +340,32 @@ async def place_buff_order(order: dict, dry_run: bool = False) -> dict:
 
         # B9: bấm ĐẶT HÀNG
         btn_ok = False
-        for btn in [page.get_by_role("button", name="ĐẶT HÀNG"),
-                    page.get_by_role("button", name="Đặt hàng"),
-                    page.locator('button[type="submit"]')]:
+        btn_selectors = [
+            page.get_by_role("button", name="ĐẶT HÀNG"),
+            page.get_by_role("button", name="Đặt hàng"),
+            page.locator('button[type="submit"]'),
+            page.locator('input[type="submit"]'),
+            page.locator('button:has-text("ĐẶT HÀNG")'),
+            page.locator('.btn:has-text("ĐẶT HÀNG")'),
+        ]
+        for btn in btn_selectors:
             try:
-                if await btn.count() > 0 and await btn.first.is_visible():
-                    await btn.first.click()
-                    btn_ok = True
-                    break
+                if await btn.count() > 0:
+                    el = btn.first
+                    # Cuộn tới nút trước khi bấm
+                    try:
+                        await el.scroll_into_view_if_needed(timeout=5000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(500)
+                    if await el.is_visible():
+                        # Thử click thường, fallback sang JS click
+                        try:
+                            await el.click(timeout=5000)
+                        except Exception:
+                            await el.evaluate("el => el.click()")
+                        btn_ok = True
+                        break
             except Exception:
                 continue
         if not btn_ok:
