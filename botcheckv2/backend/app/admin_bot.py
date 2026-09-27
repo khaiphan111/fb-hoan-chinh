@@ -1127,7 +1127,7 @@ async def _admm_show_main(msg: Message):
 async def _admm_exec_via_cb(cb: CallbackQuery, state: FSMContext, cmd_text: str):
     """Chạy 1 sub-command /adm từ nút bấm, hiện kết quả ngay tại tin menu."""
     need = _perms.cmd_perm_for_text(cmd_text)
-    if need and not _perms.has_perm(cb.from_user.id, need):
+    if need and not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, need):
         await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
                         show_alert=True)
         return
@@ -1150,7 +1150,7 @@ async def _admm_exec_via_msg(msg: Message, state: FSMContext, cmd_text: str,
     restore_state: nếu cho, sau khi chạy xong sẽ đặt lại state này để admin
     nhập tiếp (dùng cho các flow chỉ-xem như tìm/xem user)."""
     need = _perms.cmd_perm_for_text(cmd_text)
-    if need and not _perms.has_perm(msg.from_user.id, need):
+    if need and not _perms.is_super(msg.from_user.id) and not _perms.has_perm(msg.from_user.id, need):
         await msg.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.")
         return
     await state.clear()
@@ -1397,7 +1397,7 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Tiền tệ ──
         if action == "cat_tien":
-            if not _perms.has_perm(cb.from_user.id, "tien"):
+            if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "tien"):
                 await cb.answer("🚫 Bạn không có quyền 💰 Tiền tệ.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1430,7 +1430,7 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Báo cáo ──
         if action == "cat_report":
-            if not _perms.has_perm(cb.from_user.id, "report"):
+            if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "report"):
                 await cb.answer("🚫 Bạn không có quyền 📊 Báo cáo.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1446,7 +1446,7 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Mã giảm giá ──
         if action == "cat_promo":
-            if not _perms.has_perm(cb.from_user.id, "promo"):
+            if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "promo"):
                 await cb.answer("🚫 Bạn không có quyền 🎟️ Mã giảm giá.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1464,7 +1464,7 @@ def register_adm_menu(target_router):
 
         # ── Nhóm Broadcast & Webhook ──
         if action == "cat_bcast":
-            if not _perms.has_perm(cb.from_user.id, "bcast"):
+            if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "bcast"):
                 await cb.answer("🚫 Bạn không có quyền 📣 Broadcast & webhook.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -1500,7 +1500,7 @@ def register_adm_menu(target_router):
                 await cb.answer()
                 return
             need = _perms.cmd_perm_for_text(f"/adm {flow} 0")
-            if need and not _perms.has_perm(cb.from_user.id, need):
+            if need and not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, need):
                 await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
                                 show_alert=True)
                 return
@@ -1527,7 +1527,7 @@ def register_adm_menu(target_router):
         # ── Chọn user theo số thứ tự (xem thông tin) ──
         if action.startswith("pickp_") or action.startswith("picku_"):
             need = _perms.cmd_perm_for_text("/adm info 0")
-            if need and not _perms.has_perm(cb.from_user.id, need):
+            if need and not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, need):
                 await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
                                 show_alert=True)
                 return
@@ -1579,7 +1579,7 @@ def register_adm_menu(target_router):
         }
         if action == "go_info":
             need = _perms.cmd_perm_for_text("/adm info 0")
-            if need and not _perms.has_perm(cb.from_user.id, need):
+            if need and not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, need):
                 await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
                                 show_alert=True)
                 return
