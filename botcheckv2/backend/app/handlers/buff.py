@@ -94,6 +94,7 @@ def _calc_total(qty: int, sell_price: int) -> int:
 # ─────────────────────────── KHÁCH ───────────────────────────
 
 @router.message(Command("buff"))
+@router.message(Command("shopbuff"))
 async def on_buff(msg: Message, state: FSMContext):
     await state.clear()
     await msg.answer(

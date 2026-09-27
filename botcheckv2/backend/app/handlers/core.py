@@ -575,6 +575,7 @@ COMMANDS = [
     BotCommand(command="napshop",     description="Nạp tiền vào ví shop mua acc"),
     BotCommand(command="napbuff",     description="Nạp tiền vào ví buff (buff tương tác MXH)"),
     BotCommand(command="buff",        description="🛍️ Shop buff tương tác MXH"),
+    BotCommand(command="shopbuff",    description="🛍️ Shop buff tương tác MXH"),
     BotCommand(command="balance",     description="Xem số dư hiện tại"),
     BotCommand(command="sodu",        description="Xem tất cả số dư: ví, credits, điểm"),
     BotCommand(command="huongdan",    description="Hướng dẫn nhanh theo từng mục"),
@@ -667,10 +668,12 @@ _HUONGDAN_TEXTS = {
         "━━━━━━━━━━━━━━━\n"
         "• <b>/nap &lt;số tiền&gt;</b> — nạp tự động (quét QR), chọn ví chính/shop\n"
         "• <b>/napshop &lt;số tiền&gt;</b> — nạp thẳng vào ví shop để mua acc\n"
+        "• <b>/napbuff &lt;số tiền&gt;</b> — nạp thẳng vào ví buff để buff tương tác\n"
         "• <b>/bank &lt;số tiền&gt;</b> — lấy thông tin chuyển khoản tay\n"
-        "• <b>/sodu</b> — xem tất cả số dư: ví chính, ví shop, credits, điểm\n\n"
+        "• <b>/sodu</b> — xem tất cả số dư: ví chính, ví shop, ví buff, credits, điểm\n\n"
         "💡 <b>Ví chính</b>: check UID, mua gói/VIP.\n"
-        "💡 <b>Ví shop</b>: mua acc, đặt cọc, hộp mù."
+        "💡 <b>Ví shop</b>: mua acc, đặt cọc, hộp mù.\n"
+        "💡 <b>Ví buff</b>: buff like/follow/view MXH."
     ),
     "bh": (
         "🛡️ <b>BẢO HÀNH ACC</b>\n"
@@ -690,6 +693,17 @@ _HUONGDAN_TEXTS = {
         "• <b>/theodoi</b> — theo dõi UID tự động, die báo ngay\n\n"
         "💡 Check lẻ trừ ví chính, check hàng loạt dùng credits."
     ),
+    "buff": (
+        "🛍️ <b>SHOP BUFF TƯƠNG TÁC</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "1️⃣ Gõ <b>/shopbuff</b> (hoặc /buff) → chọn nền tảng\n"
+        "(TikTok, Facebook, Instagram, YouTube, Threads, Shopee, Telegram)\n"
+        "2️⃣ Chọn loại dịch vụ → chọn gói\n"
+        "3️⃣ Gửi link cần buff → nhập số lượng\n"
+        "4️⃣ Xác nhận → bot tự đặt đơn lên hệ thống\n\n"
+        "💡 Mua bằng <b>ví buff riêng</b> — nạp bằng /napbuff.\n"
+        "⚠️ Link đúng định dạng, tài khoản để công khai."
+    ),
 }
 
 _HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
@@ -697,6 +711,7 @@ _HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
      InlineKeyboardButton(text="💳 Nạp tiền", callback_data="hd:nap")],
     [InlineKeyboardButton(text="🛡️ Bảo hành", callback_data="hd:bh"),
      InlineKeyboardButton(text="🔍 Kiểm tra acc", callback_data="hd:check")],
+    [InlineKeyboardButton(text="🛍️ Buff tương tác", callback_data="hd:buff")],
 ])
 
 manager = BotManager()
