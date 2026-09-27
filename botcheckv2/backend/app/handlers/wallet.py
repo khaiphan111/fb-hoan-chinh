@@ -1120,6 +1120,34 @@ async def on_testig(msg: Message):
         await msg.answer(f"❌ Đăng nhập thất bại: {str(e)[:200]}\n"
                          f"Nếu IG yêu cầu xác minh, hãy login tay 1 lần trên điện thoại.")
 
+@router.message(Command("setigcookie"))
+async def on_setigcookie(msg: Message):
+    """Chủ shop: lưu session cookie IG (tin nhắn sẽ bị xóa ngay)."""
+    if not _perms.is_super(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(None, 1)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    if len(parts) != 2 or not parts[1].strip():
+        await msg.answer(
+            "⚠️ Cú pháp: <code>/setigcookie &lt;sessionid&gt;</code>\n\n"
+            "<i>Cách lấy: trên máy tính, mở Instagram trên Chrome → F12 → Application → Cookies → "
+            "copy giá trị của <code>sessionid</code>. Tin nhắn sẽ bị xóa ngay.</i>",
+            parse_mode="HTML")
+        return
+    cookie = parts[1].strip()
+    # Chỉ lấy sessionid nếu user paste cả chuỗi cookie
+    if "=" in cookie and "sessionid" in cookie:
+        for part in cookie.replace(";", " ").split():
+            if part.startswith("sessionid="):
+                cookie = part.split("=", 1)[1]
+                break
+    db.set_setting("ig_session_cookie", cookie)
+    await msg.answer("✅ Đã lưu session cookie IG (tin nhắn đã bị xóa).\n"
+                     "Dùng /testig để kiểm tra.")
+
 @router.message(Command("balance"))
 async def on_balance(msg: Message):
     user = db.get_user(msg.chat.id)
