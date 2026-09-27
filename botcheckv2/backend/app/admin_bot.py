@@ -430,6 +430,8 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     Xử lý tất cả sub-commands của /adm.
     Dùng chung cho cả admin_bot.py và bot.py.
     """
+    # LOG TẠM - xóa sau
+    print(f"[ADM_TRACE] uid={msg.from_user.id} text={msg.text!r}", flush=True)
     from . import util
     tg_id = msg.from_user.id
 
