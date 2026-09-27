@@ -791,6 +791,7 @@ async def _ask_payos_wallet(msg, amount: int):
     u = db.get_user(msg.chat.id if hasattr(msg, "chat") else msg.from_user.id)
     main_bal = int(u["balance"] or 0) if u else 0
     shop_bal = int(u["shop_balance"] or 0) if u and "shop_balance" in u.keys() else 0
+    buff_bal = int(u["buff_balance"] or 0) if u and "buff_balance" in u.keys() else 0
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"💰 Ví chính — đang có {vnd(main_bal)}",
@@ -798,6 +799,9 @@ async def _ask_payos_wallet(msg, amount: int):
         [InlineKeyboardButton(
             text=f"🛒 Ví shop — đang có {vnd(shop_bal)}",
             callback_data=f"payos_wallet:shop:{amount}")],
+        [InlineKeyboardButton(
+            text=f"👛 Ví buff — đang có {vnd(buff_bal)}",
+            callback_data=f"payos_wallet:buff:{amount}")],
     ])
     await msg.answer(
         f"💳 <b>NẠP {vnd(amount)}</b>\n"
@@ -886,7 +890,7 @@ async def on_payos_wallet(cb: CallbackQuery):
     try:
         _, target, amount_s = cb.data.split(":")
         amount = int(amount_s)
-        assert target in ("main", "shop") and amount > 0
+        assert target in ("main", "shop", "buff") and amount > 0
     except Exception:
         await cb.message.answer("❌ Yêu cầu không hợp lệ, gõ /nap lại nhé.")
         return

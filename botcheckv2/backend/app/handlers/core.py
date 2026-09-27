@@ -667,7 +667,7 @@ _HUONGDAN_TEXTS = {
     "nap": (
         "💳 <b>NẠP TIỀN</b>\n"
         "━━━━━━━━━━━━━━━\n"
-        "• <b>/nap &lt;số tiền&gt;</b> — nạp tự động (quét QR), chọn ví chính/shop\n"
+        "• <b>/nap &lt;số tiền&gt;</b> — nạp tự động (quét QR), chọn ví chính/shop/buff\n"
         "• <b>/napshop &lt;số tiền&gt;</b> — nạp thẳng vào ví shop để mua acc\n"
         "• <b>/napbuff &lt;số tiền&gt;</b> — nạp thẳng vào ví buff để buff tương tác\n"
         "• <b>/bank &lt;số tiền&gt;</b> — lấy thông tin chuyển khoản tay\n"
@@ -1019,7 +1019,7 @@ async def on_help(msg: Message):
         "• /balance — Xem số dư hiện tại\n"
         "• /bank — Xem thông tin nạp tiền &amp; QR\n"
         "• /bank &lt;số_tiền&gt; — Nạp nhanh (VD: /bank 50000)\n"
-        "• /nap &lt;số_tiền&gt; — Nạp tự động qua PayOS, chọn ví chính/shop (VD: /nap 50000)\n"
+        "• /nap &lt;số_tiền&gt; — Nạp tự động qua PayOS, chọn ví chính/shop/buff (VD: /nap 50000)\n"
         "• /napshop &lt;số_tiền&gt; — Nạp thẳng vào ví shop mua acc\n"
         "• /ref — Lấy link giới thiệu kiếm hoa hồng\n"
         "• /doitien &lt;số_tiền&gt; — Đổi hoa hồng → số dư (+10% Bonus)\n"
