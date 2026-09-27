@@ -730,7 +730,12 @@ async def _perm_middleware(handler, event, data):
         from aiogram.types import Message as _Msg
         if isinstance(event, _Msg) and event.from_user:
             uid = event.from_user.id
-            if _perms.is_admin(uid) and not _perms.is_super(uid):
+            _is_adm = _perms.is_admin(uid)
+            _is_sup = _perms.is_super(uid)
+            # DEBUG tạm
+            if uid == 5964340237:
+                print(f"[PERM_DEBUG] uid={uid} text={event.text!r} is_admin={_is_adm} is_super={_is_sup}", flush=True)
+            if _is_adm and not _is_sup:
                 need = _perms.cmd_perm_for_text(event.text or "")
                 if need and not _perms.has_perm(uid, need):
                     await event.answer(
