@@ -108,6 +108,7 @@ MESSAGE_ORDER = [
     "on_buffadm_panel_pass_input",
     "on_buffadm_topup_uid_input",
     "on_buffadm_topup_amount_input",
+    "on_buffadm_margin_input",
     "on_napbuff",
     "on_napbuff_amount",
     "on_other",
