@@ -1079,6 +1079,47 @@ async def on_payosset(msg: Message):
     await msg.answer("✅ Đã lưu cấu hình PayOS (tin nhắn chứa key đã bị xóa).\n"
                      "Dùng /payos để kiểm tra trạng thái.")
 
+@router.message(Command("setigpass"))
+async def on_setigpass(msg: Message):
+    """Chủ shop: lưu mật khẩu IG (tin nhắn sẽ bị xóa ngay)."""
+    if not _perms.is_super(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(None, 1)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+    if len(parts) != 2 or not parts[1].strip():
+        await msg.answer(
+            "⚠️ Cú pháp: <code>/setigpass &lt;mật_khẩu&gt;</code>\n"
+            "<i>Tin nhắn chứa mật khẩu đã được xóa ngay.</i>",
+            parse_mode="HTML")
+        return
+    db.set_setting("ig_password", parts[1].strip())
+    # Xóa session cũ để login lại với pass mới
+    db.set_setting("ig_session_cookie", "")
+    await msg.answer("✅ Đã lưu mật khẩu IG (tin nhắn đã bị xóa).\n"
+                     "Dùng /testig để kiểm tra đăng nhập.")
+
+@router.message(Command("testig"))
+async def on_testig(msg: Message):
+    """Chủ shop: test đăng nhập IG."""
+    if not _perms.is_super(msg.from_user.id):
+        return
+    await msg.answer("🔄 Đang test đăng nhập IG...")
+    try:
+        from ..ig import _get_instaloader_instance, _attempt_ig_login
+        L = _get_instaloader_instance()
+        _attempt_ig_login(L)
+        # Test lấy profile của chính acc
+        username = db.get_setting("ig_username")
+        profile = L.check_profile_id(username)
+        await msg.answer(f"✅ Đăng nhập IG thành công!\n👤 Acc: <code>{username}</code>",
+                         parse_mode="HTML")
+    except Exception as e:
+        await msg.answer(f"❌ Đăng nhập thất bại: {str(e)[:200]}\n"
+                         f"Nếu IG yêu cầu xác minh, hãy login tay 1 lần trên điện thoại.")
+
 @router.message(Command("balance"))
 async def on_balance(msg: Message):
     user = db.get_user(msg.chat.id)
