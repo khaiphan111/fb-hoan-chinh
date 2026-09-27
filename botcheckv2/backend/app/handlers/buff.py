@@ -86,7 +86,7 @@ def _pkg_kb(pkey: str, ckey: str, page: int = 0) -> InlineKeyboardMarkup:
     page = max(0, min(page, total_pages - 1))
     chunk = pkgs[page * page_size:(page + 1) * page_size]
     rows = [[InlineKeyboardButton(
-        text=f"{p['name']} — {vnd(p['sell_price'])}đ/1k",
+        text=f"#{p['panel_service_id']} {p['name'][:20]} — {vnd(p['sell_price'])}đ/1k",
         callback_data=f"buff:pkg:{p['id']}")] for p in chunk]
     nav = []
     if page > 0:
@@ -207,6 +207,7 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
             pass
         await cb.message.edit_text(
             f"📦 <b>{html.escape(svc['name'])}</b> — {html.escape(svc['platform_name'])}\n"
+            f"🆔 Mã gói: <code>#{svc['panel_service_id']}</code>\n"
             f"💰 Giá: <b>{vnd(svc['sell_price'])}đ/1000</b>\n"
             f"👛 Ví buff của bạn: <b>{vnd(bal)}</b>\n"
             f"📝 <i>{html.escape(svc['description'] or '')}</i>\n\n"
