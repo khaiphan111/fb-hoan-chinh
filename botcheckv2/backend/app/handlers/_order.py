@@ -79,7 +79,6 @@ MESSAGE_ORDER = [
     "on_sub",
     "on_list",
     "on_remove",
-    "on_check",
     "on_fb_note_input",
     "on_trackmenu_fb_input",
     "on_trackmenu_tiktok_input",

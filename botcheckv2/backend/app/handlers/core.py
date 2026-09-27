@@ -141,7 +141,7 @@ class AntiSpamMiddleware(BaseMiddleware):
                     return
                     
                 # Check daily limit for all tracking and checking cmds
-                if cmd in ("/check", "/tiktok", "/ig", "/track", "/trackv", "/trackig", "/trackvig", "/trackfb"):
+                if cmd in ("/tiktok", "/ig", "/track", "/trackv", "/trackig", "/trackvig"):
                     can_check, err_msg = db.check_daily_limit(event.chat.id)
                     if not can_check:
                         await event.answer(f"❌ {err_msg}")
@@ -532,7 +532,7 @@ MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="/muagoi"), KeyboardButton(text="/checkfile"), KeyboardButton(text="/checkcookie")],
         [KeyboardButton(text="/theodoi"), KeyboardButton(text="/tiktok"), KeyboardButton(text="/ig")],
-        [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
+        [KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
         [KeyboardButton(text="/web"), KeyboardButton(text="/huongdan"), KeyboardButton(text="/buff")],
@@ -544,7 +544,7 @@ ADMIN_MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="/muagoi"), KeyboardButton(text="/checkfile"), KeyboardButton(text="/checkcookie")],
         [KeyboardButton(text="/theodoi"), KeyboardButton(text="/tiktok"), KeyboardButton(text="/ig")],
-        [KeyboardButton(text="/check"), KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
+        [KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
         [KeyboardButton(text="/web"), KeyboardButton(text="/adm"), KeyboardButton(text="/huongdan")],
@@ -1082,7 +1082,6 @@ async def on_help(msg: Message):
         "<b>📘 FACEBOOK</b>\n"
         "• /fb &lt;uid/link&gt; — Check Live/Die nhanh\\n"
         "• /getuid &lt;link&gt; — Lấy UID từ link FB\n"
-        "• /trackfb &lt;uid&gt; — Theo dõi Live/Die\n"
         "• /untrackfb &lt;uid&gt; — Huỷ theo dõi\n"
         "• /trackfblist — Danh sách FB đang theo dõi\n"
         "• /mywatches — UID đang theo dõi + chế độ báo\n"

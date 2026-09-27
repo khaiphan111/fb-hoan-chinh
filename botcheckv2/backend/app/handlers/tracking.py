@@ -30,7 +30,7 @@ from .. import perms as _perms
 from .. import notify_bot as _notify_bot
 from .. import config as _config
 from ..persist import SQLiteStorage, check_cache_get, check_cache_set, init_cache_db
-from ..util import now, parse_check_args, vnd, vn_time_str
+from ..util import now, vnd, vn_time_str
 from ..tiktok import parse_username, fetch_tiktok_info, fmt_num, build_info_caption
 from ..ig import (
     parse_ig_username, parse_ig_post_id,
@@ -404,7 +404,7 @@ async def on_trackviglist(msg: Message):
 async def on_list(msg: Message):
     rows = db.user_watches(msg.chat.id)
     if not rows:
-        await msg.answer("Bạn chưa theo dõi UID nào. Dùng /check để thêm.")
+        await msg.answer("Bạn chưa theo dõi UID nào. Dùng /theodoi để thêm.")
         return
     lines = ["<b>Danh sách đang theo dõi</b>"]
     for w in rows:
@@ -422,36 +422,6 @@ async def on_remove(msg: Message):
         return
     n = db.remove_watch(msg.chat.id, parts[1].strip())
     await msg.answer("Đã bỏ theo dõi." if n else "Không tìm thấy UID này.")
-
-@router.message(Command("check", "trackfb"))
-async def on_check(msg: Message):
-    user = db.get_user(msg.chat.id)
-    if not user:
-        await msg.answer("Bạn chưa /start. Gõ /start trước nhé.")
-        return
-    if not _sub_active(user):
-        await msg.answer("Bạn cần có gói còn hạn để dùng /check. Gõ /sub để mua gói.")
-        return
-
-    uid, note, price, days = parse_check_args(msg.text or "")
-    if not uid:
-        await msg.answer("Cú pháp: /check {uid} [ghi chú] [giá] [số ngày]")
-        return
-
-    from ..fb import check_uid, avatar_url
-    res = await check_uid(uid)
-    status = "live" if res["alive"] else "die"
-    avatar = res["avatar_url"] or avatar_url(uid)
-    expire_at = now() + days * DAY if days else 0
-    wid, is_new = db.add_watch(msg.chat.id, res["uid"], note or "", price or 0, expire_at)
-    db.update_watch_status(wid, status, avatar)
-    if is_new:
-        db.add_log("add", f"Thêm UID {res['uid']} ({status})", msg.chat.id, res["uid"])
-
-    header = "Đã thêm theo dõi:" if is_new else "UID này đã trong danh sách theo dõi:"
-    if days:
-        header += f" trong {days} ngày"
-    await _send_card(msg.bot, msg.chat.id, res["uid"], status, note, price, avatar, header)
 
 @router.callback_query(F.data.startswith("fb_track_"))
 async def on_fb_track_btn(cb: CallbackQuery):
@@ -1244,7 +1214,6 @@ __all__ = [
     "on_trackviglist",
     "on_list",
     "on_remove",
-    "on_check",
     "on_fb_track_btn",
     "on_trackmenu_fb_input",
     "on_trackmenu_ig_input",
