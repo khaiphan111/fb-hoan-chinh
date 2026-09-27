@@ -576,6 +576,7 @@ COMMANDS = [
     BotCommand(command="napbuff",     description="Nạp tiền vào ví buff (buff tương tác MXH)"),
     BotCommand(command="buff",        description="🛍️ Shop buff tương tác MXH"),
     BotCommand(command="shopbuff",    description="🛍️ Shop buff tương tác MXH"),
+    BotCommand(command="buffadm",     description="🛠️ Quản lý shop buff (admin)"),
     BotCommand(command="balance",     description="Xem số dư hiện tại"),
     BotCommand(command="sodu",        description="Xem tất cả số dư: ví, credits, điểm"),
     BotCommand(command="huongdan",    description="Hướng dẫn nhanh theo từng mục"),
