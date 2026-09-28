@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: fb-hoan-chinh
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Bot Telegram can chay lien tuc -> dung goi starter (tra phi).
+    # Goi free se "ngu" sau 15 phut khong co traffic -> bot chet.
+    plan: starter
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Bat buoc: set trong Render Dashboard (Environment), KHONG commit vao repo
+      - key: SUPABASE_DB_URL
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_BOT_TOKEN
+        sync: false
+      - key: ADMIN_TG_ID
+        sync: false
+      # Tuy chon (de trong neu khong dung)
+      - key: FB_AVATAR_TOKEN
+        sync: false
+      - key: ZALO_BOT_TOKEN
+        sync: false
+      - key: WEB_DOMAIN
+        sync: false

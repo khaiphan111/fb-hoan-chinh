@@ -1,0 +1,7 @@
+.git
+botcheckv2/backend/data.db*
+botcheckv2/backend/.env
+**/__pycache__
+**/node_modules
+backups/
+*.log

@@ -18,6 +18,12 @@ class PgCursor:
         self.rowcount = 0
     def execute(self, sql, params=()):
         sql = sql.replace('?', '%s')
+        # SQLite: INSERT OR REPLACE -> Postgres: ON CONFLICT (chi co 1 cho dung: extra_admins)
+        sql = sql.replace(
+            "INSERT OR REPLACE INTO extra_admins(tg_id, name, perms, added_by, added_at, expires_at)",
+            "INSERT INTO extra_admins(tg_id, name, perms, added_by, added_at, expires_at)"
+            " ON CONFLICT(tg_id) DO UPDATE SET name=EXCLUDED.name, perms=EXCLUDED.perms,"
+            " added_by=EXCLUDED.added_by, added_at=EXCLUDED.added_at, expires_at=EXCLUDED.expires_at")
         self.cur.execute(sql, params)
         self.rowcount = self.cur.rowcount
         if sql.strip().upper().startswith('INSERT') and 'RETURNING id' in sql:
@@ -31,6 +37,7 @@ class PgCursor:
     def executescript(self, sql):
         sql = sql.replace('BIGINT PRIMARY KEY AUTOINCREMENT', 'BIGSERIAL PRIMARY KEY')
         sql = sql.replace('BIGINT PRIMARY KEY', 'BIGSERIAL PRIMARY KEY')
+        sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
         sql = sql.replace('PRAGMA journal_mode=WAL;', '')
         self.cur.execute(sql)
         return self
