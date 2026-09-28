@@ -255,6 +255,12 @@ class FollowerPoller:
             try:
                 now_t = time.localtime()
                 today = time.strftime("%Y-%m-%d", now_t)
+                # Tạm dừng bot: tự mở lại khi hết giờ + gửi tin "đã mở lại" còn pending
+                try:
+                    from . import pause as _pause_mod
+                    await _pause_mod.sweep(self._bot)
+                except Exception as e:
+                    log.warning("pause sweep: %s", e)
                 if now_t.tm_hour == 3 and db.get_setting("maint_cookie_clean") != today and _job_on("cookie_clean"):
                     try:
                         await self._clean_cookie_pool()
@@ -679,6 +685,9 @@ class FollowerPoller:
         """5.13 Hỏi thăm sau 24h mua acc: gộp 1 tin/khách (tránh spam)."""
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
         import html as _html
+        from . import pause as _pause_mod
+        if _pause_mod.jobs_paused():
+            return
         orders = db.acc_orders_need_followup()
         if not orders:
             return
@@ -721,6 +730,9 @@ class FollowerPoller:
 
     async def _nudge_reviews(self):
         """Cảm ơn + xin đánh giá sau review_nudge_minutes (mặc định 90 phút) mua acc."""
+        from . import pause as _pause_mod
+        if _pause_mod.jobs_paused():
+            return
         try:
             minutes = int(db.get_setting("review_nudge_minutes", "90") or 90)
         except Exception:
@@ -1161,6 +1173,10 @@ class FollowerPoller:
     async def _process_buff_pending(self):
         from . import buff_worker
         from .util import vnd
+        from . import pause as _pause_mod
+        if _pause_mod.jobs_paused():
+            log.info("buff pending: bỏ qua (bot đang tạm dừng)")
+            return
         # Thu hồi đơn kẹt ở 'placing' quá 10 phút (worker crash giữa chừng)
         try:
             c = db.get_conn()

@@ -923,6 +923,14 @@ def _admm_main_kb(tg_id=None):
                                           callback_data="admx:list"),
                      InlineKeyboardButton(text="📜 Nhật ký hoạt động",
                                           callback_data="admx:audit")])
+        # Nút tạm dừng / mở lại bot (chỉ chủ shop)
+        from . import pause as _pause_mod
+        if _pause_mod.is_paused():
+            rows.append([InlineKeyboardButton(text="▶️ Mở lại bot (đang tạm dừng)",
+                                              callback_data="admm:resume")])
+        else:
+            rows.append([InlineKeyboardButton(text="⏸️ Tạm dừng bot",
+                                              callback_data="admm:pause")])
     if not rows:
         rows.append([InlineKeyboardButton(text="🚫 Không có quyền nào",
                                           callback_data="admm:noop")])
@@ -1386,6 +1394,30 @@ def register_adm_menu(target_router):
 
         if action == "noop":
             await cb.answer()
+            return
+
+        # ── Tạm dừng / mở lại bot (chỉ chủ shop) ──
+        if action == "pause":
+            if not _perms.is_super(cb.from_user.id):
+                await cb.answer("🚫 Chỉ chủ shop mới dùng được.",
+                                show_alert=True)
+                return
+            await cb.answer()
+            from .handlers import pauseadm as _pm
+            await _pm.start_pause_flow_cb(cb, state)
+            return
+
+        if action == "resume":
+            if not _perms.is_super(cb.from_user.id):
+                await cb.answer("🚫 Chỉ chủ shop mới dùng được.",
+                                show_alert=True)
+                return
+            await cb.answer()
+            from .handlers import pauseadm as _pm
+            txt = await _pm.do_resume(cb.bot, cb.from_user.id,
+                                      cb.from_user.full_name or "")
+            await cb.message.edit_text(txt, parse_mode="HTML",
+                                       reply_markup=_admm_back_kb())
             return
 
         # ── Chọn ví cho mã giảm giá / mã tiền ──

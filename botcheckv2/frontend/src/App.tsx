@@ -16,6 +16,8 @@ import {
   IconBell,
   IconRocket,
   IconShoppingCart,
+  IconPlayerPause,
+  IconPlayerPlay,
 } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import toast, { Toaster } from "react-hot-toast";
@@ -41,6 +43,7 @@ import Referral from "./pages/Referral";
 import Alerts from "./pages/Alerts";
 import Shop from "./pages/Shop";
 import Buff from "./pages/Buff";
+import PauseModal from "./components/PauseModal";
 
 const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "dashboard", label: "Tổng quan", icon: IconActivity },
@@ -67,9 +70,36 @@ export default function App() {
   const [tab, setTab] = useState("dashboard");
   const [status, setStatus] = useState<any>(null);
   const [adminMe, setAdminMe] = useState<any>(null);
+  const [pauseInfo, setPauseInfo] = useState<any>(null);
+  const [pauseModal, setPauseModal] = useState(false);
   const { dark, toggle } = useTheme();
 
   const isUser = getToken().startsWith("user-");
+  const isSuper = !!adminMe && adminMe.role === "super_admin";
+
+  async function refreshPause() {
+    if (!isSuper) return;
+    try {
+      const r = await api("/api/pause/status");
+      if (r.ok) setPauseInfo(r.data);
+    } catch {
+      /* im lặng — không spam */
+    }
+  }
+
+  async function resumeBot() {
+    try {
+      const r = await api("/api/pause/resume", { method: "POST" });
+      if (r.ok) {
+        toast.success(r.data.msg || "Đã mở lại bot.");
+        refreshPause();
+      } else {
+        toast.error(r.error || "Không mở được bot.");
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Lỗi kết nối.");
+    }
+  }
 
   async function refreshStatus() {
     try {
@@ -104,6 +134,13 @@ export default function App() {
       refreshStatus();
     }
   }, [authed]);
+
+  useEffect(() => {
+    if (!authed || isUser || !isSuper) return;
+    refreshPause();
+    const t = setInterval(refreshPause, 30000);
+    return () => clearInterval(t);
+  }, [authed, isSuper]);
 
   if (window.location.pathname === "/auth") {
     return <div className="p-10 text-center">Đang đăng nhập...</div>;
@@ -180,6 +217,19 @@ export default function App() {
           );
         })}
         <div className="mt-auto flex flex-col gap-1">
+          {isSuper && (
+            pauseInfo?.active ? (
+              <Button variant="ghost" size="sm" onClick={resumeBot} className="justify-start text-die">
+                <IconPlayerPlay size={18} />
+                Mở lại bot
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={() => setPauseModal(true)} className="justify-start">
+                <IconPlayerPause size={18} />
+                Tạm dừng bot
+              </Button>
+            )
+          )}
           <Button variant="ghost" size="sm" onClick={toggle} className="justify-start">
             {dark ? <IconSun size={18} /> : <IconMoon size={18} />}
             {dark ? "Giao diện sáng" : "Giao diện tối"}
@@ -202,6 +252,23 @@ export default function App() {
             để nhập Bot Token trước khi sử dụng.
           </div>
         )}
+        {pauseInfo?.active && (
+          <div className="mb-6 rounded-lg border border-die/30 bg-die/10 px-4 py-3 text-sm flex items-center gap-2">
+            <IconPlayerPause size={18} className="text-die" />
+            <span>
+              Bot đang <b>tạm dừng</b> ({pauseInfo.reason}) — dự kiến mở lại lúc{" "}
+              {pauseInfo.until
+                ? new Date(pauseInfo.until * 1000).toLocaleString("vi-VN", {
+                    hour: "2-digit", minute: "2-digit",
+                    day: "2-digit", month: "2-digit", year: "numeric",
+                  })
+                : "chưa hẹn"}.
+            </span>
+            <button className="ml-auto font-medium underline shrink-0" onClick={resumeBot}>
+              Mở lại ngay
+            </button>
+          </div>
+        )}
         {tab === "dashboard" && <Dashboard status={status} onRefresh={refreshStatus} />}
         {tab === "watches" && <Watches />}
         {tab === "tiktok" && <Tiktok />}
@@ -220,6 +287,11 @@ export default function App() {
         { tab === "shop" && <Shop /> }
         { tab === "buff" && <Buff /> }
       </main>
+      <PauseModal
+        open={pauseModal}
+        onClose={() => setPauseModal(false)}
+        onDone={refreshPause}
+      />
     </div>
   );
 }

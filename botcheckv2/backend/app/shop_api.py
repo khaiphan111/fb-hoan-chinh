@@ -10,7 +10,8 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from . import db
-from .api import auth
+from . import pause as pause_mod
+from .api import auth, require_role
 
 router = APIRouter(prefix="/api", tags=["shop"])
 
@@ -389,3 +390,55 @@ def buff_links(
 @router.get("/buff/orders/pending")
 def buff_orders_pending(limit: int = Query(20, ge=1, le=100), _=Depends(auth)):
     return {"ok": True, "data": [_d(r) for r in db.buff_orders_pending(limit)]}
+
+
+# ---------------- Tam dung / mo lai bot ----------------
+
+class PauseBody(BaseModel):
+    reason: str = ""
+    minutes: Optional[int] = None   # mo lai sau N phut
+    until: Optional[int] = None     # hoac unix timestamp mo lai
+    stop_jobs: bool = False
+
+
+@router.get("/pause/status")
+def pause_status(admin=Depends(require_role("super_admin"))):
+    """Trang thai tam dung hien tai."""
+    info = pause_mod.get_info()
+    return {"ok": True, "data": info}
+
+
+@router.post("/pause")
+def pause_activate(body: PauseBody,
+                   admin=Depends(require_role("super_admin"))):
+    """Bat che do tam dung bot."""
+    import time as _t
+    reason = (body.reason or "").strip() or "Bảo trì hệ thống"
+    now = int(_t.time())
+    until = 0
+    if body.until:
+        until = int(body.until)
+    elif body.minutes:
+        until = now + int(body.minutes) * 60
+    if until <= now:
+        return {"ok": False, "error": "Thời gian mở lại không hợp lệ"}
+    if until - now > pause_mod.MAX_MINUTES * 60:
+        return {"ok": False, "error": "Tối đa 7 ngày"}
+    pause_mod.activate(reason, until,
+                       by_id=int(admin["id"] or 0),
+                       by_name=str(admin["username"] or "web"),
+                       stop_jobs=bool(body.stop_jobs))
+    return {"ok": True, "data": pause_mod.get_info()}
+
+
+@router.post("/pause/resume")
+def pause_resume(admin=Depends(require_role("super_admin"))):
+    """Mo lai bot ngay. Tin 'da mo lai' do poller tren VM gui (web khong co bot)."""
+    if not pause_mod.is_paused():
+        return {"ok": True, "data": {"resumed": False,
+                                     "msg": "Bot đang hoạt động bình thường"}}
+    flipped = pause_mod.try_deactivate(
+        by_id=int(admin["id"] or 0),
+        by_name=str(admin["username"] or "web"))
+    return {"ok": True, "data": {"resumed": flipped,
+                                 "msg": "Đã mở lại bot. Tin báo sẽ gửi trong vài phút."}}

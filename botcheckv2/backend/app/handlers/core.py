@@ -720,6 +720,70 @@ manager = BotManager()
 zalo_manager = ZaloBotManager()
 
 @router.message.middleware()
+async def _pause_middleware(handler, event, data):
+    """Chế độ tạm dừng bot: khách thường chỉ nhận tin báo tạm dừng.
+
+    - Admin (kể cả admin phụ) đi qua bình thường để còn mở lại bot.
+    - Lazy-resume: nếu đã quá giờ mở lại thì tự tắt + báo "đã mở lại" nền,
+      rồi cho tin nhắn hiện tại chạy tiếp bình thường.
+    - Giao dịch đang dở của khách coi như hủy: clear FSM state + dặn
+      thực hiện lại trong tin báo.
+    """
+    try:
+        from aiogram.types import Message as _Msg
+        from .. import pause as _pause
+        if isinstance(event, _Msg) and event.from_user:
+            uid = event.from_user.id
+            if _pause.is_paused() and not _is_admin(uid):
+                state = data.get("state")
+                if state is not None:
+                    try:
+                        await state.clear()
+                    except Exception:
+                        pass
+                name = event.from_user.full_name or ""
+                if _pause.record_notified(uid, name):
+                    try:
+                        await event.answer(_pause.pause_notice_text(),
+                                           parse_mode="HTML")
+                    except Exception:
+                        pass
+                return
+            # Lazy-resume: vừa hết giờ tạm dừng nhưng poller chưa kịp sweep
+            if (not _pause.is_paused()
+                    and db.get_setting(_pause.K_REOPEN_PENDING) == "1"):
+                bot = data.get("bot")
+                if bot is not None:
+                    import asyncio as _aio
+                    _aio.create_task(_pause.sweep(bot))
+    except Exception:
+        pass
+    return await handler(event, data)
+
+
+@router.callback_query.middleware()
+async def _pause_cb_middleware(handler, event, data):
+    """Callback của khách khi bot tạm dừng: báo alert, không chạy handler."""
+    try:
+        from aiogram.types import CallbackQuery as _Cb
+        from .. import pause as _pause
+        if isinstance(event, _Cb) and event.from_user:
+            if _pause.is_paused() and not _is_admin(event.from_user.id):
+                info = _pause.get_info()
+                try:
+                    await event.answer(
+                        f"⏸️ Bot tạm dừng ({info.get('reason') or ''}) — "
+                        f"mở lại lúc {_pause.fmt_until(info.get('until') or 0)}.",
+                        show_alert=True)
+                except Exception:
+                    pass
+                return
+    except Exception:
+        pass
+    return await handler(event, data)
+
+
+@router.message.middleware()
 async def _perm_middleware(handler, event, data):
     """Chặn admin phụ gõ lệnh tay thuộc nhóm quyền chưa được cấp.
 

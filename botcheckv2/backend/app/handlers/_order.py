@@ -230,9 +230,14 @@ MESSAGE_ORDER = [
     "on_chamdiem",
     "on_lo",
     "on_nccauto",
+    "on_tamdung",
+    "on_molai",
+    "_pause_reason_input",
+    "_pause_until_input",
 ]
 CALLBACK_ORDER = [
     "_on_admm_cb",
+    "_on_pause_cb",
     "_admm_bcast_confirm",
     "_admm_bcast_cancel",
     "_admm_ban_quick",

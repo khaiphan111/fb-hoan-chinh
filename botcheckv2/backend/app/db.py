@@ -181,6 +181,14 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_admin_audit_time
                 ON admin_audit(created_at DESC);
 
+            -- Khách đã nhận tin "bot tạm dừng" -> báo "đã mở lại" sau
+            CREATE TABLE IF NOT EXISTS pause_notified (
+                tg_id          BIGINT PRIMARY KEY,
+                name           TEXT DEFAULT '',
+                notified_at    BIGINT DEFAULT 0,
+                last_notice_at BIGINT DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS tg_users (
                 tg_id        BIGINT PRIMARY KEY,
                 username     TEXT,
