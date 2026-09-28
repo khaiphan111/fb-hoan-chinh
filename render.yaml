@@ -1,14 +1,18 @@
 services:
   - type: web
-    name: fb-hoan-chinh
+    name: fb-admin-web
     runtime: docker
     dockerfilePath: ./Dockerfile
-    # Bot Telegram can chay lien tuc -> dung goi starter (tra phi).
-    # Goi free se "ngu" sau 15 phut khong co traffic -> bot chet.
-    plan: starter
+    # Che do WEB_ONLY: chi phuc vu API + web admin, KHONG polling bot Telegram,
+    # KHONG chay jobs nen (bot van chay tren VM).
+    # -> goi free dung duoc (lan mo dau tien sau khi "ngu" se cham ~30-60s).
+    # Muon mo la len ngay thi doi sang plan: starter.
+    plan: free
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
+      - key: WEB_ONLY
+        value: "1"
       # Bat buoc: set trong Render Dashboard (Environment), KHONG commit vao repo
       - key: SUPABASE_DB_URL
         sync: false

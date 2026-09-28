@@ -55,6 +55,10 @@ _STARTUP_NOTIFY_MIN_INTERVAL = 3600  # giây: tối đa 1 tin "kết nối thàn
 _HEARTBEAT_FILE = os.path.expanduser("~/workspace/fb-hoan-chinh/watchdog/backend_heartbeat")
 _heartbeat_task = None
 
+# WEB_ONLY=1: che do "web admin only" cho Render — chi phuc vu API + web,
+# khong polling bot Telegram, khong chay poller/jobs nen (bot van chay tren VM).
+WEB_ONLY = os.environ.get("WEB_ONLY", "") == "1"
+
 
 def _startup_notify_allowed() -> bool:
     """Chống spam tin nhắn 'Bot đã kết nối thành công!' khi backend restart liên tục.
@@ -171,8 +175,16 @@ async def on_startup():
         print(f"DEBUG: Finish start_services. tg_running={manager.running}", flush=True)
 
     # Khởi chạy dưới nền để Uvicorn có thể mở port ngay lập tức
-    asyncio.create_task(start_services())
+    # WEB_ONLY=1 (Render): chi phuc vu API + web admin, KHONG polling bot
+    # Telegram, KHONG chay poller/jobs nen — bot van chay tren VM.
+    if WEB_ONLY:
+        print("WEB_ONLY=1: chi chay API + web admin (bot Telegram + jobs nen chay tren VM).", flush=True)
+    else:
+        asyncio.create_task(start_services())
     print("DEBUG: Finish on_startup", flush=True)
+
+    if WEB_ONLY:
+        return
 
     # GĐ2 quan trắc: heartbeat để phát hiện kill -9 / crash ở lần khởi động sau
     global _heartbeat_task
