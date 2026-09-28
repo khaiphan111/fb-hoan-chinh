@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config, db, util
 from .api import router as api_router
 from .campaigns_api import router as campaigns_router
+from .shop_api import router as shop_router
 from .reseller_api import router as reseller_router
 from .bot import manager, zalo_manager
 from .admin_bot import manager as admin_manager
@@ -30,6 +31,7 @@ app.add_middleware(
 
 app.include_router(api_router)
 app.include_router(campaigns_router, prefix="/api")
+app.include_router(shop_router)
 app.include_router(reseller_router)
 
 from .miniapp import router as miniapp_router

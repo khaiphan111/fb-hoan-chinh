@@ -2036,7 +2036,8 @@ def migrate_new_features():
             checkout_url   TEXT DEFAULT '',
             qr_code        TEXT DEFAULT '',
             created_at     BIGINT NOT NULL,
-            updated_at     BIGINT NOT NULL
+            updated_at     BIGINT NOT NULL,
+            target         TEXT DEFAULT 'main'
         )""",
         "ALTER TABLE payos_orders ADD COLUMN qr_code TEXT DEFAULT ''",
         "ALTER TABLE payos_orders ADD COLUMN final_checked INTEGER DEFAULT 0",
@@ -2047,7 +2048,9 @@ def migrate_new_features():
             warranty_hours INTEGER NOT NULL DEFAULT 24,
             description    TEXT DEFAULT '',
             active         INTEGER DEFAULT 1,
-            created_at     BIGINT NOT NULL
+            created_at     BIGINT NOT NULL,
+            stall          TEXT DEFAULT 'Acc Facebook',
+            live_check     INTEGER DEFAULT 1
         )""",
         """CREATE TABLE IF NOT EXISTS acc_stock (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,

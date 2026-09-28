@@ -14,6 +14,8 @@ import {
   IconUserShield,
   IconAffiliate,
   IconBell,
+  IconRocket,
+  IconShoppingCart,
 } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import toast, { Toaster } from "react-hot-toast";
@@ -37,6 +39,8 @@ import Proxies from "./pages/Proxies";
 import Admins from "./pages/Admins";
 import Referral from "./pages/Referral";
 import Alerts from "./pages/Alerts";
+import Shop from "./pages/Shop";
+import Buff from "./pages/Buff";
 
 const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "dashboard", label: "Tổng quan", icon: IconActivity },
@@ -46,6 +50,8 @@ const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "zalo", label: "Zalo", icon: IconListCheck },
   { key: "instagram", label: "Instagram", icon: IconListCheck },
   { key: "users", label: "Người dùng", icon: IconUsers },
+  { key: "shop", label: "Shop Acc", icon: IconShoppingCart, roles: ["super_admin", "admin"] },
+  { key: "buff", label: "Buff tương tác", icon: IconRocket, roles: ["super_admin", "admin"] },
   { key: "codes", label: "Kho Code", icon: IconListCheck },
   { key: "proxies", label: "Hệ thống Proxy", icon: IconServer, roles: ["super_admin", "admin"] },
   { key: "logs", label: "Nhật ký", icon: IconHistory },
@@ -211,6 +217,8 @@ export default function App() {
         { tab === "admins" && <Admins /> }
         { tab === "referral" && <Referral /> }
         { tab === "alerts" && <Alerts /> }
+        { tab === "shop" && <Shop /> }
+        { tab === "buff" && <Buff /> }
       </main>
     </div>
   );

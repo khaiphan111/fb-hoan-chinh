@@ -463,6 +463,37 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
 
       <Card>
         <CardHeader>
+          <CardTitle>Điểm loyalty ngẫu nhiên sau mua (khách bấm)</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label>Điểm random tối thiểu</Label>
+              <Input type="number" value={s.loyalty_random_min || ""} onChange={(e) => up("loyalty_random_min", e.target.value)} placeholder="VD: 10" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Điểm random tối đa</Label>
+              <Input type="number" value={s.loyalty_random_max || ""} onChange={(e) => up("loyalty_random_max", e.target.value)} placeholder="VD: 100" />
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Trần điểm random/user (0 = tắt)</Label>
+            <Input type="number" value={s.loyalty_random_cap_user || ""} onChange={(e) => up("loyalty_random_cap_user", e.target.value)} placeholder="0 = tắt tính năng" />
+            <p className="text-xs text-muted-foreground">Để 0 là tắt hẳn điểm random.</p>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Đơn tối thiểu (VNĐ) để được random</Label>
+            <Input type="number" value={s.loyalty_random_min_order || ""} onChange={(e) => up("loyalty_random_min_order", e.target.value)} placeholder="VD: 50000" />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>Số lượt random/ngày/user</Label>
+            <Input type="number" value={s.loyalty_random_daily_max || ""} onChange={(e) => up("loyalty_random_daily_max", e.target.value)} placeholder="VD: 3" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Bảng giá nâng cấp VIP tự động (Tổng nạp)</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
