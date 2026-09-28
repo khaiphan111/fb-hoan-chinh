@@ -858,7 +858,7 @@ async def on_start(msg: Message):
         if ref_id > 0 and ref_id != u.id:
             admin_msg += f"🤝 <b>Mời bởi:</b> <code>{ref_id}</code>\n"
             try:
-                await msg.bot.send_message(ref_id, f"🎉 <b>Tin vui!</b>\nNgười dùng <b>{html.escape(u.full_name or "")}</b> vừa tham gia Bot qua link giới thiệu của bạn!\nKhi họ nạp tiền bạn sẽ nhận được 10% hoa hồng.", parse_mode="HTML")
+                await msg.bot.send_message(ref_id, f"🎉 <b>Tin vui!</b>\nNgười dùng <b>{html.escape(u.full_name or '')}</b> vừa tham gia Bot qua link giới thiệu của bạn!\nKhi họ nạp tiền bạn sẽ nhận được 10% hoa hồng.", parse_mode="HTML")
             except: pass
             
         # Send to admin tg
