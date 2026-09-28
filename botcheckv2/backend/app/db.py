@@ -1,5 +1,6 @@
 import threading
 import time
+import re
 from typing import Optional, Any
 import os
 import psycopg2
@@ -18,6 +19,13 @@ class PgCursor:
         self.rowcount = 0
     def execute(self, sql, params=()):
         sql = sql.replace('?', '%s')
+        # Chuyen DDL SQLite -> Postgres (giong executescript): AUTOINCREMENT -> SERIAL/BIGSERIAL
+        sql = sql.replace('BIGINT PRIMARY KEY AUTOINCREMENT', 'BIGSERIAL PRIMARY KEY')
+        sql = sql.replace('BIGINT PRIMARY KEY', 'BIGSERIAL PRIMARY KEY')
+        sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
+        # INTEGER PK thuong (khong AUTOINCREMENT): SQLite luon 64-bit -> PG phai BIGINT (vd payos_orders.order_code)
+        sql = sql.replace('INTEGER PRIMARY KEY', 'BIGINT PRIMARY KEY')
+        sql = re.sub(r'\bBLOB\b', 'BYTEA', sql)
         # SQLite: INSERT OR REPLACE -> Postgres: ON CONFLICT (chi co 1 cho dung: extra_admins)
         sql = sql.replace(
             "INSERT OR REPLACE INTO extra_admins(tg_id, name, perms, added_by, added_at, expires_at)",
