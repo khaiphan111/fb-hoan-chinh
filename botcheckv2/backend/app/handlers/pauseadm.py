@@ -45,6 +45,16 @@ def _is_super(uid: int) -> bool:
         return False
 
 
+
+async def _cb_answer(cb, *args, **kwargs):
+    """Tra loi callback an toan: query het han/khong hop le thi bo qua,
+    khong de lam chet ca update (nguoi dung thay bot im re)."""
+    try:
+        await _cb_answer(cb, *args, **kwargs)
+    except Exception:
+        pass
+
+
 async def _deny_super(msg: Message) -> bool:
     if not _is_super(msg.from_user.id):
         await msg.answer("🚫 Chỉ chủ shop mới được tạm dừng / mở lại bot.")
@@ -121,14 +131,14 @@ async def _show_dur(cb: CallbackQuery, state: FSMContext):
         f"🔧 Lý do: <b>{html.escape(d.get('reason') or '')}</b>\n\n"
         "Mở lại sau bao lâu?",
         parse_mode="HTML", reply_markup=_dur_kb())
-    await cb.answer()
+    await _cb_answer(cb, )
 
 
 async def _show_confirm(cb: CallbackQuery, state: FSMContext):
     d = await state.get_data()
     await cb.message.edit_text(_confirm_text(d), parse_mode="HTML",
                                reply_markup=_confirm_kb(bool(d.get("stop_jobs"))))
-    await cb.answer()
+    await _cb_answer(cb, )
 
 
 def _parse_until(text: str):
@@ -230,7 +240,7 @@ async def start_pause_flow_cb(cb: CallbackQuery, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="▶️ Mở lại ngay",
                                      callback_data="pause:resume_now")]]))
-        await cb.answer()
+        await _cb_answer(cb, )
         return
     await _show_reason(cb, state)
 
@@ -240,14 +250,14 @@ async def start_pause_flow_cb(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("pause:"))
 async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
     if not _is_admin(cb.from_user.id) or not _is_super(cb.from_user.id):
-        await cb.answer("🚫 Chỉ chủ shop mới dùng được.", show_alert=True)
+        await _cb_answer(cb, "🚫 Chỉ chủ shop mới dùng được.", show_alert=True)
         return
     action = (cb.data or "")[6:]
 
     if action == "cancel":
         await state.clear()
         await cb.message.edit_text("Đã hủy thao tác tạm dừng bot.")
-        await cb.answer()
+        await _cb_answer(cb, )
         return
 
     if action == "resume_now":
@@ -255,7 +265,7 @@ async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
         txt = await do_resume(cb.bot, cb.from_user.id,
                               cb.from_user.full_name or "")
         await cb.message.edit_text(txt, parse_mode="HTML")
-        await cb.answer()
+        await _cb_answer(cb, )
         return
 
     if action == "reason_custom":
@@ -264,7 +274,7 @@ async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
             "✏️ Nhập <b>lý do tạm dừng</b> (vd: Nâng cấp server):\n"
             "Gõ /huy để hủy.",
             parse_mode="HTML")
-        await cb.answer()
+        await _cb_answer(cb, )
         return
 
     if action.startswith("reason:"):
@@ -272,7 +282,7 @@ async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
             idx = int(action.split(":")[1])
             reason = REASONS[idx]
         except (IndexError, ValueError):
-            await cb.answer("Lựa chọn không hợp lệ.", show_alert=True)
+            await _cb_answer(cb, "Lựa chọn không hợp lệ.", show_alert=True)
             return
         await state.update_data(reason=reason)
         await _show_dur(cb, state)
@@ -287,17 +297,17 @@ async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
             "• Ngày giờ: <code>18:30 29/09</code>\n"
             "Gõ /huy để hủy.",
             parse_mode="HTML")
-        await cb.answer()
+        await _cb_answer(cb, )
         return
 
     if action.startswith("dur:"):
         try:
             mins = int(action.split(":")[1])
         except ValueError:
-            await cb.answer("Lựa chọn không hợp lệ.", show_alert=True)
+            await _cb_answer(cb, "Lựa chọn không hợp lệ.", show_alert=True)
             return
         if not (1 <= mins <= MAX_MINUTES):
-            await cb.answer("Lựa chọn không hợp lệ.", show_alert=True)
+            await _cb_answer(cb, "Lựa chọn không hợp lệ.", show_alert=True)
             return
         await state.update_data(until=int(time.time()) + mins * 60,
                                 stop_jobs=False)
@@ -315,7 +325,7 @@ async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
         reason = d.get("reason") or "Bảo trì hệ thống"
         until = int(d.get("until") or 0)
         if until <= int(time.time()):
-            await cb.answer("Thời gian không hợp lệ, làm lại nhé.",
+            await _cb_answer(cb, "Thời gian không hợp lệ, làm lại nhé.",
                             show_alert=True)
             await state.clear()
             return
@@ -336,10 +346,10 @@ async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="▶️ Mở lại ngay",
                                      callback_data="pause:resume_now")]]))
-        await cb.answer()
+        await _cb_answer(cb, )
         return
 
-    await cb.answer()
+    await _cb_answer(cb, )
 
 
 # ── Nhập liệu tay (FSM) ───────────────────────────────────────────────────

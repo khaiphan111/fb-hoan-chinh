@@ -1374,13 +1374,22 @@ def _admm_parse_amount(text: str):
         return None
 
 
+async def _cb_answer(cb, *args, **kwargs):
+    """Tra loi callback an toan: query het han/khong hop le thi bo qua,
+    khong de lam chet ca update (nguoi dung thay bot im re)."""
+    try:
+        await cb.answer(*args, **kwargs)
+    except Exception:
+        pass
+
+
 def register_adm_menu(target_router):
     """Gắn toàn bộ menu nút /adm (callback + nhập liệu FSM) vào router cho trước."""
 
     @target_router.callback_query(F.data.startswith("admm:"))
     async def _on_admm_cb(cb: CallbackQuery, state: FSMContext):
         if not is_admin(cb.message.chat.id, cb.from_user.id):
-            await cb.answer("🚫 Không có quyền.", show_alert=True)
+            await _cb_answer(cb, "🚫 Không có quyền.", show_alert=True)
             return
         action = (cb.data or "")[5:]
 
@@ -1389,30 +1398,30 @@ def register_adm_menu(target_router):
             await state.clear()
             await cb.message.edit_text(_admm_text_main(), parse_mode="HTML",
                                       reply_markup=_admm_main_kb(cb.from_user.id))
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action == "noop":
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Tạm dừng / mở lại bot (chỉ chủ shop) ──
         if action == "pause":
             if not _perms.is_super(cb.from_user.id):
-                await cb.answer("🚫 Chỉ chủ shop mới dùng được.",
+                await _cb_answer(cb, "🚫 Chỉ chủ shop mới dùng được.",
                                 show_alert=True)
                 return
-            await cb.answer()
+            await _cb_answer(cb, )
             from .handlers import pauseadm as _pm
             await _pm.start_pause_flow_cb(cb, state)
             return
 
         if action == "resume":
             if not _perms.is_super(cb.from_user.id):
-                await cb.answer("🚫 Chỉ chủ shop mới dùng được.",
+                await _cb_answer(cb, "🚫 Chỉ chủ shop mới dùng được.",
                                 show_alert=True)
                 return
-            await cb.answer()
+            await _cb_answer(cb, )
             from .handlers import pauseadm as _pm
             txt = await _pm.do_resume(cb.bot, cb.from_user.id,
                                       cb.from_user.full_name or "")
@@ -1447,16 +1456,16 @@ def register_adm_menu(target_router):
                                             f"⏳ Hạn: <b>{html.escape(exp_txt)}</b>"],
                                            f"/adm promo {d.get('prefix')} {d.get('amount')} {d.get('uses') or 1} {expire} {wallet}")
                 return
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action == "help":
-            await cb.answer()
+            await _cb_answer(cb, )
             await _show_adm_help(cb.message)
             return
 
         if action == "setupfile":
-            await cb.answer()
+            await _cb_answer(cb, )
             fp = _setup_file_path()
             if os.path.isfile(fp):
                 await cb.message.answer_document(
@@ -1472,7 +1481,7 @@ def register_adm_menu(target_router):
         # ── Nhóm Tiền tệ ──
         if action == "cat_tien":
             if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "tien"):
-                await cb.answer("🚫 Bạn không có quyền 💰 Tiền tệ.", show_alert=True)
+                await _cb_answer(cb, "🚫 Bạn không có quyền 💰 Tiền tệ.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="💰 Cộng tiền vào ví", callback_data="admm:go_topup")],
@@ -1481,13 +1490,13 @@ def register_adm_menu(target_router):
             ])
             await cb.message.edit_text("💰 <b>TIỀN TỆ</b>\n\nChọn thao tác:",
                                       parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Nhóm Quản lý user ──
         if action == "cat_user":
             if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "user"):
-                await cb.answer("🚫 Bạn không có quyền 👤 Quản lý user.", show_alert=True)
+                await _cb_answer(cb, "🚫 Bạn không có quyền 👤 Quản lý user.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🔍 Xem thông tin user", callback_data="admm:go_info")],
@@ -1500,13 +1509,13 @@ def register_adm_menu(target_router):
             ])
             await cb.message.edit_text("👤 <b>QUẢN LÝ USER</b>\n\nChọn thao tác:",
                                       parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Nhóm Báo cáo ──
         if action == "cat_report":
             if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "report"):
-                await cb.answer("🚫 Bạn không có quyền 📊 Báo cáo.", show_alert=True)
+                await _cb_answer(cb, "🚫 Bạn không có quyền 📊 Báo cáo.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🖥 Tổng quan hệ thống", callback_data="admm:run_stats")],
@@ -1516,13 +1525,13 @@ def register_adm_menu(target_router):
             ])
             await cb.message.edit_text("📊 <b>BÁO CÁO</b>\n\nChọn báo cáo muốn xem:",
                                       parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Nhóm Mã giảm giá ──
         if action == "cat_promo":
             if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "promo"):
-                await cb.answer("🚫 Bạn không có quyền 🎟️ Mã giảm giá.", show_alert=True)
+                await _cb_answer(cb, "🚫 Bạn không có quyền 🎟️ Mã giảm giá.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎟️ Tạo mã giảm %", callback_data="admm:go_taopromo"),
@@ -1534,13 +1543,13 @@ def register_adm_menu(target_router):
             ])
             await cb.message.edit_text("🎟️ <b>MÃ GIẢM GIÁ</b>\n\nChọn thao tác:",
                                       parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Nhóm Broadcast & Webhook ──
         if action == "cat_bcast":
             if not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, "bcast"):
-                await cb.answer("🚫 Bạn không có quyền 📣 Broadcast & webhook.", show_alert=True)
+                await _cb_answer(cb, "🚫 Bạn không có quyền 📣 Broadcast & webhook.", show_alert=True)
                 return
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📢 Gửi broadcast", callback_data="admm:go_broadcast")],
@@ -1549,7 +1558,7 @@ def register_adm_menu(target_router):
             ])
             await cb.message.edit_text("📣 <b>BROADCAST & WEBHOOK</b>\n\nChọn thao tác:",
                                       parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Chạy ngay (không cần nhập liệu) ──
@@ -1572,11 +1581,11 @@ def register_adm_menu(target_router):
             rest = action[5:] if is_page else action[4:]
             flow, _, tail = rest.partition("_")
             if flow not in _USER_PICK_FLOWS:
-                await cb.answer()
+                await _cb_answer(cb, )
                 return
             need = _perms.cmd_perm_for_text(f"/adm {flow} 0")
             if need and not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, need):
-                await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
+                await _cb_answer(cb, f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
                                 show_alert=True)
                 return
             if is_page:
@@ -1588,22 +1597,22 @@ def register_adm_menu(target_router):
                                                 pick_cb=f"admm:sel_{flow}_",
                                                 title=_USER_PICK_FLOWS[flow])
                 await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-                await cb.answer()
+                await _cb_answer(cb, )
                 return
             try:
                 uid = int(tail)
             except ValueError:
-                await cb.answer("ID không hợp lệ.", show_alert=True)
+                await _cb_answer(cb, "ID không hợp lệ.", show_alert=True)
                 return
             await _admm_sel_uid(cb, state, flow, uid)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Chọn user theo số thứ tự (xem thông tin) ──
         if action.startswith("pickp_") or action.startswith("picku_"):
             need = _perms.cmd_perm_for_text("/adm info 0")
             if need and not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, need):
-                await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
+                await _cb_answer(cb, f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
                                 show_alert=True)
                 return
             if action.startswith("pickp_"):
@@ -1613,12 +1622,12 @@ def register_adm_menu(target_router):
                     page = 0
                 text, kb = _admm_user_pick_text(max(page, 0))
                 await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-                await cb.answer()
+                await _cb_answer(cb, )
                 return
             try:
                 uid = int(action.split("_", 1)[1])
             except ValueError:
-                await cb.answer("ID không hợp lệ.", show_alert=True)
+                await _cb_answer(cb, "ID không hợp lệ.", show_alert=True)
                 return
             try:
                 db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
@@ -1635,7 +1644,7 @@ def register_adm_menu(target_router):
             await cb.message.edit_reply_markup(
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
             await state.set_state(AdmMenuState.info_uid)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Bắt đầu các flow nhập liệu ──
@@ -1656,13 +1665,13 @@ def register_adm_menu(target_router):
         if action == "go_info":
             need = _perms.cmd_perm_for_text("/adm info 0")
             if need and not _perms.is_super(cb.from_user.id) and not _perms.has_perm(cb.from_user.id, need):
-                await cb.answer(f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
+                await _cb_answer(cb, f"🚫 Bạn không có quyền {_perms.perm_label(need)}.",
                                 show_alert=True)
                 return
             await state.set_state(AdmMenuState.info_uid)
             text, kb = _admm_user_pick_text(0)
             await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
         if action in prompts:
             st, prompt = prompts[action]
@@ -1675,7 +1684,7 @@ def register_adm_menu(target_router):
             else:
                 await cb.message.edit_text(prompt + "\n\nGõ /huy để huỷ.",
                                           parse_mode="HTML", reply_markup=_admm_back_kb())
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Broadcast: chọn đối tượng ──
@@ -1688,7 +1697,7 @@ def register_adm_menu(target_router):
             ])
             await cb.message.edit_text("📢 <b>BROADCAST</b> (bước 1/2)\n\nChọn đối tượng nhận tin:",
                                       parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action in ("bcast_tg_all", "bcast_tg_vip", "bcast_tg_inactive"):
@@ -1698,7 +1707,7 @@ def register_adm_menu(target_router):
             await state.set_state(AdmMenuState.broadcast_text)
             await cb.message.edit_text("📢 <b>BROADCAST</b> (bước 2/2)\n\nGửi <b>nội dung</b> tin nhắn (hỗ trợ định dạng HTML).\n\nGõ /huy để huỷ.",
                                       parse_mode="HTML", reply_markup=_admm_back_kb())
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Set VIP: chọn cấp ──
@@ -1706,7 +1715,7 @@ def register_adm_menu(target_router):
             data = await state.get_data()
             uid = data.get("uid")
             if not uid:
-                await cb.answer("Hết hạn, làm lại từ đầu.", show_alert=True)
+                await _cb_answer(cb, "Hết hạn, làm lại từ đầu.", show_alert=True)
                 return
             try:
                 lv = int(action.rsplit("_", 1)[1])
@@ -1719,7 +1728,7 @@ def register_adm_menu(target_router):
                 f"⭐ <b>SET VIP</b> (bước 3/3)\n\nUser <code>{uid}</code> → <b>{labels.get(lv, lv)}</b>\n\n"
                 f"Gửi <b>số ngày gia hạn</b> thêm, hoặc bấm Bỏ qua.",
                 parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Không gia hạn"))
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Webhook: gỡ ──
@@ -1727,7 +1736,7 @@ def register_adm_menu(target_router):
             data = await state.get_data()
             key = data.get("key")
             if not key:
-                await cb.answer("Hết hạn, làm lại từ đầu.", show_alert=True)
+                await _cb_answer(cb, "Hết hạn, làm lại từ đầu.", show_alert=True)
                 return
             await _admm_show_confirm_cb(cb, state, "🔔 <b>XÁC NHẬN GỠ WEBHOOK</b>",
                                        [f"🔑 Key: <b>{html.escape(str(key))}</b>",
@@ -1760,7 +1769,7 @@ def register_adm_menu(target_router):
                 await cb.message.edit_text(
                     "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 4/5)\n\nGửi <b>số giờ hiệu lực</b>, hoặc bấm Bỏ qua (vĩnh viễn).",
                     parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
-                await cb.answer()
+                await _cb_answer(cb, )
                 return
             if st == AdmMenuState.taopromo_hours.state:
                 await state.update_data(hours=0)
@@ -1768,7 +1777,7 @@ def register_adm_menu(target_router):
                 await cb.message.edit_text(
                     "🎟️ <b>TẠO MÃ GIẢM %</b> (bước 5/5)\n\nMã này <b>giảm giá cho ví nào</b>?",
                     parse_mode="HTML", reply_markup=_admm_wallet_kb())
-                await cb.answer()
+                await _cb_answer(cb, )
                 return
             if st == AdmMenuState.promo_uses.state:
                 await state.update_data(uses=1)
@@ -1776,7 +1785,7 @@ def register_adm_menu(target_router):
                 await cb.message.edit_text(
                     "💵 <b>TẠO MÃ TIỀN</b> (bước 4/5)\n\nGửi <b>hạn dùng</b> (VD: 24h, 2d), hoặc bấm Bỏ qua (vĩnh viễn).",
                     parse_mode="HTML", reply_markup=_admm_skip_kb("⏭ Vĩnh viễn"))
-                await cb.answer()
+                await _cb_answer(cb, )
                 return
             if st == AdmMenuState.promo_expire.state:
                 await state.update_data(expire="0")
@@ -1784,9 +1793,9 @@ def register_adm_menu(target_router):
                 await cb.message.edit_text(
                     "💵 <b>TẠO MÃ TIỀN</b> (bước 5/5)\n\nTiền/thưởng cộng vào <b>ví nào</b>?",
                     parse_mode="HTML", reply_markup=_admm_wallet_kb(include_credits=True))
-                await cb.answer()
+                await _cb_answer(cb, )
                 return
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         # ── Xác nhận / Huỷ ──
@@ -1794,7 +1803,7 @@ def register_adm_menu(target_router):
             data = await state.get_data()
             cmd_text = data.get("cmd_text")
             if not cmd_text:
-                await cb.answer("Hết hạn, làm lại từ đầu.", show_alert=True)
+                await _cb_answer(cb, "Hết hạn, làm lại từ đầu.", show_alert=True)
                 return
             await _admm_exec_via_cb(cb, state, cmd_text)
             return
@@ -1803,10 +1812,10 @@ def register_adm_menu(target_router):
             await state.clear()
             await cb.message.edit_text(_admm_text_main(), parse_mode="HTML",
                                       reply_markup=_admm_main_kb())
-            await cb.answer("Đã huỷ.")
+            await _cb_answer(cb, "Đã huỷ.")
             return
 
-        await cb.answer()
+        await _cb_answer(cb, )
 
     # ── FSM: nhập liệu từng bước ──────────────────────────────────────────
 
@@ -2292,13 +2301,13 @@ def register_adm_menu(target_router):
     @target_router.callback_query(F.data == "adm_bcast_confirm")
     async def _admm_bcast_confirm(cb: CallbackQuery):
         if not is_admin(cb.message.chat.id, cb.from_user.id):
-            await cb.answer("🚫 Không có quyền.", show_alert=True)
+            await _cb_answer(cb, "🚫 Không có quyền.", show_alert=True)
             return
         bcast = _pending_broadcasts.pop(cb.message.chat.id, None)
         if not bcast:
-            await cb.answer("Đã hết hạn, vui lòng thực hiện lại!", show_alert=True)
+            await _cb_answer(cb, "Đã hết hạn, vui lòng thực hiện lại!", show_alert=True)
             return
-        await cb.answer("Đang gửi...")
+        await _cb_answer(cb, "Đang gửi...")
         await cb.message.edit_reply_markup(reply_markup=None)
         target_bot = bcast.get("bot") or cb.bot
         success = fail = 0
@@ -2315,7 +2324,7 @@ def register_adm_menu(target_router):
     @target_router.callback_query(F.data == "adm_bcast_cancel")
     async def _admm_bcast_cancel(cb: CallbackQuery):
         _pending_broadcasts.pop(cb.message.chat.id, None)
-        await cb.answer("Đã hủy.", show_alert=True)
+        await _cb_answer(cb, "Đã hủy.", show_alert=True)
         await cb.message.edit_reply_markup(reply_markup=None)
 
     @target_router.callback_query(F.data.startswith("adm_ban_"))
@@ -2327,7 +2336,7 @@ def register_adm_menu(target_router):
         except ValueError:
             return
         db.ban_user(uid)
-        await cb.answer(f"Đã khoá {uid}", show_alert=True)
+        await _cb_answer(cb, f"Đã khoá {uid}", show_alert=True)
         await cb.message.edit_reply_markup(reply_markup=None)
 
     @target_router.callback_query(F.data.startswith("adm_unban_"))
@@ -2339,7 +2348,7 @@ def register_adm_menu(target_router):
         except ValueError:
             return
         db.unban_user(uid)
-        await cb.answer(f"Đã mở khoá {uid}", show_alert=True)
+        await _cb_answer(cb, f"Đã mở khoá {uid}", show_alert=True)
         await cb.message.edit_reply_markup(reply_markup=None)
 
     @target_router.callback_query(F.data.startswith("adm_topup_"))
@@ -2355,14 +2364,14 @@ def register_adm_menu(target_router):
         await cb.message.answer(
             f"💰 <b>CỘNG TIỀN</b> cho <code>{uid}</code>\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
             parse_mode="HTML")
-        await cb.answer()
+        await _cb_answer(cb, )
 
 
     # ── Quản lý admin phụ (chỉ chủ shop) ──
     @target_router.callback_query(F.data.startswith("admx:"))
     async def _on_admx_cb(cb: CallbackQuery, state: FSMContext):
         if not _perms.is_super(cb.from_user.id):
-            await cb.answer("🚫 Chỉ chủ shop mới quản lý được admin.",
+            await _cb_answer(cb, "🚫 Chỉ chủ shop mới quản lý được admin.",
                             show_alert=True)
             return
         action = (cb.data or "")[5:]
@@ -2371,7 +2380,7 @@ def register_adm_menu(target_router):
             await state.clear()
             await cb.message.edit_text(_admx_list_text(), parse_mode="HTML",
                                        reply_markup=_admx_list_kb())
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action == "audit":
@@ -2379,7 +2388,7 @@ def register_adm_menu(target_router):
             await cb.message.edit_text(
                 _audit_text(0), parse_mode="HTML",
                 reply_markup=_audit_kb(0))
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action.startswith("audit:"):
@@ -2390,7 +2399,7 @@ def register_adm_menu(target_router):
             await cb.message.edit_text(
                 _audit_text(page), parse_mode="HTML",
                 reply_markup=_audit_kb(page))
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action == "add":
@@ -2403,7 +2412,7 @@ def register_adm_menu(target_router):
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="❌ Huỷ",
                                           callback_data="admx:list")]]))
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action.startswith("toggle:"):
@@ -2431,7 +2440,7 @@ def register_adm_menu(target_router):
                 f"{title}\n\nTick chọn các quyền được phép "
                 f"(<i>đang chọn {len(cur)}/{len(_perms.PERMS)}</i>):",
                 parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action == "save":
@@ -2439,7 +2448,7 @@ def register_adm_menu(target_router):
             aid = data.get("admx_id")
             cur = set(data.get("admx_perms") or [])
             if not aid:
-                await cb.answer("Thiếu ID, thử lại.", show_alert=True)
+                await _cb_answer(cb, "Thiếu ID, thử lại.", show_alert=True)
                 return
             db.extra_admin_add(int(aid), _admx_name_of(int(aid)),
                                ",".join(sorted(cur)), cb.from_user.id)
@@ -2453,14 +2462,14 @@ def register_adm_menu(target_router):
             await cb.message.edit_text(
                 f"✅ Đã thêm admin <code>{aid}</code>.\n\n" + _admx_list_text(),
                 parse_mode="HTML", reply_markup=_admx_list_kb())
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action == "expdays":
             # Thêm admin có thời hạn: hỏi số ngày rồi mới lưu
             data = await state.get_data()
             if data.get("admx_mode") != "add" or not data.get("admx_id"):
-                await cb.answer("Hết phiên, thử lại.", show_alert=True)
+                await _cb_answer(cb, "Hết phiên, thử lại.", show_alert=True)
                 return
             await state.set_state(AdmMenuState.admadd_days)
             await cb.message.edit_text(
@@ -2469,7 +2478,7 @@ def register_adm_menu(target_router):
                 "Hết hạn bot sẽ tự thu hồi và báo cho cả 2 bên.\n\n"
                 "Gõ /huy để huỷ.",
                 parse_mode="HTML")
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action.startswith("exp:"):
@@ -2477,7 +2486,7 @@ def register_adm_menu(target_router):
             aid = action[4:]
             row = db.extra_admin_get(aid)
             if not row:
-                await cb.answer("Admin không tồn tại.", show_alert=True)
+                await _cb_answer(cb, "Admin không tồn tại.", show_alert=True)
                 return
             await state.clear()
             await state.update_data(admx_mode="expedit", admx_id=int(aid))
@@ -2489,14 +2498,14 @@ def register_adm_menu(target_router):
                 "hoặc <b>0</b> để thành vĩnh viễn.\n\n"
                 "Gõ /huy để huỷ.",
                 parse_mode="HTML")
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action.startswith("edit:"):
             aid = action[5:]
             row = db.extra_admin_get(aid)
             if not row:
-                await cb.answer("Admin không tồn tại.", show_alert=True)
+                await _cb_answer(cb, "Admin không tồn tại.", show_alert=True)
                 return
             cur = set((row.get("perms") or "").split(",")) & set(_perms.PERM_LABEL)
             await state.clear()
@@ -2510,13 +2519,13 @@ def register_adm_menu(target_router):
                 reply_markup=_admx_perm_kb(
                     cur, f"admx:saveedit:{aid}",
                     extra_rows=_admx_edit_extra_rows(aid, row.get("expires_at"))))
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action.startswith("saveedit:"):
             aid = action[9:]
             if not (aid or "").isdigit():
-                await cb.answer("Lỗi dữ liệu, thử lại.", show_alert=True)
+                await _cb_answer(cb, "Lỗi dữ liệu, thử lại.", show_alert=True)
                 return
             data = await state.get_data()
             cur = set(data.get("admx_perms") or [])
@@ -2544,7 +2553,7 @@ def register_adm_menu(target_router):
             await cb.message.edit_text(
                 "✅ Đã cập nhật quyền.\n\n" + _admx_list_text(),
                 parse_mode="HTML", reply_markup=_admx_list_kb())
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action.startswith("del:"):
@@ -2560,7 +2569,7 @@ def register_adm_menu(target_router):
                 f"Xoá quyền admin của <code>{aid}</code> "
                 f"({html.escape(str(nm))})?",
                 parse_mode="HTML", reply_markup=kb)
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
         if action.startswith("delyes:"):
@@ -2577,10 +2586,10 @@ def register_adm_menu(target_router):
             await cb.message.edit_text(
                 "✅ Đã xoá.\n\n" + _admx_list_text(),
                 parse_mode="HTML", reply_markup=_admx_list_kb())
-            await cb.answer()
+            await _cb_answer(cb, )
             return
 
-        await cb.answer()
+        await _cb_answer(cb, )
 
     @target_router.message(AdmMenuState.admadd_id)
     async def _on_admadd_id(msg: Message, state: FSMContext):
