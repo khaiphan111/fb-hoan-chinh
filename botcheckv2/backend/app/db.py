@@ -400,6 +400,14 @@ def init_db() -> None:
                 created_by      BIGINT DEFAULT 0
             );
 
+            -- Magic link dung chung giua VM (bot tao) va Render (web xac thuc).
+            -- Truoc day luu dict trong RAM nen token tao tren VM khong xac thuc duoc tren Render.
+            CREATE TABLE IF NOT EXISTS magic_links (
+                token   TEXT PRIMARY KEY,
+                tg_id   BIGINT NOT NULL,
+                exp     BIGINT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS admin_audit_log (
                 id          BIGINT PRIMARY KEY AUTOINCREMENT,
                 admin_id    BIGINT,
@@ -856,21 +864,42 @@ def credit_topup(tg_id: int, amount: int, reason: str, wallet: str = "main") -> 
     return True
 
         
-_magic_links = {}
-
 def create_magic_link(tg_id: int) -> str:
+    """Tao magic link luu vao DB chung (Supabase) thay vi RAM.
+
+    Ly do: bot chay tren VM tao token, web admin chay tren Render xac thuc.
+    Ban cu luu dict trong RAM nen token tao tren VM khong bao gio xac thuc
+    duoc tren Render -> nut "Dang nhap Web" cua /web luon bao het han.
+    Giu nguyen semantics cu: token dung 1 lan, het han sau 5 phut.
+    """
     import secrets
     token = secrets.token_urlsafe(32)
-    _magic_links[token] = {"tg_id": tg_id, "exp": int(time.time()) + 300}
+    exp = int(time.time()) + 300
+    with _lock:
+        c = get_conn()
+        c.execute("DELETE FROM magic_links WHERE exp <= ?", (int(time.time()),))
+        c.execute(
+            "INSERT INTO magic_links (token, tg_id, exp) VALUES (?, ?, ?)",
+            (token, int(tg_id), exp),
+        )
+        c.commit()
     return token
 
 def verify_magic_link(token: str) -> int:
-    if token in _magic_links:
-        data = _magic_links[token]
-        if data["exp"] > time.time():
-            return data["tg_id"]
-        else:
-            del _magic_links[token]
+    if not token:
+        return 0
+    with _lock:
+        c = get_conn()
+        row = c.execute(
+            "SELECT tg_id, exp FROM magic_links WHERE token=?", (token,)
+        ).fetchone()
+        if not row:
+            return 0
+        # Token chi dung 1 lan: xoa ngay khi xac thuc
+        c.execute("DELETE FROM magic_links WHERE token=?", (token,))
+        c.commit()
+        if int(row["exp"]) > int(time.time()):
+            return int(row["tg_id"])
     return 0
 
 def check_vip_upgrade(tg_id: int) -> tuple[bool, int, bool]:

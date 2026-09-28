@@ -4,6 +4,10 @@ WORKDIR /build/botcheckv2/frontend
 COPY botcheckv2/frontend/package.json ./
 RUN npm install
 COPY botcheckv2/frontend/ ./
+# Domain admin bo sung (hien form dang nhap tren domain apex, vd arikakhai.com).
+# Render: Settings -> Docker Build Arguments -> VITE_ADMIN_HOSTS=arikakhai.com
+ARG VITE_ADMIN_HOSTS=""
+ENV VITE_ADMIN_HOSTS=$VITE_ADMIN_HOSTS
 RUN npm run build
 
 # ---- Stage 2: backend FastAPI + bot Telegram ----

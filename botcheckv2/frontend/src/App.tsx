@@ -105,7 +105,10 @@ export default function App() {
 
   if (!authed) {
     const hostname = window.location.hostname;
-    const isAdminDomain = hostname.startsWith("admin.") || hostname.startsWith("quanly.") || hostname === "localhost" || hostname === "127.0.0.1";
+    // Domain admin bo sung qua bien build VITE_ADMIN_HOSTS (cach nhau bang dau phay),
+    // vd: VITE_ADMIN_HOSTS=arikakhai.com — de hien form dang nhap admin tren domain apex.
+    const extraAdminHosts = (import.meta.env.VITE_ADMIN_HOSTS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
+    const isAdminDomain = hostname.startsWith("admin.") || hostname.startsWith("quanly.") || hostname === "localhost" || hostname === "127.0.0.1" || extraAdminHosts.includes(hostname);
     
     if (!isAdminDomain) {
       return (
