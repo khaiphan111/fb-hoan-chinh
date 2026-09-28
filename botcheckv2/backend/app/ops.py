@@ -138,7 +138,7 @@ async def fraud_scan() -> int:
     try:
         rows = c.execute(
             "SELECT tg_id, COUNT(*) n FROM acc_warranty_claims WHERE created_at>=?"
-            " GROUP BY tg_id HAVING n>=?", (now - 7 * 86400, WARRANTY_CLAIM_COUNT)).fetchall()
+            " GROUP BY tg_id HAVING COUNT(*)>=?", (now - 7 * 86400, WARRANTY_CLAIM_COUNT)).fetchall()
         for r in rows:
             tg_id = r["tg_id"]
             if not db.ops_alert_dedup("warranty_abuse", str(tg_id), 7 * 86400):
