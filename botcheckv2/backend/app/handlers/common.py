@@ -1195,7 +1195,7 @@ def _uid_final_price(tg_id: int, c: dict):
     """Giá mua 1 acc theo UID: giữ nguyên công thức mua lẻ qty=1
     (giá đơn vị + giảm hạng TV + giảm mua thêm, chưa áp promo)."""
     up = db.shop_unit_price(c)
-    price = up["price"]
+    price, _is_consign = db.acc_effective_unit_price(int(c.get("id") or 0), up["price"])
     tier = db.member_tier_info(tg_id)
     tier_pct = int(tier["pct"])
     try:
@@ -1218,7 +1218,7 @@ def _line_price(cat: dict, qty: int, tg_id: int) -> dict:
     """Giá 1 dòng giỏ/mua: giữ nguyên công thức mua lẻ
     (giảm bulk theo số lượng của dòng + giảm hạng TV)."""
     up = db.shop_unit_price(cat)
-    price = up["price"]
+    price, _is_consign = db.acc_effective_unit_price(int(cat.get("id") or 0), up["price"])
     p5, p10, p20 = _shop_bulk_pcts()
     bulk_pct = p20 if qty >= 20 else (p10 if qty >= 10 else (p5 if qty >= 5 else 0))
     tier = db.member_tier_info(tg_id)
@@ -1912,7 +1912,7 @@ async def _fulfill_restock_subs(cat_id: int, bot, cat: dict):
     if not subs:
         return
     up = db.shop_unit_price(cat)
-    unit = up["price"]
+    unit, _is_consign = db.acc_effective_unit_price(int(cat.get("id") or 0), up["price"])
     p5, p10, p20 = _shop_bulk_pcts()
     done_auto = 0
     for s in subs:
@@ -2031,7 +2031,7 @@ async def _fulfill_deposits(cat_id: int, bot, cat: dict):
     if not deps:
         return
     up = db.shop_unit_price(cat)
-    unit = up["price"]
+    unit, _is_consign = db.acc_effective_unit_price(int(cat.get("id") or 0), up["price"])
     done = 0
     for d in deps:
         d = dict(d)

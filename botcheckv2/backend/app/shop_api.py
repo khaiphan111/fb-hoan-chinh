@@ -442,3 +442,186 @@ def pause_resume(admin=Depends(require_role("super_admin"))):
         by_name=str(admin["username"] or "web"))
     return {"ok": True, "data": {"resumed": flipped,
                                  "msg": "Đã mở lại bot. Tin báo sẽ gửi trong vài phút."}}
+
+
+# ---------------- Ký gửi ----------------
+
+class ConsignFeeIn(BaseModel):
+    category_id: int
+    fee_fixed: int = 0
+    fee_pct: float = 0
+
+
+class ConsignBatchDecideIn(BaseModel):
+    approve: bool
+    sell_price: int = 0
+    note: str = ""
+
+
+class ConsignPayoutDecideIn(BaseModel):
+    approve: bool
+    paid_ref: str = ""
+
+
+class ConsignDisputeDecideIn(BaseModel):
+    decision: str = "refund_buyer"
+    refund_amount: int = 0
+
+
+class ConsignSettingIn(BaseModel):
+    key: str
+    value: str
+
+
+@router.get("/consign/stats")
+def consign_stats(admin=Depends(require_role("super_admin"))):
+    return {"ok": True, "data": db.consign_stats()}
+
+
+@router.get("/consign/consignors")
+def consign_consignors(status: str = Query(""), limit: int = Query(50, le=200),
+                       admin=Depends(require_role("super_admin"))):
+    rows = db.consignors_list(status, limit)
+    for r in rows:
+        r["wallets"] = db.consign_wallets(r["id"])
+    return {"ok": True, "data": rows}
+
+
+@router.post("/consign/consignors/{cid}/status")
+def consign_consignor_status(cid: int, body: dict, admin=Depends(require_role("super_admin"))):
+    st = str(body.get("status", ""))
+    if st not in ("active", "suspended", "banned", "pending"):
+        return {"ok": False, "error": "status không hợp lệ"}
+    ok = db.consignor_set_status(cid, st, int(admin["id"] or 0))
+    return {"ok": ok}
+
+
+@router.get("/consign/batches")
+def consign_batches(status: str = Query(""), consignor_id: int = Query(0),
+                    limit: int = Query(30, le=100), admin=Depends(require_role("super_admin"))):
+    return {"ok": True, "data": db.consign_batches_list(consignor_id, status, limit)}
+
+
+@router.get("/consign/batches/{bid}")
+def consign_batch_detail(bid: int, admin=Depends(require_role("super_admin"))):
+    b = db.consign_batch_get(bid)
+    if not b:
+        return {"ok": False, "error": "Không tìm thấy lô"}
+    items = db.consign_items_of_batch(bid)
+    for it in items:
+        it["password"] = _mask(it.get("password", ""))
+        it["backup_mail"] = _mask_email(it.get("backup_mail", ""))
+        it["totp"] = _mask(it.get("totp", ""))
+    return {"ok": True, "data": {"batch": b, "items": items,
+                                 "fee": db.consign_fee_get(b["category_id"])}}
+
+
+@router.post("/consign/batches/{bid}/decide")
+def consign_batch_decide_ep(bid: int, body: ConsignBatchDecideIn,
+                            admin=Depends(require_role("super_admin"))):
+    """Duyệt lô trên web: quyết định + nhập acc vào kho (source=consign)."""
+    import time as _t
+    b = db.consign_batch_get(bid)
+    if not b or b["status"] not in ("submitted", "draft"):
+        return {"ok": False, "error": "Lô không ở trạng thái chờ duyệt"}
+    if body.approve and body.sell_price <= 0:
+        return {"ok": False, "error": "Cần nhập giá bán"}
+    if not db.consign_batch_decide(bid, body.approve, body.sell_price,
+                                   int(admin["id"] or 0), body.note):
+        return {"ok": False, "error": "Lô đã được xử lý"}
+    n = 0
+    if body.approve:
+        now = int(_t.time())
+        for it in db.consign_items_of_batch(bid):
+            dup = db.get_conn().execute(
+                "SELECT 1 FROM acc_stock WHERE uid=? AND status IN ('AVAILABLE','DIE') LIMIT 1",
+                (it["uid"],)).fetchone()
+            if dup:
+                db.consign_item_set(bid, it["id"], "rejected", "trùng kho")
+                continue
+            cur = db.get_conn().execute(
+                "INSERT INTO acc_stock (cat_id, uid, password, backup_mail, totp, cookie, token,"
+                " note, status, source, consign_item_id, price_override, added_at)"
+                " VALUES (?,?,?,?,?,?,?,?, 'AVAILABLE','consign',?,?,?) RETURNING id",
+                (b["category_id"], it["uid"], it["password"], it["backup_mail"], it["totp"],
+                 it["cookie"], it["token"], f"[KG-{b['code']}] {it['note']}", it["id"],
+                 body.sell_price, now))
+            if cur.lastrowid:
+                db.consign_item_link_stock(it["id"], cur.lastrowid)
+                n += 1
+        db.get_conn().execute("UPDATE consignment_batches SET status='listed', ok_items=? WHERE id=?", (n, bid))
+    return {"ok": True, "data": {"listed": n}}
+
+
+@router.get("/consign/orders")
+def consign_orders(consignor_id: int = Query(0), limit: int = Query(30, le=100),
+                   admin=Depends(require_role("super_admin"))):
+    q = ("SELECT o.*, i.uid FROM consignment_orders o LEFT JOIN consignment_items i ON i.id=o.item_id")
+    p = []
+    if consignor_id:
+        q += " WHERE o.consignor_id=?"
+        p.append(consignor_id)
+    q += " ORDER BY o.id DESC LIMIT ?"
+    p.append(limit)
+    rows = [dict(r) for r in db.get_conn().execute(q, p).fetchall()]
+    for r in rows:
+        u = str(r.get("uid") or "")
+        r["uid"] = (u[:4] + "••••") if len(u) > 4 else "••••"
+    return {"ok": True, "data": rows}
+
+
+@router.get("/consign/payouts")
+def consign_payouts(status: str = Query(""), limit: int = Query(30, le=100),
+                    admin=Depends(require_role("super_admin"))):
+    return {"ok": True, "data": db.consign_payouts_list(status, limit)}
+
+
+@router.post("/consign/payouts/{pid}/decide")
+def consign_payout_decide_ep(pid: int, body: ConsignPayoutDecideIn,
+                             admin=Depends(require_role("super_admin"))):
+    ok = db.consign_payout_decide(pid, body.approve, int(admin["id"] or 0), body.paid_ref)
+    return {"ok": ok}
+
+
+@router.get("/consign/disputes")
+def consign_disputes(status: str = Query("open"), limit: int = Query(30, le=100),
+                     admin=Depends(require_role("super_admin"))):
+    return {"ok": True, "data": db.consign_disputes_list(status, limit)}
+
+
+@router.post("/consign/disputes/{did}/decide")
+def consign_dispute_decide_ep(did: int, body: ConsignDisputeDecideIn,
+                              admin=Depends(require_role("super_admin"))):
+    if body.decision not in ("refund_buyer", "replace", "reject"):
+        return {"ok": False, "error": "decision không hợp lệ"}
+    ok = db.consign_dispute_decide(did, body.decision, body.refund_amount, int(admin["id"] or 0))
+    return {"ok": ok}
+
+
+@router.get("/consign/fees")
+def consign_fees(admin=Depends(require_role("super_admin"))):
+    rows = [dict(r) for r in db.get_conn().execute("SELECT * FROM consignment_fees").fetchall()]
+    return {"ok": True, "data": rows}
+
+
+@router.post("/consign/fees")
+def consign_fee_set_ep(body: ConsignFeeIn, admin=Depends(require_role("super_admin"))):
+    ok = db.consign_fee_set(body.category_id, body.fee_fixed, body.fee_pct, int(admin["id"] or 0))
+    return {"ok": ok}
+
+
+@router.get("/consign/settings")
+def consign_settings_get(admin=Depends(require_role("super_admin"))):
+    keys = ["consign_enabled", "consign_default_max_items", "consign_default_max_value",
+            "consign_min_withdraw", "consign_withdraw_fee", "consign_withdraw_schedule"]
+    return {"ok": True, "data": {k: db.get_setting(k, "") for k in keys}}
+
+
+@router.post("/consign/settings")
+def consign_setting_set_ep(body: ConsignSettingIn, admin=Depends(require_role("super_admin"))):
+    allowed = {"consign_enabled", "consign_default_max_items", "consign_default_max_value",
+               "consign_min_withdraw", "consign_withdraw_fee", "consign_withdraw_schedule"}
+    if body.key not in allowed:
+        return {"ok": False, "error": "key không hợp lệ"}
+    db.set_setting(body.key, body.value)
+    return {"ok": True}

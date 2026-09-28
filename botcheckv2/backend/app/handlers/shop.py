@@ -69,6 +69,12 @@ async def on_acc_buy(cb: CallbackQuery):
     p5, p10, p20 = _shop_bulk_pcts()
     up = db.shop_unit_price(c)
     unit = up["price"]
+    # Ký gửi: acc cũ nhất quyết định giá + nhãn
+    consign_line = ""
+    eff_price, is_consign = db.acc_effective_unit_price(cat_id, up["price"])
+    if is_consign:
+        unit = eff_price
+        consign_line = "🤝 <i>Hàng ký gửi — đã được shop kiểm duyệt</i>\n"
     icon = _cat_icon(c["name"])
     sold = db.acc_sold_count(cat_id)
     sample = db.get_conn().execute(
@@ -82,6 +88,7 @@ async def on_acc_buy(cb: CallbackQuery):
         + (f"  <i>(gốc {vnd(up['base'])})</i>" if up["happy"] else "") + "\n"
         f"📦 Tồn kho: <b>{n}</b> acc"
         + (f"  •  🔁 Đã bán <b>{sold}</b>" if sold else "") + "\n"
+        + consign_line +
         f"━━━━━━━━━━━━━━\n"
         f"🛡 <b>Bảo hành:</b> 1 đổi 1 khi acc die\n"
         + (mail_line + "\n" if mail_line else "")
@@ -306,7 +313,7 @@ async def on_acc_qty_input(msg: Message, state: FSMContext):
     await state.clear()
     c = dict(c)
     up = db.shop_unit_price(c)
-    price = up["price"]
+    price, _is_consign = db.acc_effective_unit_price(cat_id, up["price"])
     p5, p10, p20 = _shop_bulk_pcts()
     bulk_pct = p20 if qty >= 20 else (p10 if qty >= 10 else (p5 if qty >= 5 else 0))
     tier = db.member_tier_info(msg.from_user.id)
@@ -354,7 +361,7 @@ async def on_acc_confirm(cb: CallbackQuery):
         return
     c = dict(c)
     up = db.shop_unit_price(c)
-    price = up["price"]
+    price, _is_consign = db.acc_effective_unit_price(cat_id, up["price"])
     # 4.6 Upsell: mua thêm trong 10 phút sau đơn trước được giảm thêm
     upsell_pct = 0
     try:
@@ -472,7 +479,25 @@ def _pick_uid_confirm(cat_id: int, stock: dict, tg_id: int):
     """Dựng (text, keyboard) màn xác nhận mua UID cụ thể."""
     c = db.acc_category_get(cat_id)
     c = dict(c)
-    final, price, tier, tier_pct, upsell_pct, wmin, _ = _uid_final_price(tg_id, c)
+    up = db.shop_unit_price(c)
+    uprice, _ = db.acc_stock_unit_price(stock, up["price"])
+    tier = db.member_tier_info(tg_id)
+    tier_pct = int(tier["pct"])
+    try:
+        wmin = int(db.get_setting("upsell_window_min", "10") or 10)
+        upsell_pct_cfg = int(db.get_setting("upsell_pct", "5") or 5)
+    except Exception:
+        wmin, upsell_pct_cfg = 10, 5
+    upsell_pct = 0
+    try:
+        last_at = db.acc_last_order_at(tg_id)
+        if upsell_pct_cfg > 0 and last_at and now() - last_at <= wmin * 60:
+            upsell_pct = upsell_pct_cfg
+    except Exception:
+        pass
+    final = uprice * (100 - tier_pct) // 100
+    final = final * (100 - upsell_pct) // 100
+    price = uprice
     prev, promo_code = db.preview_user_promo(tg_id, final, wallet="shop")
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
@@ -729,23 +754,39 @@ async def on_acc_multi_buy(cb: CallbackQuery, state: FSMContext):
         await cb.message.answer("❌ Loại acc này không còn bán.")
         return
     c = dict(c)
-    final1, _, _, _, _, wmin, upsell_pct_cfg = _uid_final_price(tg_id, c)
-    # Validate lại từng acc (có thể bị mua mất sau khi nhập)
+    up0 = db.shop_unit_price(c)
+    base_price0 = up0["price"]
+    _, _, _, _, _, wmin, upsell_pct_cfg = _uid_final_price(tg_id, c)
+    # Validate lại từng acc (có thể bị mua mất sau khi nhập); giá theo từng UID cụ thể
     priced, gone = [], []
     for s in lst:
         r = db.get_conn().execute(
-            "SELECT id, uid, cat_id FROM acc_stock "
+            "SELECT id, uid, cat_id, source, price_override FROM acc_stock "
             "WHERE id=? AND cat_id=? AND status='AVAILABLE'",
             (s["id"], cat_id)).fetchone()
         if r:
-            priced.append((c, dict(r), final1))
+            rd = dict(r)
+            uprice, _ = db.acc_stock_unit_price(rd, base_price0)
+            # áp giảm hạng TV + mua thêm như _uid_final_price
+            tier = db.member_tier_info(tg_id)
+            tier_pct = int(tier["pct"])
+            f = uprice * (100 - tier_pct) // 100
+            try:
+                last_at = db.acc_last_order_at(tg_id)
+                wmin0 = int(db.get_setting("upsell_window_min", "10") or 10)
+                upc = int(db.get_setting("upsell_pct", "5") or 5)
+                if upc > 0 and last_at and now() - last_at <= wmin0 * 60:
+                    f = f * (100 - upc) // 100
+            except Exception:
+                pass
+            priced.append((c, rd, f))
         else:
             gone.append(s["uid"])
     if not priced:
         await cb.message.answer(
             "😔 Các UID vừa chọn đều đã hết hàng. Bạn chọn UID khác nhé.")
         return
-    grand = final1 * len(priced)
+    grand = sum(p for _, _, p in priced)
     grand, promo_code = db.preview_user_promo(tg_id, grand, wallet="shop")
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0

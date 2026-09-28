@@ -145,6 +145,19 @@ async def on_warranty_evidence(msg: Message, state: FSMContext):
         await msg.answer("⏳ Đơn này đang chờ admin xử lý bảo hành rồi.")
         return
     db.acc_warranty_set_evidence(claim_id, msg.photo[-1].file_id)
+    # Ký gửi: đơn hàng ký gửi -> tạo tranh chấp (giữ tiền đối tác)
+    try:
+        st = db.get_conn().execute("SELECT source FROM acc_stock WHERE id=?",
+                                   (order.get("stock_id") or 0,)).fetchone()
+        if st and (st["source"] or "shop") == "consign":
+            co = db.get_conn().execute(
+                "SELECT id FROM consignment_orders WHERE order_ref=?",
+                (f"ACC-{order_id}",)).fetchone()
+            if co:
+                db.consign_dispute_create(co["id"], f"BH #{claim_id}: log sai mk",
+                                          msg.photo[-1].file_id)
+    except Exception:
+        pass
     # Chống lạm dụng bảo hành: quá số lần/tuần -> NEEDS_REVIEW
     try:
         maxw = int(db.get_setting("warranty_max_week", "3") or 3)

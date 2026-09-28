@@ -354,6 +354,15 @@ class FollowerPoller:
                         await self._auto_import_stalls()
                     except Exception as e:
                         log.warning("stall auto import: %s", e)
+                # Ký gửi: giải ngân ví chờ -> khả dụng khi hết bảo hành (15 phút/lần)
+                if _job_on("consign_release"):
+                    try:
+                        now_ts = time.time()
+                        if now_ts - getattr(self, "_consign_rel_last", 0) >= 900:
+                            self._consign_rel_last = now_ts
+                            await self._consign_release()
+                    except Exception as e:
+                        log.warning("consign release: %s", e)
                 # Thu hồi quyền admin phụ hết hạn tạm thời
                 try:
                     await self._sweep_expired_admins()
@@ -453,6 +462,32 @@ class FollowerPoller:
                         parse_mode="HTML")
                 except Exception as e:
                     log.warning("auto import notify: %s", e)
+
+    async def _consign_release(self):
+        """Ký gửi: chuyển tiền chờ -> khả dụng khi hết bảo hành, báo đối tác."""
+        from . import consign as _consign
+        if not _consign.enabled():
+            return
+        rows = db.consign_release_due()
+        if not rows or not self._bot:
+            return
+        # gom theo đối tác để báo 1 tin
+        by_c = {}
+        for r in rows:
+            by_c.setdefault(r["consignor_id"], []).append(r)
+        for cid, items in by_c.items():
+            total = sum(x["net_amount"] for x in items)
+            row = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?", (cid,)).fetchone()
+            if not row:
+                continue
+            try:
+                await self._bot.send_message(
+                    int(row["tg_id"]),
+                    f"💰 <b>Tiền ký gửi đã khả dụng</b>\n{len(items)} acc hết bảo hành: <b>{total:,}đ</b>\n"
+                    f"Vào /kygui → Ví để rút.",
+                    parse_mode="HTML")
+            except Exception as e:
+                log.warning("consign release notify %s: %s", cid, e)
 
     async def _sweep_expired_admins(self):
         """Thu hồi quyền admin phụ đã hết hạn tạm thời, báo cả 2 bên."""
