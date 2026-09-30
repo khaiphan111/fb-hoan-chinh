@@ -336,6 +336,8 @@ def init_db() -> None:
                 attempts     INTEGER DEFAULT 0,
                 last_error   TEXT DEFAULT '',
                 created_at   BIGINT NOT NULL,
+                claimed_at   BIGINT DEFAULT 0,
+                ref_consignor_id BIGINT DEFAULT 0,
                 sent_at      BIGINT DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_outbox_status ON notification_outbox(status, attempts);
@@ -2556,6 +2558,22 @@ def migrate_new_features():
                     pass
             c.commit()
             set_setting("linkwh_service_migrated", "1")
+        # Them cot claimed_at cho outbox (thu hoi tin ket o 'sending' khi crash) - chay 1 lan
+        if get_setting("outbox_claimed_at_migrated") != "1":
+            try:
+                c.execute("ALTER TABLE notification_outbox ADD COLUMN claimed_at BIGINT DEFAULT 0")
+            except Exception:
+                pass
+            c.commit()
+            set_setting("outbox_claimed_at_migrated", "1")
+        # Them cot ref_consignor_id cho outbox (log notif dung doi tac that) - chay 1 lan
+        if get_setting("outbox_ref_cid_migrated") != "1":
+            try:
+                c.execute("ALTER TABLE notification_outbox ADD COLUMN ref_consignor_id BIGINT DEFAULT 0")
+            except Exception:
+                pass
+            c.commit()
+            set_setting("outbox_ref_cid_migrated", "1")
     except Exception:
         pass
 def create_user_list(tg_id: int, name: str, platform: str = 'fb') -> tuple[bool, str]:
@@ -6362,15 +6380,17 @@ def consign_notif_history(consignor_id: int, limit: int = 20) -> list:
 
 # ─── NOTIFICATION OUTBOX (chống gửi trùng/mất tin) ──────────────────────────
 def outbox_enqueue(dedupe_key: str, kind: str, target_tg_id: int,
-                   message: str, parse_mode: str = "HTML") -> bool:
+                   message: str, parse_mode: str = "HTML",
+                   ref_consignor_id: int = 0) -> bool:
     """Cho tin vào outbox. Trả True nếu enqueue mới, False nếu đã có (dedupe)."""
     try:
         cur = get_conn().execute(
             "INSERT INTO notification_outbox (dedupe_key, kind, target_tg_id, message,"
-            " parse_mode, status, attempts, created_at)"
-            " VALUES (?,?,?,?,?,'pending',0,?)"
+            " parse_mode, status, attempts, created_at, ref_consignor_id)"
+            " VALUES (?,?,?,?,?,'pending',0,?,?)"
             " ON CONFLICT(dedupe_key) DO NOTHING RETURNING id",
-            (dedupe_key, kind, target_tg_id, message, parse_mode, int(time.time())))
+            (dedupe_key, kind, target_tg_id, message, parse_mode, int(time.time()),
+             ref_consignor_id))
         get_conn().commit()
         # Wrapper đã fetch RETURNING vào lastrowid; None = bị dedupe (đã có)
         return cur.lastrowid is not None
@@ -6379,18 +6399,24 @@ def outbox_enqueue(dedupe_key: str, kind: str, target_tg_id: int,
         return False
 
 
-def outbox_claim(limit: int = 20, max_attempts: int = 5) -> list:
+def outbox_claim(limit: int = 20, max_attempts: int = 5,
+                 reclaim_after: int = 600) -> list:
     """Claim tin pending/failed (chưa quá max_attempts) để gửi. Đánh dấu 'sending'
-    nguyên tử để 2 worker không gửi trùng."""
+    nguyên tử để 2 worker không gửi trùng. Tin kẹt ở 'sending' quá reclaim_after
+    giây (crash giữa claim và send) được thu hồi lại để gửi tiếp."""
     try:
         c = get_conn()
+        now = int(time.time())
         rows = [dict(r) for r in c.execute(
-            "UPDATE notification_outbox SET status='sending', attempts=attempts+1"
+            "UPDATE notification_outbox SET status='sending', attempts=attempts+1,"
+            " claimed_at=?"
             " WHERE id IN (SELECT id FROM notification_outbox"
-            "  WHERE status IN ('pending','failed') AND attempts < ?"
+            "  WHERE (status IN ('pending','failed')"
+            "     OR (status='sending' AND claimed_at < ?))"
+            "   AND attempts < ?"
             "  ORDER BY created_at LIMIT ?)"
             " RETURNING *",
-            (max_attempts, limit)).fetchall()]
+            (now, now - reclaim_after, max_attempts, limit)).fetchall()]
         c.commit()
         return rows
     except Exception as e:
