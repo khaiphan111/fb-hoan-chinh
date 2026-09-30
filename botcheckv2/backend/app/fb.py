@@ -500,10 +500,14 @@ async def check_uid(uid: str) -> dict:
                         result["alive"] = False
                         result["status"] = "cookie_invalid"
                 elif ck_result["alive"] is None:
-                    # Lỗi kết nối hoặc lỗi khác => fallback qua picture
-                    has_real_avatar = await _is_real_avatar(uid, client)
-                    result["alive"] = has_real_avatar
-                    result["status"] = "live" if has_real_avatar else "dead"
+                    # Cookie check thất bại (lỗi mạng / IP bị FB chặn):
+                    # KHÔNG được đoán "live" từ avatar vì acc DIE vẫn có thể giữ
+                    # avatar thật trên CDN của Facebook -> đoán sai là bán nhầm acc DIE
+                    # cho khách, và recheck định kỳ không cách ly được acc DIE.
+                    # Trả "error" để các luồng tự động bỏ qua, chờ lần check sau.
+                    result["alive"] = False
+                    result["status"] = "error"
+                    result["name"] = ck_result.get("name", "")
                 else:
                     result["alive"] = ck_result["alive"]
                     result["status"] = ck_result["status"]
@@ -526,10 +530,10 @@ async def check_uid(uid: str) -> dict:
                         result["alive"] = False
                         result["status"] = "dead"
                     else:
-                        # App token => fallback picture
-                        has_real_avatar = await _is_real_avatar(uid, client)
-                        result["alive"] = has_real_avatar
-                        result["status"] = "live" if has_real_avatar else "dead"
+                        # Graph API lỗi không xác định: không đoán từ avatar
+                        # (avatar thật không chứng minh được acc còn sống).
+                        result["alive"] = False
+                        result["status"] = "error"
             else:
                 # Không có cookie/token => thử cookie pool trước (chính xác nhất)
                 pool_res = await _check_with_cookie_pool(uid)
@@ -630,6 +634,10 @@ def build_fb_caption(res: dict) -> str:
             status_icon = "⚠️"
             status_text = "Không thể xác định (Cookie hết hạn)"
             note = "🔑 <i>Vui lòng cập nhật Cookie mới trong Admin Panel</i>"
+        elif status == "error":
+            status_icon = "⚠️"
+            status_text = "Không thể xác định (Lỗi mạng)"
+            note = "🌐 <i>Không kết nối được Facebook lúc này, vui lòng thử lại sau. Không kết luận acc live/die từ lỗi mạng.</i>"
         else:
             status_icon = "🟢" if res["alive"] else "🔴"
             status_text = "TỒN TẠI" if res["alive"] else "DIE (Không tồn tại)"

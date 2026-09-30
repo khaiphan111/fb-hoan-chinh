@@ -376,6 +376,7 @@ class FollowerPoller:
                         if now_ts - getattr(self, "_consign_dis_last", 0) >= 900:
                             self._consign_dis_last = now_ts
                             await self._consign_dispute_auto()
+                            await self._consign_dispute_remind()
                     except Exception as e:
                         log.warning("consign dispute auto: %s", e)
                 # Ký gửi: đồng bộ kho riêng từng đối tác lên Sheet (30 phút/lần)
@@ -498,7 +499,7 @@ class FollowerPoller:
         if not _consign.enabled():
             return
         rows = db.consign_release_due()
-        if not rows or not self._bot:
+        if not rows:
             return
         # gom theo đối tác để báo 1 tin
         by_c = {}
@@ -509,14 +510,20 @@ class FollowerPoller:
             row = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?", (cid,)).fetchone()
             if not row:
                 continue
-            try:
-                await self._bot.send_message(
-                    int(row["tg_id"]),
-                    f"💰 <b>Tiền ký gửi đã khả dụng</b>\n{len(items)} acc hết bảo hành: <b>{total:,}đ</b>\n"
-                    f"Vào /kygui → Ví để rút.",
-                    parse_mode="HTML")
-            except Exception as e:
-                log.warning("consign release notify %s: %s", cid, e)
+            # Dedupe key dùng order IDs cụ thể (không dùng hour vì 2 đợt release
+            # trong cùng giờ sẽ bị dedupe nhầm)
+            oids = sorted(int(x["id"]) for x in items)
+            dkey = f"release_avail:{cid}:{','.join(str(i) for i in oids)}"
+            enqueued = db.outbox_enqueue(
+                dkey, "release_avail",
+                int(row["tg_id"]),
+                f"💰 <b>Tiền ký gửi đã khả dụng</b>\n"
+                f"{len(items)} acc hết bảo hành: <b>{total:,}đ</b>\n"
+                f"Vào /kygui → Ví để rút.",
+                "HTML", ref_consignor_id=int(cid))
+            if not enqueued and not db.outbox_exists(dkey):
+                # False mà không phải dedupe = lỗi DB thật
+                log.warning("consign release notify %s: outbox_enqueue lỗi DB", cid)
 
     async def _consign_sale_notify(self):
         """Ký gửi: báo đối tác ngay khi acc của họ được bán (tiền vào ví chờ).
@@ -537,8 +544,11 @@ class FollowerPoller:
                 enqueued = db.outbox_enqueue(
                     dedupe, "consign_sale", int(r["consignor_tg"]), text, "HTML",
                     ref_consignor_id=int(r.get("consignor_id") or 0))
-                # Đánh dấu đã xử lý (dedupe_key bảo đảm không gửi trùng dù crash giữa chừng)
-                db.consign_order_mark_notified(r["id"])
+                # Chỉ đánh dấu đã báo khi tin đã nằm chắc trong outbox:
+                # enqueue True (mới) hoặc dedupe_key đã tồn tại (đã enqueue từ trước).
+                # Nếu lỗi DB thật (key chưa có) thì KHÔNG đánh dấu để vòng sau thử lại.
+                if enqueued or db.outbox_exists(dedupe):
+                    db.consign_order_mark_notified(r["id"])
                 if enqueued:
                     log.info("consign sale: đã enqueue tin bán cho đơn %s", r["id"])
             except Exception as e:
@@ -566,26 +576,51 @@ class FollowerPoller:
                         "UPDATE consignment_disputes SET auto_resolved=1 WHERE id=?",
                         (d["id"],))
                     db.get_conn().commit()
-                    # Báo đối tác
-                    if self._bot:
-                        cr = db.get_conn().execute(
-                            "SELECT tg_id FROM consignors WHERE id=?",
-                            (d["consignor_id"],)).fetchone()
-                        if cr and cr["tg_id"]:
-                            reason = ("đóng băng đã tối đa 7 ngày" if is_7d
-                                      else "quá 48h không phản hồi")
-                            try:
-                                await self._bot.send_message(
-                                    int(cr["tg_id"]),
-                                    f"⚠️ <b>Tranh chấp #{d['id']} đã tự động xử lý</b>\n"
-                                    f"{reason} → mặc định khách đúng.\n"
-                                    f"💰 {amt:,}đ (đủ giá khách đã trả) đã trừ khỏi ví của bạn để hoàn cho khách.",
-                                    parse_mode="HTML")
-                            except Exception as e:
-                                log.warning("consign dispute auto notify #%s: %s", d["id"], e)
+                    # Báo đối tác (qua outbox chống mất tin)
+                    cr = db.get_conn().execute(
+                        "SELECT tg_id FROM consignors WHERE id=?",
+                        (d["consignor_id"],)).fetchone()
+                    if cr and cr["tg_id"]:
+                        reason = ("đóng băng đã tối đa 7 ngày" if is_7d
+                                  else "quá 48h không phản hồi")
+                        db.outbox_enqueue(
+                            f"dispute_auto:{d['id']}", "dispute_auto", int(cr["tg_id"]),
+                            f"⚠️ <b>Tranh chấp #{d['id']} đã tự động xử lý</b>\n"
+                            f"{reason} → mặc định khách đúng.\n"
+                            f"💰 {amt:,}đ (đủ giá khách đã trả) đã trừ khỏi ví của bạn để hoàn cho khách.",
+                            "HTML", ref_consignor_id=int(d["consignor_id"]))
                     log.warning("consign dispute #%s auto-resolved (refund_buyer, 7d=%s)", d["id"], is_7d)
             except Exception as e:
                 log.warning("consign dispute auto %s: %s", d.get("id"), e)
+
+    async def _consign_dispute_remind(self):
+        """Ký gửi: nhắc đối tác trước deadline 48h tranh chấp (còn ~12h).
+        Chỉ nhắc 1 lần mỗi tranh chấp (cờ reminded_at)."""
+        from . import consign as _consign
+        if not _consign.enabled():
+            return
+        rows = db.consign_disputes_remind_due()
+        for d in rows:
+            try:
+                d = dict(d)
+                cr = db.get_conn().execute(
+                    "SELECT tg_id FROM consignors WHERE id=?",
+                    (d["consignor_id"],)).fetchone()
+                if cr and cr["tg_id"]:
+                    left_h = max(1, int((d["deadline_at"] - now) / 3600))
+                    if db.outbox_enqueue(
+                        f"dispute_remind:{d['id']}", "dispute_remind", int(cr["tg_id"]),
+                        f"⏰ <b>Nhắc: tranh chấp #{d['id']} còn ~{left_h}h nữa hết hạn phản hồi</b>\n"
+                        f"Nếu bạn không phản hồi, hệ thống sẽ tự xử theo hướng có lợi cho khách"
+                        f" và trừ tiền ví của bạn.\n"
+                        f"Vào /kygui → Tranh chấp để phản hồi ngay.",
+                        "HTML", ref_consignor_id=int(d["consignor_id"])):
+                        db.get_conn().execute(
+                            "UPDATE consignment_disputes SET reminded_at=? WHERE id=?",
+                            (now, d["id"]))
+                        db.get_conn().commit()
+            except Exception as e:
+                log.warning("consign dispute remind %s: %s", d.get("id"), e)
 
     async def _push_consign_wh_to_sheet(self):
         """Đồng bộ kho của từng đối tác lên spreadsheet RIÊNG của họ (30 phút/lần)."""
@@ -648,18 +683,25 @@ class FollowerPoller:
         except Exception:
             days, hour = 3, 3
         days = max(1, days)
-        if now_t.tm_hour != hour % 24:
-            return
         last = db.get_setting("stock_recheck_last", "") or ""
+        overdue = False
         if last:
             try:
                 d0 = time.mktime(time.strptime(last, "%Y-%m-%d"))
                 d1 = time.mktime(time.strptime(today, "%Y-%m-%d"))
-                if (d1 - d0) < days * 86400 - 60:
+                if (d1 - d0) >= days * 86400:
+                    # Quá hạn cả 1 chu kỳ mà chưa chạy (backend sập đúng giờ quét) ->
+                    # chạy bù ngay khi backend lên lại, không chờ tới kỳ sau.
+                    overdue = True
+                elif (d1 - d0) < days * 86400 - 60:
                     return
             except Exception:
                 pass
+        if not overdue and now_t.tm_hour != hour % 24:
+            return
         db.set_setting("stock_recheck_last", today)
+        if overdue:
+            log.warning("stock recheck: quá hạn (last=%s), chạy bù ngay", last)
         await self._run_stock_recheck()
 
     async def _run_stock_recheck(self, manual=False):
@@ -865,8 +907,12 @@ class FollowerPoller:
                     int(it["target_tg_id"]), it["message"],
                     parse_mode=it["parse_mode"] or "HTML")
                 db.outbox_mark_sent(it["id"])
-                # Ghi log tương thích cũ cho consign_die / consign_sale (dung consignor_id that)
-                if it["kind"] in ("consign_die", "consign_sale"):
+                # Ghi log tương thích cũ cho các tin ký gửi (dùng consignor_id thật)
+                if it["kind"] in ("consign_die", "consign_sale", "price_change",
+                                  "fee_change", "payout_approve", "payout_reject",
+                                  "dispute_done", "dispute_open", "dispute_auto", "dispute_remind",
+                                  "dispute_respond",
+                                  "release_avail"):
                     cid = int(it.get("ref_consignor_id") or 0)
                     db.consign_notif_log(cid, it["kind"], 0, "main", True, "")
             except Exception as e:
