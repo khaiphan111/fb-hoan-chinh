@@ -1,6 +1,7 @@
 import threading
 import time
 import re
+import hashlib
 from typing import Optional, Any
 import os
 import psycopg2
@@ -82,20 +83,25 @@ class PgConnection:
         self.check_conn()
         try:
             return PgCursor(self.conn).execute(sql, params)
-        except Exception:
-            # Conn chết giữa chừng (tunnel rớt): reconnect 1 lần rồi retry.
-            # Lỗi SQL thật (sai cú pháp/constraint) sẽ fail lại và raise như cũ.
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
+            # Chỉ reconnect khi lỗi KẾT NỐI thật (tunnel rớt, conn chết).
+            # Lỗi SQL logic (sai cú pháp, cột đã tồn tại...) thì raise luôn,
+            # không reconnect vô ích (mỗi reconnect tốn ~2s qua tunnel).
             self._reconnect()
             return PgCursor(self.conn).execute(sql, params)
     def executescript(self, sql):
         self.check_conn()
         try:
             return PgCursor(self.conn).executescript(sql)
-        except Exception:
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
             self._reconnect()
             return PgCursor(self.conn).executescript(sql)
     def commit(self):
         # self.conn.commit()
+        pass
+    def rollback(self):
+        # autocommit=True nên không có transaction để rollback;
+        # method này tồn tại để code dùng chung với SQLite không vỡ.
         pass
 
 _lock = threading.RLock()
@@ -176,7 +182,9 @@ def get_conn():
 def init_db() -> None:
     c = get_conn()
     with _lock:
-        c.executescript(
+        _ensure_migrations_table(c)
+        applied = _load_applied(c)
+        for _stmt in _split_sql_script(
             """
             CREATE TABLE IF NOT EXISTS settings (
                 key   TEXT PRIMARY KEY,
@@ -730,7 +738,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_buff_link_wh_last
                 ON buff_link_warehouse(last_used_at DESC);
             """
-        )
+        ):
+            _migrate_one(c, _stmt, applied)
+        c.commit()
         # Keys that MUST be force-updated on every restart
         # (to ensure env-configured tokens always take effect).
         # CHỈ ghi đè khi env có giá trị non-empty: nếu .env thiếu key
@@ -740,19 +750,30 @@ def init_db() -> None:
             "bot_token", "setup_done", "admin_bot_token",
             "admin_tg_id", "zalo_bot_token", "web_domain",
         }
+        # Gop thanh 2 cau bulk INSERT de giam round-trip qua tunnel (muc 5)
+        _force_rows = []
+        _normal_rows = []
         for k, v in config.DEFAULT_SETTINGS.items():
             if k in _force_keys and v not in (None, ""):
-                c.execute(
-                    "INSERT INTO settings(key, value) VALUES(?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (k, v),
-                )
+                _force_rows.append((k, v))
             else:
-                c.execute(
-                    "INSERT INTO settings(key, value) VALUES(?, ?) "
-                    "ON CONFLICT DO NOTHING",
-                    (k, v),
-                )
+                _normal_rows.append((k, v))
+        if _force_rows:
+            _ph = ", ".join(["(?, ?)"] * len(_force_rows))
+            _flat = [x for kv in _force_rows for x in kv]
+            c.execute(
+                f"INSERT INTO settings(key, value) VALUES {_ph} "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                tuple(_flat),
+            )
+        if _normal_rows:
+            _ph = ", ".join(["(?, ?)"] * len(_normal_rows))
+            _flat = [x for kv in _normal_rows for x in kv]
+            c.execute(
+                f"INSERT INTO settings(key, value) VALUES {_ph} "
+                "ON CONFLICT DO NOTHING",
+                tuple(_flat),
+            )
         c.commit()
 
         # 🛍️ Shop buff tương tác: seed dịch vụ + tài khoản panel mặc định
@@ -790,9 +811,71 @@ def init_db() -> None:
             )
             c.commit()
         
+# ============ MIGRATION TRACKING (muc 5: boot < 20s) ============
+# Moi cau migrate co key = md5(SQL chuan hoa). Chay xong (hoac loi "da ton tai")
+# thi ghi vao schema_migrations; boot sau skip han -> khong con ~96 cau ALTER
+# fail vo ich moi lan boot.
+def _migration_key(sql: str) -> str:
+    norm = " ".join(sql.strip().split())
+    return "m_" + hashlib.md5(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_already_exists_error(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "already exists" in msg or "duplicate" in msg
+
+
+def _ensure_migrations_table(c) -> None:
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations "
+        "(version TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)"
+    )
+    try:
+        c.commit()
+    except Exception:
+        pass
+
+
+def _load_applied(c) -> set:
+    try:
+        rows = c.execute("SELECT version FROM schema_migrations").fetchall()
+        return {r["version"] for r in rows}
+    except Exception:
+        return set()
+
+
+def _migrate_one(c, sql: str, applied: set) -> None:
+    """Chay 1 cau migrate co tracking. Skip neu da applied."""
+    key = _migration_key(sql)
+    if key in applied:
+        return
+    try:
+        c.execute(sql)
+    except Exception as e:
+        if not _is_already_exists_error(e):
+            return  # loi that -> de boot sau thu lai (giong hanh vi cu)
+        # cot/bang da ton tai san -> coi nhu applied de lan sau skip
+    try:
+        c.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (key, int(time.time())),
+        )
+    except Exception:
+        pass
+    applied.add(key)
+
+
+def _split_sql_script(script: str) -> list:
+    """Tach script SQL thanh tung cau lenh (bo comment --, tach theo ';')."""
+    lines = [l for l in script.split("\n") if not l.strip().startswith("--")]
+    return [s.strip() for s in "\n".join(lines).split(";") if s.strip()]
+
+
 def migrate_db():
     c = get_conn()
     with _lock:
+        _ensure_migrations_table(c)
+        applied = _load_applied(c)
         for sql in [
             "ALTER TABLE tg_users ADD COLUMN vip_level BIGINT DEFAULT 0",
             "ALTER TABLE tg_users ADD COLUMN auto_renew BIGINT DEFAULT 1",
@@ -870,10 +953,7 @@ def migrate_db():
             "ALTER TABLE giftcodes ADD COLUMN wallet TEXT DEFAULT 'main'",
             "ALTER TABLE promo_codes ADD COLUMN wallet TEXT DEFAULT 'main'"
         ]:
-            try:
-                c.execute(sql)
-            except Exception:
-                pass
+            _migrate_one(c, sql, applied)
         c.commit()
 
 # --- SETTINGS ---
@@ -2224,6 +2304,8 @@ def delete_campaign(campaign_id: int, tg_id: int = None) -> bool:
 def migrate_new_features():
     """Migrate DB for new features — call at startup."""
     c = get_conn()
+    _ensure_migrations_table(c)
+    applied = _load_applied(c)
     for sql in [
         """CREATE TABLE IF NOT EXISTS user_lists (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2514,10 +2596,11 @@ def migrate_new_features():
             cost         INTEGER NOT NULL DEFAULT 0
         )""",
     ]:
-        try:
-            c.execute(sql)
-        except Exception:
-            pass
+        _migrate_one(c, sql, applied)
+    try:
+        c.commit()
+    except Exception:
+        pass
     try:
         # 2026-09-21: don hang luu toan bo thong tin acc (ban xong xoa acc khoi kho)
         for _col in ["uid TEXT DEFAULT ''", "password TEXT DEFAULT ''",
@@ -2525,10 +2608,7 @@ def migrate_new_features():
                      "note TEXT DEFAULT ''", "totp TEXT DEFAULT ''",
                      "cookie TEXT DEFAULT ''", "token TEXT DEFAULT ''",
                      "batch TEXT DEFAULT ''"]:
-            try:
-                c.execute(f"ALTER TABLE acc_orders ADD COLUMN {_col}")
-            except Exception:
-                pass
+            _migrate_one(c, f"ALTER TABLE acc_orders ADD COLUMN {_col}", applied)
         if get_setting("order_details_migrated") != "1":
             c.execute("""UPDATE acc_orders SET
                 uid=(SELECT s.uid FROM acc_stock s WHERE s.id=acc_orders.stock_id),

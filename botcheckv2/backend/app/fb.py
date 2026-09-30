@@ -470,7 +470,10 @@ async def _check_with_cookie_pool(uid: str):
     return None
 
 
-async def check_uid(uid: str) -> dict:
+async def check_uid_direct(uid: str) -> dict:
+    """Logic check FB truc tiep (HTTP toi Facebook).
+    Duoc goi boi fb_worker (process rieng) hoac fallback khi worker chet.
+    KHONG goi truc tiep tu handler - dung check_uid() de co timeout cach ly."""
     uid = extract_uid(uid)
     result = {"uid": uid, "alive": False, "avatar_url": None, "ok": False, "status": "unknown", "name": ""}
     if not uid:
@@ -605,6 +608,64 @@ async def check_uid(uid: str) -> dict:
         pass
 
     return result
+
+
+# ================= WORKER CHECK-LIVE RIENG (muc 7) =================
+# Bot goi worker qua HTTP thay vi check truc tiep, de khi Facebook treo/chan IP
+# thi chi worker bi ket, bot ban hang van phan hoi binh thuong.
+FB_WORKER_URL = "http://127.0.0.1:8001"
+FB_WORKER_TIMEOUT = 30.0  # giay cho 1 UID
+
+
+def _worker_available() -> bool:
+    """Kiem tra nhanh worker co song khong (khong nem exception)."""
+    import socket
+    try:
+        s = socket.create_connection(("127.0.0.1", 8001), timeout=2)
+        s.close()
+        return True
+    except Exception:
+        return False
+
+
+async def check_uid_via_worker(uid: str) -> dict | None:
+    """Gui check sang worker. Tra None neu worker chet/timeout (de fallback)."""
+    uid = extract_uid(uid)
+    if not uid:
+        return {"uid": uid, "alive": False, "avatar_url": None,
+                "ok": False, "status": "unknown", "name": ""}
+    try:
+        async with httpx.AsyncClient(timeout=FB_WORKER_TIMEOUT) as client:
+            r = await client.post(f"{FB_WORKER_URL}/check", json={"uid": uid})
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("uid"):
+                return data
+    except Exception:
+        pass
+    return None
+
+
+async def check_uid(uid: str) -> dict:
+    """Diem vao duy nhat cho moi handler: uu tien worker rieng,
+    fallback check truc tiep (timeout ngan) khi worker chet,
+    fail-closed ve "error" khi ca hai deu hong."""
+    uid = extract_uid(uid)
+    if not uid:
+        return {"uid": uid, "alive": False, "avatar_url": None,
+                "ok": False, "status": "unknown", "name": ""}
+    # 1. Thu worker rieng (cach ly hoan toan khoi event loop bot)
+    res = await check_uid_via_worker(uid)
+    if res is not None:
+        return res
+    # 2. Worker chet -> fallback truc tiep de bot khong liet tinh nang check.
+    #    Neu ca truc tiep cung hong -> check_uid_direct tu tra "error".
+    try:
+        return await asyncio.wait_for(check_uid_direct(uid), timeout=20.0)
+    except Exception:
+        return {"uid": uid, "alive": False, "avatar_url": None,
+                "ok": False, "status": "error", "name": "",
+                "via": "direct_fallback_failed"}
 
 
 def build_fb_caption(res: dict) -> str:
