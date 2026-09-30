@@ -519,25 +519,28 @@ class FollowerPoller:
                 log.warning("consign release notify %s: %s", cid, e)
 
     async def _consign_sale_notify(self):
-        """Ký gửi: báo đối tác ngay khi acc của họ được bán (tiền vào ví chờ)."""
+        """Ký gửi: báo đối tác ngay khi acc của họ được bán (tiền vào ví chờ).
+        Dùng outbox để chống gửi trùng/mất tin khi crash."""
         from . import consign as _consign
         if not _consign.enabled():
-            return
-        if not self._bot:
             return
         rows = db.consign_orders_unnotified(50)
         for r in rows:
             try:
                 wuntil = int(r.get("warranty_until") or 0)
                 wtxt = time.strftime("%d/%m/%Y", time.localtime(wuntil)) if wuntil else "—"
-                await self._bot.send_message(
-                    int(r["consignor_tg"]),
-                    f"🛒 <b>Acc ký gửi đã bán!</b>\n"
-                    f"UID <code>{r.get('uid') or ''}</code> — giá {int(r['sell_price']):,}đ\n"
-                    f"Phí shop: {int(r['fee_amount']):,}đ → bạn nhận <b>{int(r['net_amount']):,}đ</b>\n"
-                    f"⏳ Giữ đến hết BH ({wtxt}) rồi mới rút được.",
-                    parse_mode="HTML")
+                text = (f"🛒 <b>Acc ký gửi đã bán!</b>\n"
+                        f"UID <code>{r.get('uid') or ''}</code> — giá {int(r['sell_price']):,}đ\n"
+                        f"Phí shop: {int(r['fee_amount']):,}đ → bạn nhận <b>{int(r['net_amount']):,}đ</b>\n"
+                        f"⏳ Giữ đến hết BH ({wtxt}) rồi mới rút được.")
+                dedupe = f"consign_sale:{r['id']}"
+                enqueued = db.outbox_enqueue(
+                    dedupe, "consign_sale", int(r["consignor_tg"]), text, "HTML",
+                    ref_consignor_id=int(r.get("consignor_id") or 0))
+                # Đánh dấu đã xử lý (dedupe_key bảo đảm không gửi trùng dù crash giữa chừng)
                 db.consign_order_mark_notified(r["id"])
+                if enqueued:
+                    log.info("consign sale: đã enqueue tin bán cho đơn %s", r["id"])
             except Exception as e:
                 log.warning("consign sale notify %s: %s", r.get("id"), e)
 
@@ -832,7 +835,8 @@ class FollowerPoller:
                 # crash giữa chừng cũng không mất tin/không gửi trùng.
                 batch_codes = ",".join(sorted(set(str(x.get("code", "")) for x in items if x.get("code"))))
                 dedupe = f"consign_die:{pid}:{batch_codes}:{int(time.time()//86400)}"
-                enqueued = db.outbox_enqueue(dedupe, "consign_die", int(prow["tg_id"]), text, "HTML")
+                enqueued = db.outbox_enqueue(dedupe, "consign_die", int(prow["tg_id"]), text, "HTML",
+                                            ref_consignor_id=pid)
                 db.consign_notif_log(pid, "consign_die", 0, "main", enqueued,
                                      "" if enqueued else "đã có trong outbox")
                 if enqueued:
@@ -861,9 +865,10 @@ class FollowerPoller:
                     int(it["target_tg_id"]), it["message"],
                     parse_mode=it["parse_mode"] or "HTML")
                 db.outbox_mark_sent(it["id"])
-                # Ghi log tương thích cũ cho consign_die
-                if it["kind"] == "consign_die":
-                    db.consign_notif_log(0, "consign_die", 0, "main", True, "")
+                # Ghi log tương thích cũ cho consign_die / consign_sale (dung consignor_id that)
+                if it["kind"] in ("consign_die", "consign_sale"):
+                    cid = int(it.get("ref_consignor_id") or 0)
+                    db.consign_notif_log(cid, it["kind"], 0, "main", True, "")
             except Exception as e:
                 err = str(e)[:200]
                 db.outbox_mark_failed(it["id"], err)
