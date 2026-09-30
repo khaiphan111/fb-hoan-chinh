@@ -10,6 +10,8 @@ const TABS = [
   { key: "overview", label: "Tổng quan" },
   { key: "consignors", label: "Đối tác" },
   { key: "batches", label: "Lô chờ duyệt" },
+  { key: "living", label: "🟢 Đang bán" },
+  { key: "returns", label: "🔙 Trả hàng" },
   { key: "orders", label: "Đơn bán" },
   { key: "payouts", label: "Rút tiền" },
   { key: "disputes", label: "Tranh chấp" },
@@ -32,6 +34,8 @@ export default function Consign() {
       {tab === "overview" && <OverviewTab />}
       {tab === "consignors" && <ConsignorsTab />}
       {tab === "batches" && <BatchesTab />}
+      {tab === "living" && <LivingTab />}
+      {tab === "returns" && <ReturnsTab />}
       {tab === "orders" && <OrdersTab />}
       {tab === "payouts" && <PayoutsTab />}
       {tab === "disputes" && <DisputesTab />}
@@ -42,8 +46,10 @@ export default function Consign() {
 
 function OverviewTab() {
   const [s, setS] = useState<any>(null);
+  const [fin, setFin] = useState<any>(null);
   useEffect(() => {
     api("/api/consign/stats").then((r) => setS(r.data)).catch((e) => toast.error(e.message));
+    api("/api/consign/finance").then((r) => setFin(r.data)).catch(() => {});
   }, []);
   if (!s) return <div>Đang tải...</div>;
   const cards: [string, string][] = [
@@ -55,20 +61,146 @@ function OverviewTab() {
     ["Rút tiền chờ", String(s.pending_payouts)],
     ["Tranh chấp mở", String(s.open_disputes)],
   ];
+  const finCards: [string, string][] = fin ? [
+    ["💵 Phí shop đã thu", vnd(fin.fee_earned)],
+    ["⏳ Đang giữ (chờ BH)", vnd(fin.held)],
+    ["⚠️ Giữ do tranh chấp", vnd(fin.dispute_hold)],
+    ["✅ Đã giải ngân", vnd(fin.released)],
+    ["💸 Đã rút thành công", vnd(fin.paid_out)],
+    ["⏳ Rút đang chờ", vnd(fin.pending_payout)],
+  ] : [];
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-      {cards.map(([l, v]) => (
-        <Card key={l}><CardContent className="pt-4">
-          <div className="text-xs text-muted-foreground">{l}</div>
-          <div className="text-xl font-bold">{v}</div>
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {cards.map(([l, v]) => (
+          <Card key={l}><CardContent className="pt-4">
+            <div className="text-xs text-muted-foreground">{l}</div>
+            <div className="text-xl font-bold">{v}</div>
+          </CardContent></Card>
+        ))}
+      </div>
+      {fin && (
+        <Card><CardHeader><CardTitle>📊 Báo cáo tài chính</CardTitle></CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {finCards.map(([l, v]) => (
+              <div key={l} className="border rounded p-3">
+                <div className="text-xs text-muted-foreground">{l}</div>
+                <div className="text-lg font-bold">{v}</div>
+              </div>
+            ))}
+          </div>
         </CardContent></Card>
-      ))}
+      )}
+    </div>
+  );
+}
+
+function PartnerDetail({ id, onClose, onChanged }: { id: number; onClose: () => void; onChanged: () => void }) {
+  const [d, setD] = useState<any>(null);
+  const [batches, setBatches] = useState<any[]>([]);
+  const [notifs, setNotifs] = useState<any[]>([]);
+  const [sheetUrl, setSheetUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function load() {
+    try {
+      const r = await api(`/api/consign/consignors/${id}`);
+      setD(r.data);
+      setBatches((await api(`/api/consign/consignors/${id}/batches`)).data || []);
+      setNotifs((await api(`/api/consign/consignors/${id}/notifs`)).data || []);
+    } catch (e: any) { toast.error(e.message); }
+  }
+  useEffect(() => { load(); }, [id]);
+  async function act(path: string, body?: any, msg?: string) {
+    setBusy(true);
+    try {
+      const r = await api(`/api/consign/consignors/${id}${path}`, {
+        method: "POST", body: body ? JSON.stringify(body) : undefined,
+      });
+      toast.success(msg || "Xong");
+      if (r.data?.sheet_url && path.includes("sheet/auto")) {
+        // hiện hướng dẫn share tay
+      }
+      load(); onChanged();
+      return r;
+    } catch (e: any) { toast.error(e.message); }
+    finally { setBusy(false); }
+  }
+  if (!d) return null;
+  const sheetId = (d.sheet_id || "").trim();
+  const granted = !!d.sheet_access_granted;
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-auto p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-3">
+          <h3 className="font-bold text-lg">👤 {d.name} <span className="text-sm text-muted-foreground">({d.tg_id})</span></h3>
+          <Button size="sm" variant="outline" onClick={onClose}>✕</Button>
+        </div>
+        <div className="text-sm space-y-1 mb-4">
+          <div>📞 {d.phone || "—"} • 📧 {d.sheet_email || "chưa có"}</div>
+          <div>Trạng thái: <Badge>{d.status}</Badge> • Cấp: {d.level}</div>
+          <div>📦 {d.n_batch} lô • ✅ {d.n_sold} acc đã bán</div>
+          <div>👛 Chờ {vnd(d.wallets?.pending)} • Khả dụng {vnd(d.wallets?.avail)} •
+            Đang rút {vnd(d.wallets?.withdrawing)} • Giữ {vnd(d.wallets?.held)}</div>
+          <div>🤖 Bot báo riêng: {d.notify_bot_username ? `✅ ${d.notify_bot_username}` : "❌ chưa cấu hình (đối tác tự cài trong /kygui)"}</div>
+        </div>
+
+        <div className="border rounded p-3 mb-4">
+          <div className="font-semibold text-sm mb-2">📊 Sheet kho riêng</div>
+          <div className="text-sm mb-2">
+            {sheetId
+              ? (granted ? "✅ đã mở quyền" : "⏳ chưa mở quyền")
+              : "chưa gắn link"}
+            {d.sheet_url && <a href={d.sheet_url} target="_blank" rel="noreferrer" className="text-blue-600 underline ml-2">Mở Sheet</a>}
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            {!sheetId && (
+              <Button size="sm" disabled={busy} onClick={async () => {
+                const r = await act("/sheet/auto", undefined, "Đã tạo Sheet");
+                if (r?.data?.sheet_url) {
+                  toast.success(`Share tay: mở Sheet → Share → nhập email ${r.data.sheet_email} → Viewer`, { duration: 8000 } as any);
+                }
+              }}>🆕 Tạo Sheet tự động</Button>
+            )}
+            <input className={selectCls + " !w-64"} placeholder="Dán link Google Sheet..." value={sheetUrl} onChange={(e) => setSheetUrl(e.target.value)} />
+            <Button size="sm" variant="outline" disabled={busy || !sheetUrl.trim()} onClick={() => act("/sheet/link", { sheet_url: sheetUrl }, "Đã gắn Sheet")}>🔗 Gắn link</Button>
+            {sheetId && !granted && (
+              <Button size="sm" disabled={busy} onClick={() => act("/sheet/grant", undefined, "Đã xác nhận mở quyền")}>✅ Đã mở quyền xem</Button>
+            )}
+            {sheetId && (
+              <Button size="sm" variant="outline" disabled={busy} onClick={() => act("/sheet/sync", undefined, "Đã đồng bộ")}>📊 Đồng bộ ngay</Button>
+            )}
+          </div>
+          {!sheetId && <div className="text-xs text-muted-foreground mt-1">Tạo tự động cần đối tác đã nhập email Google trong /kygui.</div>}
+        </div>
+
+        <div className="border rounded p-3 mb-4">
+          <div className="font-semibold text-sm mb-2">📦 Lô hàng ({batches.length})</div>
+          <div className="text-sm space-y-1 max-h-40 overflow-auto">
+            {batches.map((b) => (
+              <div key={b.id}>• <b>{b.code}</b> <Badge>{b.status}</Badge> — {b.total_items} acc • {vnd(b.sell_price || b.floor_price)}/acc</div>
+            ))}
+            {!batches.length && <div className="text-muted-foreground">Trống.</div>}
+          </div>
+        </div>
+
+        <div className="border rounded p-3">
+          <div className="font-semibold text-sm mb-2">📜 Lịch sử tin báo</div>
+          <div className="text-sm space-y-1 max-h-40 overflow-auto">
+            {notifs.map((n, i) => (
+              <div key={i}>{n.ok ? "✅" : "❌"} {new Date(n.created_at * 1000).toLocaleString("vi-VN")} — {n.kind} #{n.ref_id} qua {n.via_bot === "main" ? "bot chính" : n.via_bot === "partner" ? "bot riêng" : n.via_bot}{n.error ? ` (${n.error})` : ""}</div>
+            ))}
+            {!notifs.length && <div className="text-muted-foreground">Chưa có tin báo nào.</div>}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
 function ConsignorsTab() {
   const [rows, setRows] = useState<any[]>([]);
+  const [detailId, setDetailId] = useState<number | null>(null);
   const [f, setF] = useState("");
   async function load() {
     try {
@@ -85,6 +217,24 @@ function ConsignorsTab() {
       load();
     } catch (e: any) { toast.error(e.message); }
   }
+  async function lockUnlock(id: number, lock: boolean) {
+    try {
+      const r = await api(`/api/consign/consignors/${id}/${lock ? "lock" : "unlock"}`, { method: "POST" });
+      const d = r.data || {};
+      toast.success(lock
+        ? `Đã khóa: ${d.batches || 0} lô, ${d.items || 0} acc tạm dừng`
+        : `Đã mở khóa: ${d.batches || 0} lô, ${d.items || 0} acc khôi phục`);
+      load();
+    } catch (e: any) { toast.error(e.message); }
+  }
+  async function reject(id: number) {
+    if (!confirm("Từ chối hồ sơ đối tác này?")) return;
+    try {
+      await api(`/api/consign/consignors/${id}/reject`, { method: "POST" });
+      toast.success("Đã từ chối hồ sơ");
+      load();
+    } catch (e: any) { toast.error(e.message); }
+  }
   return (
     <Card><CardHeader><CardTitle className="flex items-center gap-2">
       Đối tác
@@ -92,6 +242,7 @@ function ConsignorsTab() {
         <option value="">Tất cả</option>
         <option value="pending">Chờ duyệt</option>
         <option value="active">Hoạt động</option>
+        <option value="locked">Đã khóa</option>
         <option value="suspended">Tạm khóa</option>
         <option value="banned">Cấm</option>
       </select>
@@ -113,20 +264,27 @@ function ConsignorsTab() {
               </div>
             </div>
             <div className="flex gap-1">
+              <Button size="sm" variant="outline" onClick={() => setDetailId(r.id)}>👁 Chi tiết</Button>
               {r.status === "pending" && (
-                <Button size="sm" onClick={() => setStatus(r.id, "active")}>Duyệt</Button>
+                <>
+                  <Button size="sm" onClick={() => setStatus(r.id, "active")}>Duyệt</Button>
+                  <Button size="sm" variant="danger" onClick={() => reject(r.id)}>Từ chối</Button>
+                </>
               )}
               {r.status === "active" && (
-                <Button size="sm" variant="outline" onClick={() => setStatus(r.id, "suspended")}>Tạm khóa</Button>
+                <Button size="sm" variant="outline" onClick={() => lockUnlock(r.id, true)}>🔒 Khóa</Button>
               )}
-              {(r.status === "suspended" || r.status === "banned") && (
-                <Button size="sm" variant="outline" onClick={() => setStatus(r.id, "active")}>Mở lại</Button>
+              {(r.status === "locked" || r.status === "suspended" || r.status === "banned") && (
+                <Button size="sm" variant="outline" onClick={() => lockUnlock(r.id, false)}>🔓 Mở khóa</Button>
               )}
             </div>
           </div>
         </div>
       ))}
       {!rows.length && <div className="text-muted-foreground text-sm">Trống.</div>}
+      {detailId !== null && (
+        <PartnerDetail id={detailId} onClose={() => setDetailId(null)} onChanged={load} />
+      )}
     </CardContent></Card>
   );
 }
@@ -200,6 +358,88 @@ function BatchesTab() {
   );
 }
 
+function LivingTab() {
+  const [rows, setRows] = useState<any[]>([]);
+  const [prices, setPrices] = useState<Record<number, string>>({});
+  async function load() {
+    try {
+      setRows((await api("/api/consign/batches/living")).data || []);
+    } catch (e: any) { toast.error(e.message); }
+  }
+  useEffect(() => { load(); }, []);
+  async function reprice(id: number) {
+    const v = Number(prices[id] || 0);
+    if (!v || v <= 0) return toast.error("Nhập giá bán mới");
+    if (!confirm(`Đổi giá bán lô này thành ${vnd(v)}/acc? (chỉ acc chưa bán đổi giá)`)) return;
+    try {
+      await api(`/api/consign/batches/${id}/reprice`, {
+        method: "POST", body: JSON.stringify({ sell_price: v }),
+      });
+      toast.success("Đã đổi giá");
+      setPrices({ ...prices, [id]: "" });
+      load();
+    } catch (e: any) { toast.error(e.message); }
+  }
+  return (
+    <Card><CardHeader><CardTitle>🟢 Lô đang bán</CardTitle></CardHeader>
+    <CardContent className="space-y-2 text-sm">
+      {rows.map((b) => (
+        <div key={b.id} className="border rounded p-3 space-y-1">
+          <div><b>{b.code}</b> — {b.consignor_name} <Badge>{b.status}</Badge></div>
+          <div className="text-muted-foreground">
+            {b.stall} • {b.unsold} acc chưa bán • Giá hiện tại {vnd(b.sell_price)}/acc
+          </div>
+          <div className="flex gap-2 items-center">
+            <Input className="!w-40" placeholder="Giá mới/acc"
+              value={prices[b.id] || ""}
+              onChange={(e) => setPrices({ ...prices, [b.id]: e.target.value })} />
+            <Button size="sm" variant="outline" onClick={() => reprice(b.id)}>✏️ Sửa giá</Button>
+          </div>
+        </div>
+      ))}
+      {!rows.length && <div className="text-muted-foreground">Không có lô nào đang bán.</div>}
+    </CardContent></Card>
+  );
+}
+
+function ReturnsTab() {
+  const [rows, setRows] = useState<any[]>([]);
+  async function load() {
+    try {
+      setRows((await api("/api/consign/batches/returns")).data || []);
+    } catch (e: any) { toast.error(e.message); }
+  }
+  useEffect(() => { load(); }, []);
+  async function decide(id: number, approve: boolean) {
+    if (!confirm(approve ? "Duyệt trả hàng? Acc chưa bán sẽ rời kệ." : "Từ chối yêu cầu trả hàng?")) return;
+    try {
+      await api(`/api/consign/batches/${id}/return`, {
+        method: "POST", body: JSON.stringify({ approve }),
+      });
+      toast.success(approve ? "Đã duyệt trả hàng" : "Đã từ chối");
+      load();
+    } catch (e: any) { toast.error(e.message); }
+  }
+  return (
+    <Card><CardHeader><CardTitle>🔙 Lô xin trả hàng</CardTitle></CardHeader>
+    <CardContent className="space-y-2 text-sm">
+      {rows.map((b) => (
+        <div key={b.id} className="border rounded p-3 flex justify-between items-center flex-wrap gap-2">
+          <div>
+            <b>{b.code}</b> — {b.consignor_name}<br />
+            <span className="text-muted-foreground">{b.unsold} acc chưa bán</span>
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => decide(b.id, true)}>✅ Duyệt trả</Button>
+            <Button size="sm" variant="danger" onClick={() => decide(b.id, false)}>❌ Từ chối</Button>
+          </div>
+        </div>
+      ))}
+      {!rows.length && <div className="text-muted-foreground">Không có yêu cầu trả hàng.</div>}
+    </CardContent></Card>
+  );
+}
+
 function OrdersTab() {
   const [rows, setRows] = useState<any[]>([]);
   useEffect(() => {
@@ -221,52 +461,83 @@ function OrdersTab() {
 
 function PayoutsTab() {
   const [rows, setRows] = useState<any[]>([]);
+  const [f, setF] = useState("pending");
   const [ref, setRef] = useState<Record<number, string>>({});
+  const [reason, setReason] = useState<Record<number, string>>({});
   async function load() {
     try {
-      setRows((await api("/api/consign/payouts?status=pending")).data || []);
+      setRows((await api(`/api/consign/payouts?status=${f}`)).data || []);
     } catch (e: any) { toast.error(e.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [f]);
   async function decide(id: number, approve: boolean) {
     try {
       await api(`/api/consign/payouts/${id}/decide`, {
         method: "POST",
-        body: JSON.stringify({ approve, paid_ref: ref[id] || "" }),
+        body: JSON.stringify({
+          approve,
+          paid_ref: ref[id] || "",
+          reject_reason: reason[id] || "",
+        }),
       });
       toast.success(approve ? "Đã duyệt rút" : "Đã từ chối");
       load();
     } catch (e: any) { toast.error(e.message); }
   }
   return (
-    <Card><CardHeader><CardTitle>Rút tiền chờ duyệt</CardTitle></CardHeader>
+    <Card><CardHeader><CardTitle className="flex items-center gap-2">
+      Rút tiền
+      <select className={selectCls + " !w-40"} value={f} onChange={(e) => setF(e.target.value)}>
+        <option value="pending">Chờ duyệt</option>
+        <option value="paid">Đã trả</option>
+        <option value="rejected">Đã từ chối</option>
+        <option value="">Tất cả</option>
+      </select>
+      <Button size="sm" variant="outline" onClick={load}><IconRefresh size={14} /></Button>
+    </CardTitle></CardHeader>
     <CardContent className="space-y-2 text-sm">
       {rows.map((p) => (
         <div key={p.id} className="border rounded p-3 space-y-1">
-          <div><b>#{p.id}</b> {p.consignor_name} — {vnd(p.amount)} (phí {vnd(p.fee)} → {vnd(p.net)})</div>
+          <div><b>#{p.id}</b> {p.consignor_name} — {vnd(p.amount)} (phí {vnd(p.fee)} → {vnd(p.net)}) <Badge>{p.status}</Badge></div>
           <div className="text-muted-foreground">{p.channel}: {p.account_info}</div>
-          <div className="flex gap-2 items-center">
-            <Input className="!w-48" placeholder="Mã giao dịch"
-              value={ref[p.id] || ""} onChange={(e) => setRef({ ...ref, [p.id]: e.target.value })} />
-            <Button size="sm" onClick={() => decide(p.id, true)}>✅ Đã chuyển</Button>
-            <Button size="sm" variant="danger" onClick={() => decide(p.id, false)}>❌ Từ chối</Button>
-          </div>
+          {p.status === "rejected" && p.reject_reason && (
+            <div className="text-xs">Lý do từ chối: {p.reject_reason}</div>
+          )}
+          {p.status === "paid" && p.paid_ref && (
+            <div className="text-xs text-muted-foreground">Mã GD: {p.paid_ref}</div>
+          )}
+          {p.status === "pending" && (
+            <>
+              <div className="flex gap-2 items-center">
+                <Input className="!w-48" placeholder="Mã giao dịch"
+                  value={ref[p.id] || ""} onChange={(e) => setRef({ ...ref, [p.id]: e.target.value })} />
+                <Button size="sm" onClick={() => decide(p.id, true)}>✅ Đã chuyển</Button>
+              </div>
+              <div className="flex gap-2 items-center">
+                <Input className="!w-48" placeholder="Lý do từ chối"
+                  value={reason[p.id] || ""} onChange={(e) => setReason({ ...reason, [p.id]: e.target.value })} />
+                <Button size="sm" variant="danger" onClick={() => decide(p.id, false)}>❌ Từ chối</Button>
+              </div>
+            </>
+          )}
         </div>
       ))}
-      {!rows.length && <div className="text-muted-foreground">Không có yêu cầu.</div>}
+      {!rows.length && <div className="text-muted-foreground">Trống.</div>}
     </CardContent></Card>
   );
 }
 
 function DisputesTab() {
   const [rows, setRows] = useState<any[]>([]);
+  const [f, setF] = useState("open");
   async function load() {
     try {
-      setRows((await api("/api/consign/disputes?status=open")).data || []);
+      setRows((await api(`/api/consign/disputes?status=${f}`)).data || []);
     } catch (e: any) { toast.error(e.message); }
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [f]);
   async function decide(id: number, decision: string, refund_amount: number) {
+    if (!confirm("Xác nhận xử lý tranh chấp này?")) return;
     try {
       await api(`/api/consign/disputes/${id}/decide`, {
         method: "POST", body: JSON.stringify({ decision, refund_amount }),
@@ -275,20 +546,46 @@ function DisputesTab() {
       load();
     } catch (e: any) { toast.error(e.message); }
   }
+  function fmtTs(ts: number) {
+    if (!ts) return "—";
+    const d = new Date(ts * 1000);
+    return d.toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
   return (
-    <Card><CardHeader><CardTitle>Tranh chấp mở</CardTitle></CardHeader>
+    <Card><CardHeader><CardTitle className="flex items-center gap-2">
+      Tranh chấp
+      <select className={selectCls + " !w-40"} value={f} onChange={(e) => setF(e.target.value)}>
+        <option value="open">Đang mở</option>
+        <option value="closed">Đã xử lý</option>
+        <option value="">Tất cả</option>
+      </select>
+      <Button size="sm" variant="outline" onClick={load}><IconRefresh size={14} /></Button>
+    </CardTitle></CardHeader>
     <CardContent className="space-y-2 text-sm">
       {rows.map((d) => (
         <div key={d.id} className="border rounded p-3 space-y-1">
-          <div><b>#{d.id}</b> — {d.consignor_name}: {d.reason}</div>
-          <div className="flex gap-2">
-            <Button size="sm" onClick={() => decide(d.id, "refund_buyer", 0)}>💸 Hoàn tiền</Button>
-            <Button size="sm" variant="outline" onClick={() => decide(d.id, "replace", 0)}>🔄 Đổi acc</Button>
-            <Button size="sm" variant="danger" onClick={() => decide(d.id, "reject", 0)}>❌ Từ chối KN</Button>
+          <div><b>#{d.id}</b> — {d.consignor_name}: {d.reason} <Badge>{d.status}</Badge></div>
+          <div className="text-xs text-muted-foreground">
+            📷 {d.photo_file_id ? "có ảnh KN" : "chưa có ảnh"} •
+            ⏰ Deadline: {fmtTs(d.deadline_at)} •
+            💬 Đối tác: {d.partner_responded ? "đã phản hồi" : "chưa phản hồi"}
           </div>
+          {d.partner_responded && d.partner_response && (
+            <div className="text-xs bg-muted/40 rounded p-2">
+              📝 <b>Phản hồi đối tác:</b> {d.partner_response}
+              {d.partner_photo_file_id && " 📷 (có ảnh phản bác)"}
+            </div>
+          )}
+          {d.status === "open" && (
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => decide(d.id, "refund_buyer", 0)}>💸 Hoàn tiền</Button>
+              <Button size="sm" variant="outline" onClick={() => decide(d.id, "replace", 0)}>🔄 Đổi acc</Button>
+              <Button size="sm" variant="danger" onClick={() => decide(d.id, "reject", 0)}>❌ Từ chối KN</Button>
+            </div>
+          )}
         </div>
       ))}
-      {!rows.length && <div className="text-muted-foreground">Không có tranh chấp.</div>}
+      {!rows.length && <div className="text-muted-foreground">Trống.</div>}
     </CardContent></Card>
   );
 }
