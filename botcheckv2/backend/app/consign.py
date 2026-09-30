@@ -92,14 +92,98 @@ def batch_summary_text(b: dict) -> str:
     )
 
 
-async def notify(tg_id: int, text: str, bot=None):
-    """Gửi tin cho đối tác, không để lỗi làm chết flow."""
+async def notify(tg_id: int, text: str, bot=None, consignor_id: int = 0, kind: str = "", ref_id: int = 0):
+    """Gửi tin cho đối tác, không để lỗi làm chết flow. Ghi log vào DB."""
     if not bot:
-        return
+        return False
     try:
         await bot.send_message(tg_id, text, parse_mode="HTML")
+        if consignor_id:
+            db.consign_notif_log(consignor_id, kind, ref_id, "main", True)
+        return True
+    except Exception as e:
+        print(f"[CONSIGN-NOTIFY] Gửi tin cho {tg_id} thất bại: {e}", flush=True)
+        if consignor_id:
+            db.consign_notif_log(consignor_id, kind, ref_id, "main", False, str(e))
+        return False
+
+
+async def notify_consignor_on_sale(order_id: int, bot) -> bool:
+    """Báo đối tác khi acc ký gửi bán được. Dùng bot riêng nếu đã cấu hình,
+    fallback bot chính. Trả True nếu đã gửi (qua bot nào đó).
+    Idempotency: chỉ gửi 1 lần theo consignment_orders.notified."""
+    try:
+        sale_info = db.consign_get_sale_info(f"ACC-{order_id}")
+        if not sale_info or not (sale_info.get("notify_sale", 1) or 0):
+            return False
+        # Đã báo rồi thì thôi (chống gửi trùng khi retry)
+        if sale_info.get("notified"):
+            return True
+        txt = (
+            f"💰 <b>Acc ký gửi của bạn vừa bán được!</b>\n"
+            f"🧾 Đơn: <b>{sale_info['order_ref']}</b>\n"
+            f"💵 Giá bán: <b>{sale_info['sell_price']:,}đ</b>\n"
+            f"💸 Phí shop: <b>{sale_info['fee_amount']:,}đ</b>\n"
+            f"✅ Tiền về ví (chờ BH): <b>{sale_info['net_amount']:,}đ</b>\n"
+            f"⏳ Hết BH {sale_info['warranty_days']} ngày sẽ khả dụng."
+        )
+        ptoken = (sale_info.get("notify_bot_token") or "").strip()
+        sent = False
+        via = "main"
+        if ptoken:
+            ok, _ = await notify_via_partner_bot(sale_info["consignor_tg_id"], txt, ptoken)
+            sent = ok
+            via = "partner"
+        if not sent:
+            sent = await notify(sale_info["consignor_tg_id"], txt, bot,
+                                sale_info.get("consignor_id", 0), "sale", order_id)
+        else:
+            db.consign_notif_log(sale_info.get("consignor_id", 0), "sale", order_id, via, True)
+        # Đánh dấu đã báo (idempotency)
+        try:
+            db.consign_mark_notified(f"ACC-{order_id}")
+        except Exception as e:
+            print(f"[CONSIGN-NOTIFY] Mark notified ACC-{order_id} thất bại: {e}", flush=True)
+        return sent
+    except Exception as e:
+        print(f"[CONSIGN-NOTIFY] notify_consignor_on_sale #{order_id} thất bại: {e}", flush=True)
+        return False
+
+
+async def notify_via_partner_bot(tg_id: int, text: str, bot_token: str) -> tuple:
+    """Gửi tin qua bot riêng của đối tác (token do đối tác cấu hình).
+    Trả (ok, err): ok=True nếu gửi thành công."""
+    if not bot_token:
+        return False, "chưa cấu hình bot"
+    try:
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
+        b = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        try:
+            await b.send_message(tg_id, text, parse_mode="HTML")
+            return True, ""
+        finally:
+            await b.session.close()
+    except Exception as e:
+        return False, str(e)[:100]
+
+
+async def validate_bot_token(bot_token: str) -> tuple:
+    """Kiểm tra token bot hợp lệ qua getMe. Trả (ok, username_or_err)."""
+    bot_token = (bot_token or "").strip()
+    if not bot_token or ":" not in bot_token:
+        return False, "Token không đúng định dạng (phải có dạng 123456:ABC...)"
+    try:
+        from aiogram import Bot
+        b = Bot(token=bot_token)
+        try:
+            me = await b.get_me()
+            return True, f"@{me.username}" if me.username else me.first_name
+        finally:
+            await b.session.close()
     except Exception:
-        pass
+        return False, "Token không hợp lệ hoặc không kết nối được Telegram. Kiểm tra lại token nhé."
 
 
 def audit(by_id: int, by_name: str, action: str, detail: str = ""):

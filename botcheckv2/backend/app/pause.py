@@ -150,6 +150,7 @@ def try_deactivate(by_id: int = 0, by_name: str = "") -> bool:
         log.warning("try_deactivate: %s", e)
         return False
     if flipped:
+        db.settings_cache_invalidate(K_ACTIVE)
         db.set_setting(K_REOPEN_PENDING, "1")
         try:
             db.admin_audit_add(by_id, by_name, "pause_off",

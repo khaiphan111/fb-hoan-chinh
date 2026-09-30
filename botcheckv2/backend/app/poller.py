@@ -363,11 +363,40 @@ class FollowerPoller:
                             await self._consign_release()
                     except Exception as e:
                         log.warning("consign release: %s", e)
+                # Ký gửi: báo đối tác khi acc vừa bán (tiền vào ví chờ)
+                if _job_on("consign_sale_notify"):
+                    try:
+                        await self._consign_sale_notify()
+                    except Exception as e:
+                        log.warning("consign sale notify: %s", e)
+                # Ký gửi: tự xử tranh chấp quá 48h (khách đúng) hoặc quá 7 ngày (bắt buộc đóng)
+                if _job_on("consign_dispute_auto"):
+                    try:
+                        now_ts = time.time()
+                        if now_ts - getattr(self, "_consign_dis_last", 0) >= 900:
+                            self._consign_dis_last = now_ts
+                            await self._consign_dispute_auto()
+                    except Exception as e:
+                        log.warning("consign dispute auto: %s", e)
+                # Ký gửi: đồng bộ kho riêng từng đối tác lên Sheet (30 phút/lần)
+                if _job_on("sheet_consign_wh"):
+                    try:
+                        now_ts = time.time()
+                        if now_ts - getattr(self, "_cwh_last", 0) >= 1800:
+                            self._cwh_last = now_ts
+                            await self._push_consign_wh_to_sheet()
+                    except Exception as e:
+                        log.warning("sheet consign wh push: %s", e)
                 # Thu hồi quyền admin phụ hết hạn tạm thời
                 try:
                     await self._sweep_expired_admins()
                 except Exception as e:
                     log.warning("admin expiry sweep: %s", e)
+                # Outbox thông báo: gửi tin pending/failed (chống mất tin khi crash)
+                try:
+                    await self._process_outbox()
+                except Exception as e:
+                    log.warning("outbox process: %s", e)
             except Exception as e:
                 log.warning("maintenance loop: %s", e)
             await asyncio.sleep(300)
@@ -489,6 +518,88 @@ class FollowerPoller:
             except Exception as e:
                 log.warning("consign release notify %s: %s", cid, e)
 
+    async def _consign_sale_notify(self):
+        """Ký gửi: báo đối tác ngay khi acc của họ được bán (tiền vào ví chờ)."""
+        from . import consign as _consign
+        if not _consign.enabled():
+            return
+        if not self._bot:
+            return
+        rows = db.consign_orders_unnotified(50)
+        for r in rows:
+            try:
+                wuntil = int(r.get("warranty_until") or 0)
+                wtxt = time.strftime("%d/%m/%Y", time.localtime(wuntil)) if wuntil else "—"
+                await self._bot.send_message(
+                    int(r["consignor_tg"]),
+                    f"🛒 <b>Acc ký gửi đã bán!</b>\n"
+                    f"UID <code>{r.get('uid') or ''}</code> — giá {int(r['sell_price']):,}đ\n"
+                    f"Phí shop: {int(r['fee_amount']):,}đ → bạn nhận <b>{int(r['net_amount']):,}đ</b>\n"
+                    f"⏳ Giữ đến hết BH ({wtxt}) rồi mới rút được.",
+                    parse_mode="HTML")
+                db.consign_order_mark_notified(r["id"])
+            except Exception as e:
+                log.warning("consign sale notify %s: %s", r.get("id"), e)
+
+    async def _consign_dispute_auto(self):
+        """Ký gửi: tự xử tranh chấp quá hạn.
+        - Quá 48h chưa xử → mặc định khách đúng (hoàn tiền, trừ ví đối tác)
+        - Quá 7 ngày → bắt buộc đóng (khách đúng)"""
+        from . import consign as _consign
+        if not _consign.enabled():
+            return
+        rows = db.consign_disputes_expired()
+        for d in rows:
+            try:
+                # Lấy sell_price để hoàn ĐỦ cho khách (đối tác chịu 100%)
+                o = db.get_conn().execute(
+                    "SELECT sell_price FROM consignment_orders WHERE id=?",
+                    (d["order_id"],)).fetchone()
+                amt = o["sell_price"] if o and o["sell_price"] else 0
+                is_7d = d["created_at"] < int(time.time()) - 7 * 86400
+                if db.consign_dispute_decide(d["id"], "refund_buyer", amt, 0):
+                    # Đánh dấu tự động
+                    db.get_conn().execute(
+                        "UPDATE consignment_disputes SET auto_resolved=1 WHERE id=?",
+                        (d["id"],))
+                    db.get_conn().commit()
+                    # Báo đối tác
+                    if self._bot:
+                        cr = db.get_conn().execute(
+                            "SELECT tg_id FROM consignors WHERE id=?",
+                            (d["consignor_id"],)).fetchone()
+                        if cr and cr["tg_id"]:
+                            reason = ("đóng băng đã tối đa 7 ngày" if is_7d
+                                      else "quá 48h không phản hồi")
+                            try:
+                                await self._bot.send_message(
+                                    int(cr["tg_id"]),
+                                    f"⚠️ <b>Tranh chấp #{d['id']} đã tự động xử lý</b>\n"
+                                    f"{reason} → mặc định khách đúng.\n"
+                                    f"💰 {amt:,}đ (đủ giá khách đã trả) đã trừ khỏi ví của bạn để hoàn cho khách.",
+                                    parse_mode="HTML")
+                            except Exception as e:
+                                log.warning("consign dispute auto notify #%s: %s", d["id"], e)
+                    log.warning("consign dispute #%s auto-resolved (refund_buyer, 7d=%s)", d["id"], is_7d)
+            except Exception as e:
+                log.warning("consign dispute auto %s: %s", d.get("id"), e)
+
+    async def _push_consign_wh_to_sheet(self):
+        """Đồng bộ kho của từng đối tác lên spreadsheet RIÊNG của họ (30 phút/lần)."""
+        from . import consign as _consign, consign_sheet as _cs
+        if not _consign.enabled():
+            return
+        rows = db.consignors_list("active", 200)
+        for r in rows:
+            try:
+                if not (r.get("sheet_id") or "").strip():
+                    continue  # chưa gắn Sheet riêng -> bỏ qua
+                n = await _cs.push_consign_warehouse(r["id"])
+                if n >= 0:
+                    log.info("sheet consign wh: cid=%s %d dòng", r["id"], n)
+            except Exception as e:
+                log.warning("sheet consign wh cid=%s: %s", r["id"], e)
+
     async def _sweep_expired_admins(self):
         """Thu hồi quyền admin phụ đã hết hạn tạm thời, báo cả 2 bên."""
         rows = db.extra_admin_expired()
@@ -569,6 +680,11 @@ class FollowerPoller:
         total = len(rows)
         if not total:
             log.info("stock recheck: kho trống, bỏ qua")
+            # vẫn quét acc ký gửi (độc lập với kho thường)
+            try:
+                await self._recheck_consign_items()
+            except Exception as e:
+                log.warning("consign recheck: %s", e)
             return
         log.info("stock recheck: bắt đầu quét %d acc (manual=%s)...", total, manual)
         die_statuses = {"dead", "disabled", "checkpoint", "checkpoint_282",
@@ -648,6 +764,111 @@ class FollowerPoller:
             log.warning("sheet health push: %s", e)
         log.info("stock recheck: xong — live=%d die=%d err=%d",
                  live_n, len(die_ids), err_n)
+        # Quét acc ký gửi đang bán (listed) — DIE thì đánh dấu + báo đối tác
+        try:
+            await self._recheck_consign_items()
+        except Exception as e:
+            log.warning("consign recheck: %s", e)
+
+    async def _recheck_consign_items(self):
+        """Quét LIVE acc ký gửi đang bán. DIE → status='dead' + báo đối tác.
+        Chỉ quét loại acc bật live_check=1 (join acc_categories qua batch.category_id)."""
+        try:
+            rows = [dict(r) for r in db.get_conn().execute(
+                "SELECT i.id, i.uid, i.batch_id, b.consignor_id, b.code "
+                "FROM consignment_items i JOIN consignment_batches b ON b.id=i.batch_id "
+                "LEFT JOIN acc_categories c ON c.id=b.category_id "
+                "WHERE i.status='listed' AND COALESCE(c.live_check,0)=1").fetchall()]
+        except Exception as e:
+            log.warning("consign recheck: không đọc được: %s", e)
+            return
+        if not rows:
+            return
+        log.info("consign recheck: quét %d acc ký gửi...", len(rows))
+        die_statuses = {"dead", "disabled", "checkpoint", "checkpoint_282", "checkpoint_956"}
+        sem = asyncio.Semaphore(10)
+        async def _one(r):
+            async with sem:
+                try:
+                    res = await fb.check_uid(str(r["uid"]))
+                    st = str(res.get("status") or "").lower()
+                except Exception:
+                    st = "error"
+                return r, st
+        die_rows = []
+        for i in range(0, len(rows), 100):
+            batch = rows[i:i+100]
+            for r, st in await asyncio.gather(*[_one(x) for x in batch]):
+                if st in die_statuses:
+                    die_rows.append(r)
+            await asyncio.sleep(2)
+        if not die_rows:
+            log.info("consign recheck: không có acc DIE")
+            return
+        # Đánh dấu dead
+        die_ids = [r["id"] for r in die_rows]
+        placeholders = ",".join("?" * len(die_ids))
+        db.get_conn().execute(f"UPDATE consignment_items SET status='dead' WHERE id IN ({placeholders})",
+                              die_ids)
+        db.get_conn().commit()
+        # Báo từng đối tác
+        by_partner = {}
+        for r in die_rows:
+            by_partner.setdefault(r["consignor_id"], []).append(r)
+        for pid, items in by_partner.items():
+            prow = None
+            try:
+                prow = db.get_conn().execute("SELECT tg_id, name FROM consignors WHERE id=?",
+                                            (pid,)).fetchone()
+                if not prow or not prow["tg_id"]:
+                    continue
+                uids = ", ".join(f"<code>{html.escape(str(x['uid']))}</code>" for x in items[:10])
+                more = f" <i>(+{len(items)-10})</i>" if len(items) > 10 else ""
+                text = (f"☠️ <b>Acc ký gửi bị DIE</b>\n"
+                        f"{len(items)} acc của bạn đã DIE trước khi bán và đã được gỡ khỏi shop:\n"
+                        f"{uids}{more}\n\n"
+                        f"<i>Vui lòng kiểm tra lại và bổ sung acc mới nếu cần.</i>")
+                # Cho vào outbox (dedupe theo đối tác + ngày): worker gửi riêng,
+                # crash giữa chừng cũng không mất tin/không gửi trùng.
+                batch_codes = ",".join(sorted(set(str(x.get("code", "")) for x in items if x.get("code"))))
+                dedupe = f"consign_die:{pid}:{batch_codes}:{int(time.time()//86400)}"
+                enqueued = db.outbox_enqueue(dedupe, "consign_die", int(prow["tg_id"]), text, "HTML")
+                db.consign_notif_log(pid, "consign_die", 0, "main", enqueued,
+                                     "" if enqueued else "đã có trong outbox")
+                if enqueued:
+                    log.info("consign recheck: đã enqueue tin DIE cho đối tác %s", pid)
+            except Exception as e:
+                log.warning("consign recheck: báo đối tác %s lỗi: %s", pid, e)
+                try:
+                    db.consign_notif_log(pid, "consign_die", 0, "main", False, str(e)[:200])
+                except Exception as e2:
+                    log.warning("consign recheck: ghi notif_log lỗi: %s", e2)
+        log.info("consign recheck: %d acc DIE đã xử lý", len(die_rows))
+
+    async def _process_outbox(self):
+        """Worker gửi tin trong outbox: claim nguyên tử -> gửi -> đánh dấu.
+        Crash giữa chừng: tin ở 'sending' sẽ được claim lại ở vòng sau (attempts tăng).
+        Gửi trùng: dedupe_key UNIQUE khi enqueue + claim nguyên tử."""
+        if not self._bot:
+            return
+        items = db.outbox_claim(limit=20, max_attempts=5)
+        if not items:
+            return
+        log.info("outbox: xử lý %d tin...", len(items))
+        for it in items:
+            try:
+                await self._bot.send_message(
+                    int(it["target_tg_id"]), it["message"],
+                    parse_mode=it["parse_mode"] or "HTML")
+                db.outbox_mark_sent(it["id"])
+                # Ghi log tương thích cũ cho consign_die
+                if it["kind"] == "consign_die":
+                    db.consign_notif_log(0, "consign_die", 0, "main", True, "")
+            except Exception as e:
+                err = str(e)[:200]
+                db.outbox_mark_failed(it["id"], err)
+                log.warning("outbox: gửi tin %s lỗi: %s", it["id"], err)
+            await asyncio.sleep(1)
 
     async def _push_health_to_sheet(self, live_rows, die_ids):
         """Ghi 🟢 LIVE / ☠️ DIE lên cột K Google Sheet cho acc có sheet_ref.

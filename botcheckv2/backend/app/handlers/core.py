@@ -135,6 +135,10 @@ class AntiSpamMiddleware(BaseMiddleware):
                 "/coc", "/huycoc", "/coclist", "/napshop", "/giohang"
             )
             if cmd not in free_cmds:
+                # Admin (chủ shop + admin phụ) được miễn kiểm tra sub/số dư:
+                # họ là nhân sự vận hành, không phải khách mua hàng.
+                if _perms.is_admin(event.chat.id):
+                    return await handler(event, data)
                 user = db.get_user(event.chat.id)
                 if not user:
                     await event.answer("Bạn chưa /start. Gõ /start trước nhé.")

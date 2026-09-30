@@ -154,8 +154,26 @@ async def on_warranty_evidence(msg: Message, state: FSMContext):
                 "SELECT id FROM consignment_orders WHERE order_ref=?",
                 (f"ACC-{order_id}",)).fetchone()
             if co:
-                db.consign_dispute_create(co["id"], f"BH #{claim_id}: log sai mk",
-                                          msg.photo[-1].file_id)
+                did = db.consign_dispute_create(co["id"], f"BH #{claim_id}: log sai mk",
+                                                msg.photo[-1].file_id)
+                # báo đối tác: acc của họ bị tranh chấp, tiền tạm giữ
+                try:
+                    cor = db.get_conn().execute(
+                        "SELECT o.consignor_id, o.net_amount, i.uid, cr.tg_id"
+                        " FROM consignment_orders o"
+                        " JOIN consignment_items i ON i.id=o.item_id"
+                        " JOIN consignors cr ON cr.id=o.consignor_id"
+                        " WHERE o.id=?", (co["id"],)).fetchone()
+                    if cor and cor["tg_id"]:
+                        await msg.bot.send_message(
+                            int(cor["tg_id"]),
+                            f"⚠️ <b>Acc ký gửi bị tranh chấp</b>\n"
+                            f"UID <code>{cor['uid'] or ''}</code> — khách yêu cầu BH #{claim_id}\n"
+                            f"💰 {int(cor['net_amount']):,}đ tạm giữ đến khi shop xử lý xong.\n"
+                            f"Vào /kygui → Tranh chấp để theo dõi.",
+                            parse_mode="HTML")
+                except Exception:
+                    pass
     except Exception:
         pass
     # Chống lạm dụng bảo hành: quá số lần/tuần -> NEEDS_REVIEW

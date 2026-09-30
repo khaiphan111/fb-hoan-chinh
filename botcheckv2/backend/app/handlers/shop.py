@@ -1245,6 +1245,9 @@ async def on_cart_confirm(cb: CallbackQuery):
             f"━━━━━━━━━━━━━━\n\n"
             f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
+        # Báo đối tác ký gửi nếu acc bán được là hàng ký gửi
+        from .. import consign as _consign_mod
+        await _consign_mod.notify_consignor_on_sale(order_id, cb.bot)
     by_cat = {}
     for o in delivered:
         by_cat.setdefault(o["cat_id"], []).append(o)

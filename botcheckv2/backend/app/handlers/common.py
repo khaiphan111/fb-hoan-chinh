@@ -1064,6 +1064,12 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
             f"━━━━━━━━━━━━━━\n\n"
             f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
+        # Báo đối tác ký gửi nếu acc bán được là hàng ký gửi
+        try:
+            from .. import consign as _consign_mod
+            await _consign_mod.notify_consignor_on_sale(order_id, bot)
+        except Exception:
+            pass
     # Báo admin: thông tin khách + acc đã mua
     await _notify_purchase_admin(bot, from_user, delivered)
     # Quà tặng kèm: credits + vé quay
@@ -1684,7 +1690,7 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
         f"{dup_txt}"
         f"📊 Tồn kho hiện tại: <b>{total}</b> acc"
         f"{link_txt}"
-        "\n\n🔍 Đang tự quét kiểm tra chất lượng...",
+        + ("\n\n🔍 Đang tự quét kiểm tra chất lượng..." if _cat_live_check(cat_id) else ""),
         parse_mode="HTML",
     )
     if sheet_ctx is not None:
@@ -1785,7 +1791,23 @@ async def _import_stock_rows(rows, cat_id, ncc_id, cost, c, msg, wait, sheet_ctx
                 await _fulfill_deposits(cat_id, msg.bot, dict(c))
             except Exception as e:
                 log.warning("fulfill deposits: %s", e)
-    asyncio.create_task(_scan(int(now()) - 600))
+    # Gian hàng live_check=0 (vd Gmail): bỏ qua quét FB, acc nhập vào bán thẳng
+    if _cat_live_check(cat_id):
+        asyncio.create_task(_scan(int(now()) - 600))
+    else:
+        # Vẫn chạy phần báo/tự giao cho người đăng ký "có hàng nhắn tôi" + đặt cọc
+        async def _fulfill_only():
+            left = db.acc_stock_count(cat_id)
+            if left > 0:
+                try:
+                    await _fulfill_restock_subs(cat_id, msg.bot, dict(c))
+                except Exception as e:
+                    log.warning("fulfill restock subs: %s", e)
+                try:
+                    await _fulfill_deposits(cat_id, msg.bot, dict(c))
+                except Exception as e:
+                    log.warning("fulfill deposits: %s", e)
+        asyncio.create_task(_fulfill_only())
 
 def _parse_stock_file(raw: bytes, file_name: str):
     """Đọc file .txt/.xlsx chứa acc → (rows, err).

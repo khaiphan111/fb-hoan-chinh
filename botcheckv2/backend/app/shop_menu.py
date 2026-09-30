@@ -131,7 +131,6 @@ GROUPS = {
         ("loyalty_random", "🎲 Điểm ngẫu nhiên"),
         ("happy_hour", "⚡ Giờ vàng"),
         ("mystery_price", "🎲 Giá hộp mù"),
-        ("mystery_toggle", "🎲 Hộp mù: bật/tắt loại"),
         ("mystery_weight", "🎲 Hộp mù: tỷ lệ trúng"),
         ("mystery_weight_multi", "⚖️ Hộp mù: set % nhiều loại"),
         ("mystery_toggle", "🔛 Hộp mù: bật/tắt loại"),
