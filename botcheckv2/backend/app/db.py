@@ -183,6 +183,13 @@ def init_db() -> None:
                 value TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS acc_file_tokens (
+                token      TEXT PRIMARY KEY,
+                tg_id      BIGINT NOT NULL,
+                order_ids  TEXT NOT NULL,
+                created_at BIGINT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS extra_admins (
                 tg_id    BIGINT PRIMARY KEY,
                 name     TEXT DEFAULT '',
@@ -355,7 +362,8 @@ def init_db() -> None:
                 created_at   BIGINT NOT NULL,
                 decided_at   BIGINT DEFAULT 0,
                 decided_by   BIGINT DEFAULT 0,
-                paid_ref     TEXT DEFAULT ''
+                paid_ref     TEXT DEFAULT '',
+                reject_reason TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_cpayouts_consignor ON consignment_payouts(consignor_id);
             CREATE INDEX IF NOT EXISTS idx_cpayouts_status ON consignment_payouts(status);
@@ -855,6 +863,9 @@ def migrate_db():
             "ALTER TABLE consignment_disputes ADD COLUMN partner_responded BIGINT DEFAULT 0",
             "ALTER TABLE consignment_disputes ADD COLUMN partner_response TEXT DEFAULT ''",
             "ALTER TABLE consignment_disputes ADD COLUMN auto_resolved BIGINT DEFAULT 0",
+            "ALTER TABLE consignment_disputes ADD COLUMN reminded_at BIGINT DEFAULT 0",
+            "ALTER TABLE consignment_disputes ADD COLUMN partner_photo_file_id TEXT DEFAULT ''",
+            "ALTER TABLE consignment_batches ADD COLUMN suspend_prev TEXT DEFAULT ''",
             "ALTER TABLE acc_categories ADD COLUMN consign_pending INTEGER DEFAULT 0",
             "ALTER TABLE giftcodes ADD COLUMN wallet TEXT DEFAULT 'main'",
             "ALTER TABLE promo_codes ADD COLUMN wallet TEXT DEFAULT 'main'"
@@ -4870,6 +4881,81 @@ def acc_get_order(order_id: int):
         "WHERE o.id=?", (order_id,)).fetchone()
 
 
+def acc_file_token_create(tg_id: int, order_ids: list) -> str:
+    """Tạo token ngắn cho nút tải full nhiều acc (tránh callback_data quá 64 bytes).
+    Token hết hạn sau 24h."""
+    import secrets
+    import time
+    now = int(time.time())
+    order_csv = ",".join(str(i) for i in order_ids)
+    with _lock:
+        c = get_conn()
+        # dọn token cũ quá 24h
+        try:
+            c.execute("DELETE FROM acc_file_tokens WHERE created_at < ?",
+                      (now - 86400,))
+        except Exception:
+            pass
+        for _ in range(5):
+            token = secrets.token_hex(4)  # 8 ký tự
+            try:
+                c.execute(
+                    "INSERT INTO acc_file_tokens(token, tg_id, order_ids, created_at) "
+                    "VALUES(?, ?, ?, ?)",
+                    (token, tg_id, order_csv, now))
+                c.commit()
+                return token
+            except Exception:
+                # trùng token: rollback rồi thử token mới, KHÔNG ghi đè token người khác
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
+                continue
+        # fallback gần như không bao giờ tới
+        token = secrets.token_hex(8)
+        c.execute(
+            "INSERT INTO acc_file_tokens(token, tg_id, order_ids, created_at) "
+            "VALUES(?, ?, ?, ?) ON CONFLICT(token) DO NOTHING",
+            (token, tg_id, order_csv, now))
+        c.commit()
+    return token
+
+
+def acc_file_token_get(token: str, tg_id: int) -> list:
+    """Lấy danh sách order_id từ token, kiểm tra đúng chủ. Trả [] nếu sai."""
+    import time
+    try:
+        r = get_conn().execute(
+            "SELECT tg_id, order_ids, created_at FROM acc_file_tokens "
+            "WHERE token=?", (token,)).fetchone()
+        if not r:
+            return []
+        if int(r["tg_id"]) != int(tg_id):
+            return []
+        if int(time.time()) - int(r["created_at"]) > 86400:
+            return []
+        return [int(x) for x in str(r["order_ids"]).split(",")
+                if x.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def acc_order_is_consign(order_id: int) -> bool:
+    """Đơn acc_orders có phải hàng ký gửi không (dựa vào acc_stock.source).
+
+    Dùng để đánh dấu tin báo cho admin và chặn admin phụ tự xử lý
+    hoàn tiền/BH đơn ký gửi (phải qua tranh chấp do chủ shop quyết)."""
+    try:
+        r = get_conn().execute(
+            "SELECT s.source FROM acc_orders o "
+            "JOIN acc_stock s ON s.id=o.stock_id "
+            "WHERE o.id=?", (order_id,)).fetchone()
+        return bool(r and (r["source"] or "shop") == "consign")
+    except Exception:
+        return False
+
+
 def acc_user_orders(tg_id: int, limit: int = 20) -> list:
     return get_conn().execute(
         "SELECT o.*, COALESCE(c.name,'[đã xóa]') AS cat_name, "
@@ -5842,8 +5928,8 @@ def consignor_get(tg_id: int) -> Optional[dict]:
 
 def consignor_create(tg_id: int, name: str, phone: str, note: str = "", sheet_email: str = "") -> int:
     now = int(time.time())
-    # Số hạn mức CHƯA được user chốt -> không tự áp số mặc định.
-    # Chưa cấu hình = 0 = "chưa cấu hình", check_limits sẽ chặn và báo cấu hình.
+    # Hạn mức 0 = KHÔNG GIỚI HẠN (chủ shop chưa cấu hình thì đối tác mới vẫn hoạt động bình thường).
+    # Muốn giới hạn thì vào /kyguiadm → ⚙️ Cấu hình để đặt số cụ thể cho từng đối tác.
     _mi = get_setting("consign_default_max_items", "")
     _mv = get_setting("consign_default_max_value", "")
     max_items = int(_mi) if str(_mi).strip().isdigit() else 0
@@ -5869,6 +5955,86 @@ def consignor_set_status(cid: int, status: str, by_id: int = 0) -> bool:
             cur = c.execute("UPDATE consignors SET status=? WHERE id=?", (status, cid))
         c.commit()
         return cur.rowcount > 0
+
+
+def consign_lock_partner(cid: int, by_id: int = 0) -> dict:
+    """Khóa đối tác: đổi status + tạm dừng các lô đang hoạt động.
+
+    - Lô 'submitted'/'approved'/'listed' -> 'suspended' (lưu trạng thái cũ vào suspend_prev
+      để mở khóa khôi phục đúng). Lô chờ duyệt bị khóa sẽ không duyệt được nữa.
+    - Acc trong kho của lô đang bán: AVAILABLE -> SUSPENDED (không bán được nữa).
+    - Tiền đang giữ trong thời gian BH: giữ nguyên, tiếp tục đếm ngược.
+    - Yêu cầu rút đang pending: giữ nguyên để chủ shop xử lý tay.
+    Trả dict {batches, items} số lô/acc đã tạm dừng."""
+    out = {"batches": 0, "items": 0}
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE consignors SET status='locked' WHERE id=?", (cid,))
+        batches = c.execute(
+            "SELECT id, status FROM consignment_batches WHERE consignor_id=?"
+            " AND status IN ('submitted','approved','listed')",
+            (cid,)).fetchall()
+        for b in batches:
+            bid = b["id"]
+            prev = b["status"]
+            items = c.execute(
+                "SELECT id, acc_stock_id FROM consignment_items "
+                "WHERE batch_id=? AND status IN ('pending','listed')", (bid,)).fetchall()
+            for it in items:
+                if it["acc_stock_id"]:
+                    c.execute("UPDATE acc_stock SET status='SUSPENDED' WHERE id=? AND status='AVAILABLE'",
+                              (it["acc_stock_id"],))
+                c.execute("UPDATE consignment_items SET status='suspended' WHERE id=?", (it["id"],))
+                out["items"] += 1
+            c.execute("UPDATE consignment_batches SET status='suspended', suspend_prev=? WHERE id=?",
+                      (prev, bid))
+            out["batches"] += 1
+        c.execute("INSERT INTO admin_audit(tg_id, name, action, detail, created_at) VALUES(?,?,?,?,?)",
+                  (by_id, "", "lock_consignor", f"cid={cid} batches={out['batches']} items={out['items']}", now))
+        c.commit()
+    return out
+
+
+def consign_unlock_partner(cid: int, by_id: int = 0) -> dict:
+    """Mở khóa đối tác: đổi status + khôi phục các lô đã tạm dừng về đúng trạng thái cũ.
+
+    - Lô 'suspended' -> trạng thái lưu trong suspend_prev (listed/submitted/approved).
+    - Item 'suspended': lô về 'listed' và có acc_stock_id -> item 'listed' + acc SUSPENDED->AVAILABLE;
+      ngược lại -> item 'pending'.
+    Trả dict {batches, items} số lô/acc đã khôi phục."""
+    out = {"batches": 0, "items": 0}
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        c.execute("UPDATE consignors SET status='active', approved_at=?, approved_by=? WHERE id=?",
+                  (now, by_id, cid))
+        batches = c.execute(
+            "SELECT id, COALESCE(suspend_prev,'listed') AS prev FROM consignment_batches"
+            " WHERE consignor_id=? AND status='suspended'",
+            (cid,)).fetchall()
+        for b in batches:
+            bid = b["id"]
+            prev = b["prev"] if b["prev"] in ("submitted", "approved", "listed") else "listed"
+            items = c.execute(
+                "SELECT id, acc_stock_id FROM consignment_items "
+                "WHERE batch_id=? AND status='suspended'", (bid,)).fetchall()
+            for it in items:
+                if prev == "listed" and it["acc_stock_id"]:
+                    c.execute("UPDATE acc_stock SET status='AVAILABLE' WHERE id=? AND status='SUSPENDED'",
+                              (it["acc_stock_id"],))
+                    c.execute("UPDATE consignment_items SET status='listed' WHERE id=?", (it["id"],))
+                else:
+                    # Lô chưa lên kệ trước khi khóa -> item về pending
+                    c.execute("UPDATE consignment_items SET status='pending' WHERE id=?", (it["id"],))
+                out["items"] += 1
+            c.execute("UPDATE consignment_batches SET status=?, suspend_prev='' WHERE id=?",
+                      (prev, bid))
+            out["batches"] += 1
+        c.execute("INSERT INTO admin_audit(tg_id, name, action, detail, created_at) VALUES(?,?,?,?,?)",
+                  (by_id, "", "unlock_consignor", f"cid={cid} batches={out['batches']} items={out['items']}", now))
+        c.commit()
+    return out
 
 
 def consignor_update(cid: int, **fields) -> bool:
@@ -5942,16 +6108,53 @@ def consign_batches_list(consignor_id: int = 0, status: str = "", limit: int = 3
     return [dict(r) for r in get_conn().execute(q, p).fetchall()]
 
 
-def consign_batch_submit(bid: int) -> bool:
+def consign_check_limits(cid: int, add_items: int = 0, add_value: int = 0) -> tuple:
+    """Kiểm tra hạn mức đối tác. Trả (ok, msg).
+    Tính tổng acc + tổng giá trị các lô đang hoạt động (draft/submitted/approved/listed).
+    Hạn mức 0 = không giới hạn (chủ shop chưa cấu hình)."""
+    try:
+        c = get_conn()
+        lim = c.execute("SELECT max_items, max_value FROM consignors WHERE id=?", (cid,)).fetchone()
+        if not lim:
+            return False, "Không tìm thấy đối tác"
+        max_items = int(lim["max_items"] or 0)
+        max_value = int(lim["max_value"] or 0)
+        if not max_items and not max_value:
+            return True, ""  # chưa đặt hạn mức = không giới hạn
+        cur = c.execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(b.floor_price),0) v"
+            " FROM consignment_items i JOIN consignment_batches b ON b.id=i.batch_id"
+            " WHERE b.consignor_id=? AND b.status IN ('draft','submitted','approved','listed')",
+            (cid,)).fetchone()
+        n = int(cur["n"] or 0) + add_items
+        v = int(cur["v"] or 0) + add_value
+        if max_items and n > max_items:
+            return False, f"Vượt hạn mức: {n}/{max_items} acc"
+        if max_value and v > max_value:
+            return False, f"Vượt hạn mức: {v:,}/{max_value:,}đ"
+        return True, ""
+    except Exception as e:
+        return False, str(e)[:100]
+
+
+def consign_batch_submit(bid: int) -> tuple:
+    """Nộp lô để duyệt. Trả (ok, msg) — chặn nếu vượt hạn mức đối tác."""
     with _lock:
         c = get_conn()
+        b = c.execute("SELECT consignor_id FROM consignment_batches WHERE id=?", (bid,)).fetchone()
+        if not b:
+            return False, "Không tìm thấy lô"
         n = c.execute("SELECT COUNT(*) v FROM consignment_items WHERE batch_id=?", (bid,)).fetchone()["v"]
         if not n:
-            return False
+            return False, "Lô trống"
+        # kiểm tra hạn mức: tổng acc + tổng giá trị (floor_price × số acc) các lô đang hoạt động
+        ok, msg = consign_check_limits(int(b["consignor_id"]), 0, 0)
+        if not ok:
+            return False, msg
         cur = c.execute("UPDATE consignment_batches SET status='submitted', total_items=? WHERE id=? AND status='draft'",
                         (n, bid))
         c.commit()
-        return cur.rowcount > 0
+        return (cur.rowcount > 0), ""
 
 
 def consign_batch_decide(bid: int, approve: bool, sell_price: int, by_id: int, note: str = "") -> bool:
@@ -5959,6 +6162,13 @@ def consign_batch_decide(bid: int, approve: bool, sell_price: int, by_id: int, n
     st = "approved" if approve else "rejected"
     with _lock:
         c = get_conn()
+        # Không duyệt lô của đối tác đang bị khóa (trừ khi lô đã bị suspend do khóa)
+        if approve:
+            row = c.execute(
+                "SELECT cr.status FROM consignment_batches b"
+                " JOIN consignors cr ON cr.id=b.consignor_id WHERE b.id=?", (bid,)).fetchone()
+            if row and row["status"] == "locked":
+                return False
         cur = c.execute(
             "UPDATE consignment_batches SET status=?, sell_price=?, decided_at=?, decided_by=?, decide_note=?"
             " WHERE id=? AND status IN ('submitted','draft')",
@@ -6152,7 +6362,18 @@ def consign_release_due(limit: int = 200) -> list:
 
 
 def consign_payout_create(consignor_id: int, amount: int, channel: str, account_info: str) -> tuple:
-    """Tạo yêu cầu rút. Trả (ok, msg, payout_id)."""
+    """Tạo yêu cầu rút. Trả (ok, msg, payout_id).
+    FAIL-CLOSED: nếu không kiểm tra được trạng thái khóa thì từ chối, không cho rút."""
+    # Chặn đối tác bị khóa (fail-closed: lỗi DB -> từ chối rút)
+    try:
+        st = get_conn().execute("SELECT status FROM consignors WHERE id=?",
+                                (consignor_id,)).fetchone()
+    except Exception as e:
+        log.warning("consign_payout_create: không đọc được status consignor %s: %s",
+                    consignor_id, e)
+        return False, "Lỗi hệ thống, vui lòng thử lại sau", 0
+    if st and st["status"] == "locked":
+        return False, "Tài khoản ký gửi của bạn đang bị khóa, liên hệ chủ shop", 0
     w = consign_wallets(consignor_id)
     _mw = get_setting("consign_min_withdraw", "")
     _fw = get_setting("consign_withdraw_fee", "")
@@ -6177,9 +6398,10 @@ def consign_payout_create(consignor_id: int, amount: int, channel: str, account_
         c = get_conn()
         cur = c.execute(
             "INSERT INTO consignment_payouts (consignor_id, amount, fee, net, channel, account_info, status, created_at)"
-            " VALUES (?,?,?,?,?,?,'pending',?)",
+            " VALUES (?,?,?,?,?,?,'pending',?) RETURNING id",
             (consignor_id, amount, fee, net, channel, account_info, now))
-        pid = cur.lastrowid
+        row = cur.fetchone()
+        pid = row["id"] if row else cur.lastrowid
         c.execute("INSERT INTO consignment_ledger (consignor_id, kind, amount, ref_type, ref_id, note, created_at)"
                   " VALUES (?,?,?,?,?,?,?)",
                   (consignor_id, "avail_out", amount, "payout", pid, "Yêu cầu rút", now))
@@ -6205,8 +6427,8 @@ def consign_payout_decide(pid: int, approve: bool, by_id: int, paid_ref: str = "
                       " VALUES (?,?,?,?,?,?,?)",
                       (cid, "withdraw_out", p["amount"], "payout", pid, f"Đã trả {paid_ref}", now))
         else:
-            c.execute("UPDATE consignment_payouts SET status='rejected', decided_at=?, decided_by=? WHERE id=?",
-                      (now, by_id, pid))
+            c.execute("UPDATE consignment_payouts SET status='rejected', decided_at=?, decided_by=?, reject_reason=? WHERE id=?",
+                      (now, by_id, paid_ref, pid))
             # trả tiền về khả dụng
             c.execute("INSERT INTO consignment_ledger (consignor_id, kind, amount, ref_type, ref_id, note, created_at)"
                       " VALUES (?,?,?,?,?,?,?)",
@@ -6261,6 +6483,37 @@ def consign_disputes_list(status: str = "open", limit: int = 30) -> list:
     q += " ORDER BY d.id DESC LIMIT ?"
     p.append(limit)
     return [dict(r) for r in get_conn().execute(q, p).fetchall()]
+
+
+def consign_dispute_respond(did: int, response_text: str, photo_file_id: str = "") -> bool:
+    """Đối tác phản hồi tranh chấp (lý do + ảnh, hoặc /boqua = đồng ý đền bù)."""
+    try:
+        with _lock:
+            c = get_conn()
+            c.execute(
+                "UPDATE consignment_disputes SET partner_responded=1, partner_response=?,"
+                " partner_photo_file_id=? WHERE id=?",
+                (response_text, photo_file_id, did))
+            c.commit()
+        return True
+    except Exception as e:
+        log.warning("consign_dispute_respond %s: %s", did, e)
+        return False
+
+
+def consign_disputes_remind_due() -> list:
+    """Tranh chấp mở, đối tác chưa phản hồi, deadline còn < 12h, chưa nhắc."""
+    now = int(time.time())
+    try:
+        rows = get_conn().execute(
+            "SELECT * FROM consignment_disputes WHERE status='open'"
+            " AND COALESCE(partner_responded,0)=0 AND COALESCE(reminded_at,0)=0"
+            " AND deadline_at > ? AND deadline_at < ?",
+            (now, now + 12 * 3600)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        log.warning("consign_disputes_remind_due: %s", e)
+        return []
 
 
 def consign_dispute_decide(did: int, decision: str, refund_amount: int, by_id: int) -> bool:
@@ -6396,6 +6649,17 @@ def outbox_enqueue(dedupe_key: str, kind: str, target_tg_id: int,
         return cur.lastrowid is not None
     except Exception as e:
         log.warning("outbox_enqueue lỗi: %s", e)
+        return False
+
+
+def outbox_exists(dedupe_key: str) -> bool:
+    """Kiểm tra tin đã nằm trong outbox chưa (phân biệt dedupe với lỗi DB)."""
+    try:
+        r = get_conn().execute(
+            "SELECT 1 FROM notification_outbox WHERE dedupe_key=? LIMIT 1",
+            (dedupe_key,)).fetchone()
+        return r is not None
+    except Exception:
         return False
 
 

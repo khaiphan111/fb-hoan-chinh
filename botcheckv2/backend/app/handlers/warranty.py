@@ -156,7 +156,7 @@ async def on_warranty_evidence(msg: Message, state: FSMContext):
             if co:
                 did = db.consign_dispute_create(co["id"], f"BH #{claim_id}: log sai mk",
                                                 msg.photo[-1].file_id)
-                # báo đối tác: acc của họ bị tranh chấp, tiền tạm giữ
+                # báo đối tác: acc của họ bị tranh chấp, tiền tạm giữ (qua outbox)
                 try:
                     cor = db.get_conn().execute(
                         "SELECT o.consignor_id, o.net_amount, i.uid, cr.tg_id"
@@ -165,13 +165,13 @@ async def on_warranty_evidence(msg: Message, state: FSMContext):
                         " JOIN consignors cr ON cr.id=o.consignor_id"
                         " WHERE o.id=?", (co["id"],)).fetchone()
                     if cor and cor["tg_id"]:
-                        await msg.bot.send_message(
-                            int(cor["tg_id"]),
+                        db.outbox_enqueue(
+                            f"dispute_open:{did}", "dispute_open", int(cor["tg_id"]),
                             f"⚠️ <b>Acc ký gửi bị tranh chấp</b>\n"
                             f"UID <code>{cor['uid'] or ''}</code> — khách yêu cầu BH #{claim_id}\n"
                             f"💰 {int(cor['net_amount']):,}đ tạm giữ đến khi shop xử lý xong.\n"
                             f"Vào /kygui → Tranh chấp để theo dõi.",
-                            parse_mode="HTML")
+                            "HTML", ref_consignor_id=int(cor["consignor_id"]))
                 except Exception:
                     pass
     except Exception:
@@ -188,8 +188,12 @@ async def on_warranty_evidence(msg: Message, state: FSMContext):
         warn = (f"\n\n⚠️ Bạn đã gửi <b>{week_cnt}</b> yêu cầu trong 7 ngày "
                 f"(giới hạn {maxw}) — yêu cầu này sẽ được admin kiểm tra kỹ.")
     uname = (msg.from_user.username or msg.from_user.full_name or "").strip()
+    is_consign = db.acc_order_is_consign(order_id)
+    consign_line = ("🤝 <b>Hàng ký gửi</b> — <i>đã tạo tranh chấp, "
+                    "chỉ chủ shop được xử lý.</i>\n" if is_consign else "")
     caption = (
         f"🛡 <b>Yêu cầu bảo hành #{claim_id}</b>\n"
+        f"{consign_line}"
         f"👤 {html.escape(uname)} (<code>{msg.from_user.id}</code>)\n"
         f"🧾 Đơn #{order_id} — {html.escape(order['cat_name'])} — {vnd(order['price'])}\n"
         f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"
@@ -217,8 +221,11 @@ async def on_bhdon(msg: Message):
     lines = ["🛡 <b>BẢO HÀNH ĐANG CHỜ</b>", "━━━━━━━━━━━━", ""]
     for w in claims:
         w = dict(w)
+        c_line = "🤝 <i>ký gửi — chỉ chủ shop xử lý</i>\n" \
+            if db.acc_order_is_consign(w.get("order_id") or 0) else ""
         lines.append(
             f"#{w['id']} — đơn <b>#{w['order_id']}</b> — {html.escape(w['cat_name'])}\n"
+            f"{c_line}"
             f"👤 UID <code>{html.escape(w['uid'] or '')}</code> | khách <code>{w['tg_id']}</code>\n"
             f"🔍 Bot check: <b>{html.escape(w['check_result'] or '?')}</b> | "
             f"{vn_time_str(ts=w['created_at'])}{' | 📸 có ảnh' if w.get('evidence') else ''}\n"
@@ -239,6 +246,26 @@ async def on_bhdone(msg: Message):
     cl = db.acc_warranty_get(cid)
     if not cl:
         await msg.answer(f"❌ Không tìm thấy khiếu nại <b>#{cid}</b>.", parse_mode="HTML")
+        return
+    # Đơn ký gửi: đã có tranh chấp riêng, chỉ chủ shop được chốt.
+    # Chặn admin phụ bấm /bhdone để tránh xử lý chồng/xử lý sai tiền đối tác.
+    try:
+        _cl = dict(cl)
+    except Exception:
+        _cl = {}
+    if db.acc_order_is_consign(_cl.get("order_id") or 0) \
+            and not _perms.is_super(msg.from_user.id):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📤 Báo chủ shop",
+                                  callback_data=f"kgreport:{_cl.get('order_id')}")]])
+        await msg.answer(
+            "🤝 <b>Đây là đơn hàng ký gửi.</b>\n\n"
+            "Khiếu nại này đã được chuyển thành tranh chấp — "
+            "chỉ <b>chủ shop</b> mới được xử lý "
+            "(/kyguiadm → Tranh chấp).\n"
+            "Bạn vui lòng báo khách chờ chủ shop quyết định, "
+            "không tự hoàn tiền hay đánh dấu xong.",
+            parse_mode="HTML", reply_markup=kb)
         return
     db.acc_warranty_set_status(cid, "DONE", handled_by=msg.from_user.id)
     handler_name = html.escape(msg.from_user.full_name or "")

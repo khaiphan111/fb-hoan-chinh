@@ -87,6 +87,7 @@ class ConsignAdminPrice(StatesGroup):
 
 class ConsignAdminPayout(StatesGroup):
     paid_ref = State()
+    reject_reason = State()
 
 
 class ConsignAdminSheet(StatesGroup):
@@ -95,6 +96,11 @@ class ConsignAdminSheet(StatesGroup):
 
 class ConsignBotCfg(StatesGroup):
     token = State()
+
+
+class KgReport(StatesGroup):
+    """Admin phụ báo sự cố đơn ký gửi cho chủ shop."""
+    waiting_for_desc = State()
 
 
 # ================= /kygui — menu đối tác =================
@@ -829,8 +835,13 @@ async def _kg_submit(cb: CallbackQuery, state: FSMContext):
     await _cb_answer(cb)
     d = await state.get_data()
     bid = d.get("batch_id")
-    if not bid or not db.consign_batch_submit(bid):
+    if not bid:
         await cb.message.answer("Lô trống hoặc đã gửi rồi.")
+        await state.clear()
+        return
+    ok, msg = db.consign_batch_submit(bid)
+    if not ok:
+        await cb.message.answer(f"❌ Không gửi được lô. {msg or 'Lô trống hoặc đã gửi rồi.'}")
         await state.clear()
         return
     await state.clear()
@@ -1460,6 +1471,7 @@ async def _kg_disp_agree(cb: CallbackQuery):
 
 class DisputeRespondState(StatesGroup):
     waiting_text = State()
+    waiting_photo = State()
 
 
 @router.callback_query(F.data.startswith("kg:dispno:"))
@@ -1489,22 +1501,44 @@ async def _kg_disp_respond_text(msg: Message, state: FSMContext):
         return
     d = await state.get_data()
     did = d.get("_disp_id", 0)
+    await state.update_data(_disp_text=txt[:500])
+    await state.set_state(DisputeRespondState.waiting_photo)
+    await msg.answer("📷 Gửi <b>ảnh bằng chứng</b> của bạn (nếu có).\n"
+                     "Gõ /boqua nếu không có ảnh.", parse_mode="HTML")
+
+
+@router.message(DisputeRespondState.waiting_photo)
+async def _kg_disp_respond_photo(msg: Message, state: FSMContext):
+    d = await state.get_data()
+    did = d.get("_disp_id", 0)
+    txt = d.get("_disp_text", "")
+    photo_fid = ""
+    if msg.photo:
+        photo_fid = msg.photo[-1].file_id
+    elif msg.text and msg.text.strip().lower() == "/boqua":
+        pass
+    else:
+        await msg.answer("Vui lòng gửi ảnh hoặc gõ /boqua.")
+        return
     await state.clear()
     c = db.consignor_get(msg.from_user.id)
     db.get_conn().execute(
-        "UPDATE consignment_disputes SET partner_responded=1, partner_response=? WHERE id=?",
-        (txt[:500], did))
+        "UPDATE consignment_disputes SET partner_responded=1, partner_response=?,"
+        " partner_photo_file_id=? WHERE id=?",
+        (txt, photo_fid, did))
     db.get_conn().commit()
     await msg.answer("✅ Đã gửi phản hồi. Shop sẽ xem xét cả 2 bên rồi quyết định.")
-    # Báo admin
+    # Báo admin (qua outbox chống mất tin)
     try:
         admin_id = int(db.get_setting("admin_tg_id", "0") or 0)
         if admin_id:
-            await msg.bot.send_message(admin_id,
-                f"📝 <b>Đối tác phản hồi tranh chấp #{did}</b>\n"
-                f"👤 {html.escape(c['name'])}\n{html.escape(txt[:300])}\n\n"
-                f"Xem: /kyguiadm → Tranh chấp",
-                parse_mode="HTML")
+            body = (f"📝 <b>Đối tác phản hồi tranh chấp #{did}</b>\n"
+                    f"👤 {html.escape(c['name'])}\n{html.escape(txt[:300])}\n\n"
+                    f"Xem: /kyguiadm → Tranh chấp")
+            if photo_fid:
+                body += "\n📷 (có ảnh bằng chứng kèm theo)"
+            db.outbox_enqueue(f"dispute_respond:{did}", "dispute_respond", admin_id,
+                              body, "HTML")
     except Exception as e:
         log.warning("dispute respond notify admin #%s: %s", did, e)
     C.audit(msg.from_user.id, c["name"], "dispute_respond", f"did={did}")
@@ -1800,12 +1834,18 @@ async def _kga_conlock(cb: CallbackQuery):
     if not _is_super(cb.from_user.id):
         return
     cid = int(cb.data.split(":")[2])
-    db.consignor_set_status(cid, "locked", cb.from_user.id)
+    res = db.consign_lock_partner(cid, cb.from_user.id)
     c = db.consignor_get_by_id(cid)
-    await cb.message.edit_text(_kga_con_text(c) + "\n\n🔒 <b>Đã khóa.</b>", parse_mode="HTML",
-                               reply_markup=_kga_con_kb(c))
+    await cb.message.edit_text(_kga_con_text(c) + f"\n\n🔒 <b>Đã khóa.</b>\n"
+                               f"⏸ Tạm dừng {res['batches']} lô ({res['items']} acc đang bán).",
+                               parse_mode="HTML", reply_markup=_kga_con_kb(c))
     try:
-        await C.notify(c["tg_id"], "🔒 <b>Tài khoản ký gửi của bạn đã bị khóa.</b>\nLiên hệ chủ shop để biết thêm.", cb.bot)
+        await C.notify(c["tg_id"],
+            f"🔒 <b>Tài khoản ký gửi của bạn đã bị khóa.</b>\n"
+            f"⏸ {res['batches']} lô đang bán đã tạm dừng ({res['items']} acc).\n"
+            f"💰 Tiền đang giữ trong thời gian BH vẫn được giữ nguyên.\n"
+            f"Liên hệ chủ shop để biết thêm.",
+            cb.bot)
     except Exception:
         pass
     C.audit(cb.from_user.id, cb.from_user.full_name, "lock_consignor", f"cid={cid}")
@@ -1817,10 +1857,18 @@ async def _kga_conunlock(cb: CallbackQuery):
     if not _is_super(cb.from_user.id):
         return
     cid = int(cb.data.split(":")[2])
-    db.consignor_set_status(cid, "active", cb.from_user.id)
+    res = db.consign_unlock_partner(cid, cb.from_user.id)
     c = db.consignor_get_by_id(cid)
-    await cb.message.edit_text(_kga_con_text(c) + "\n\n🔓 <b>Đã mở khóa.</b>", parse_mode="HTML",
-                               reply_markup=_kga_con_kb(c))
+    await cb.message.edit_text(_kga_con_text(c) + f"\n\n🔓 <b>Đã mở khóa.</b>\n"
+                               f"▶️ Mở bán lại {res['batches']} lô ({res['items']} acc).",
+                               parse_mode="HTML", reply_markup=_kga_con_kb(c))
+    try:
+        await C.notify(c["tg_id"],
+            f"🔓 <b>Tài khoản ký gửi của bạn đã được mở khóa.</b>\n"
+            f"▶️ {res['batches']} lô đã mở bán lại ({res['items']} acc).",
+            cb.bot)
+    except Exception:
+        pass
     C.audit(cb.from_user.id, cb.from_user.full_name, "unlock_consignor", f"cid={cid}")
 
 
@@ -2179,17 +2227,24 @@ async def _kga_price_input(msg: Message, state: FSMContext):
             fee_line = f"\n💰 Phí shop ăn: <b>{fee_amt:,}đ</b>/acc" if fee_amt >= 0 else ""
             await msg.answer(f"✅ Đã đổi giá lô <b>{b['code']}</b> → <b>{v:,}đ</b>/acc{fee_line}\n"
                              f"<i>Các acc chưa bán đã cập nhật giá mới.</i>", parse_mode="HTML")
-            # báo đối tác
+            # báo đối tác qua outbox (chống mất tin khi crash)
             try:
                 r = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?",
                                           (b["consignor_id"],)).fetchone()
                 if r and r["tg_id"]:
-                    ok, err = await _send_notify_retry(
-                        msg.bot, r["tg_id"],
-                        f"💲 <b>Giá bán lô {b['code']} đã đổi</b>\nGiá mới: <b>{v:,}đ</b>/acc.")
-                    db.consign_notif_log(b["consignor_id"], "price_change", bid, "main", ok, err)
-                    if not ok:
-                        log.warning("price_change notify bid=%s: %s", bid, err)
+                    dedupe = f"price_change:{bid}:{v}"
+                    text = (f"💲 <b>Giá bán lô {b['code']} đã đổi</b>\n"
+                            f"Giá mới: <b>{v:,}đ</b>/acc.")
+                    ok_q = db.outbox_enqueue(dedupe, "price_change", int(r["tg_id"]),
+                                             text, "HTML",
+                                             ref_consignor_id=int(b["consignor_id"]))
+                    # Chỉ log thành công khi tin đã nằm chắc trong outbox
+                    if ok_q or db.outbox_exists(dedupe):
+                        db.consign_notif_log(b["consignor_id"], "price_change", bid,
+                                             "main", True, "")
+                    else:
+                        db.consign_notif_log(b["consignor_id"], "price_change", bid,
+                                             "main", False, "enqueue failed")
             except Exception as e:
                 log.warning("price_change notify bid=%s: %s", bid, e)
                 db.consign_notif_log(b["consignor_id"], "price_change", bid, "main", False, str(e)[:200])
@@ -2225,20 +2280,25 @@ async def _kga_price_input(msg: Message, state: FSMContext):
                 "JOIN consignment_batches b ON b.consignor_id=c.id "
                 "WHERE b.category_id=? AND b.status='listed' AND c.status='active'",
                 (d["_fee_cat"],)).fetchall()
-            sent = 0
+            queued = 0
             for p in partners:
-                ok, err = await _send_notify_retry(
-                    msg.bot, p["tg_id"],
-                    f"💰 <b>Phí ký gửi thay đổi</b>\n"
-                    f"Loại: {html.escape(cat_name)}\n"
-                    f"Phí mới: <b>{fixed:,}đ + {pct}%</b>/acc bán được.\n"
-                    f"<i>Áp dụng cho các acc bán từ bây giờ.</i>")
-                db.consign_notif_log(p["id"], "fee_change", d["_fee_cat"], "main", ok, err)
-                if ok:
-                    sent += 1
+                dedupe = f"fee_change:{d['_fee_cat']}:{fixed}:{pct}:{p['id']}"
+                text = (f"💰 <b>Phí ký gửi thay đổi</b>\n"
+                        f"Loại: {html.escape(cat_name)}\n"
+                        f"Phí mới: <b>{fixed:,}đ + {pct}%</b>/acc bán được.\n"
+                        f"<i>Áp dụng cho các acc bán từ bây giờ.</i>")
+                ok_q = db.outbox_enqueue(dedupe, "fee_change", int(p["tg_id"]),
+                                         text, "HTML",
+                                         ref_consignor_id=int(p["id"]))
+                # Chỉ log thành công khi tin đã nằm chắc trong outbox
+                if ok_q or db.outbox_exists(dedupe):
+                    queued += 1
+                    db.consign_notif_log(p["id"], "fee_change", d["_fee_cat"],
+                                         "main", True, "")
                 else:
-                    log.warning("fee_change notify partner=%s: %s", p["id"], err)
-            await msg.answer(f"📣 Đã báo phí mới cho {sent} đối tác.")
+                    db.consign_notif_log(p["id"], "fee_change", d["_fee_cat"],
+                                         "main", False, "enqueue failed")
+            await msg.answer(f"📣 Đã xếp hàng báo phí mới cho {queued} đối tác.")
         except Exception as e:
             log.warning("fee_change notify cat=%s: %s", d["_fee_cat"], e)
             await msg.answer("⚠️ Đã lưu phí nhưng gửi thông báo lỗi, kiểm tra log.")
@@ -2456,22 +2516,50 @@ async def _kga_paid_ref(msg: Message, state: FSMContext):
         await msg.answer(f"✅ Đã duyệt rút #{pid} ({p['net']:,}đ).")
         r = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?", (p["consignor_id"],)).fetchone()
         if r:
-            await C.notify(r["tg_id"], f"💸 <b>Tiền rút #{pid} đã được chuyển!</b>\n{p['net']:,}đ → {p['channel']}"
-                           + (f"\nMã GD: {ref}" if ref else ""), msg.bot)
+            txt = (f"💸 <b>Tiền rút #{pid} đã được chuyển!</b>\n{p['net']:,}đ → {p['channel']}"
+                   + (f"\nMã GD: {ref}" if ref else ""))
+            db.outbox_enqueue(f"payout_approve:{pid}", "payout_approve",
+                              int(r["tg_id"]), txt, "HTML",
+                              ref_consignor_id=int(p["consignor_id"]))
         C.audit(msg.from_user.id, msg.from_user.full_name, "approve_payout", f"pid={pid}")
     else:
         await msg.answer("Yêu cầu đã được xử lý trước đó.")
 
 
 @router.callback_query(F.data.startswith("kga:payno:"))
-async def _kga_payno(cb: CallbackQuery):
+async def _kga_payno(cb: CallbackQuery, state: FSMContext):
     await _cb_answer(cb)
     if not _is_super(cb.from_user.id):
         return
     pid = int(cb.data.split(":")[2])
-    if db.consign_payout_decide(pid, False, cb.from_user.id):
-        await cb.message.answer(f"❌ Đã từ chối rút #{pid}, tiền trả về ví khả dụng.")
-        C.audit(cb.from_user.id, cb.from_user.full_name, "reject_payout", f"pid={pid}")
+    await state.update_data(_kga_pid=pid)
+    await state.set_state(ConsignAdminPayout.reject_reason)
+    await cb.message.answer(f"Nhập <b>lý do từ chối</b> rút #{pid} (gõ /boqua nếu không có lý do cụ thể):",
+                            parse_mode="HTML")
+
+
+@router.message(ConsignAdminPayout.reject_reason)
+async def _kga_payno_reason(msg: Message, state: FSMContext):
+    d = await state.get_data()
+    pid = d["_kga_pid"]
+    reason = "" if msg.text.strip() == "/boqua" else msg.text.strip()[:200]
+    await state.clear()
+    p = db.get_conn().execute("SELECT * FROM consignment_payouts WHERE id=?", (pid,)).fetchone()
+    if db.consign_payout_decide(pid, False, msg.from_user.id, reason):
+        await msg.answer(f"❌ Đã từ chối rút #{pid}, tiền trả về ví khả dụng.")
+        r = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?", (p["consignor_id"],)).fetchone()
+        if r:
+            txt = (f"❌ <b>Yêu cầu rút #{pid} bị từ chối.</b>\n"
+                   f"{p['amount']:,}đ đã trả về ví khả dụng của bạn."
+                   + (f"\nLý do: {html.escape(reason)}" if reason else "")
+                   + "\nLiên hệ chủ shop nếu cần hỗ trợ.")
+            # qua outbox để chống mất tin
+            db.outbox_enqueue(f"payout_reject:{pid}", "payout_reject",
+                              int(r["tg_id"]), txt, "HTML",
+                              ref_consignor_id=int(p["consignor_id"]))
+        C.audit(msg.from_user.id, msg.from_user.full_name, "reject_payout", f"pid={pid}")
+    else:
+        await msg.answer("Yêu cầu đã được xử lý trước đó.")
 
 
 # ---- Tranh chấp ----
@@ -2517,6 +2605,11 @@ async def _kga_disp(cb: CallbackQuery):
         else:
             await cb.message.answer(f"⚠️ <b>Tranh chấp #{did}</b> (chưa có ảnh!)\nLý do: {html.escape(d['reason'])}{resp}",
                                     parse_mode="HTML", reply_markup=kb)
+        # Ảnh bằng chứng phản bác của đối tác (nếu có)
+        if d.get("partner_photo_file_id"):
+            await cb.message.answer_photo(d["partner_photo_file_id"],
+                                          caption=f"📷 <b>Ảnh phản bác của đối tác</b> (tranh chấp #{did})",
+                                          parse_mode="HTML")
     except Exception:
         await cb.message.answer("Không tải được ảnh.", reply_markup=kb)
 
@@ -2541,15 +2634,17 @@ async def _kga_dref(cb: CallbackQuery):
 
 
 async def _notify_dispute_done(cb, did: int, text: str):
-    """Báo đối tác khi tranh chấp được xử lý xong."""
+    """Báo đối tác khi tranh chấp được xử lý xong (qua outbox chống mất tin)."""
     try:
         r = db.get_conn().execute(
-            "SELECT cr.tg_id FROM consignment_disputes d"
+            "SELECT cr.tg_id, o.consignor_id FROM consignment_disputes d"
             " JOIN consignment_orders o ON o.id=d.order_id"
             " JOIN consignors cr ON cr.id=o.consignor_id"
             " WHERE d.id=?", (did,)).fetchone()
         if r and r["tg_id"]:
-            await cb.bot.send_message(int(r["tg_id"]), text, parse_mode="HTML")
+            db.outbox_enqueue(f"dispute_done:{did}", "dispute_done",
+                              int(r["tg_id"]), text, "HTML",
+                              ref_consignor_id=int(r["consignor_id"] or 0))
     except Exception:
         pass
 
@@ -2694,3 +2789,75 @@ def _promo_decide_hook(pid: int, accept: bool) -> bool:
 
 
 db.consign_promo_decide = _promo_decide_hook
+
+
+# ================= Admin phụ báo sự cố ký gửi cho chủ shop =================
+@router.callback_query(F.data.startswith("kgreport:"))
+async def _on_kgreport(cb: CallbackQuery, state: FSMContext):
+    """Nút '📤 Báo chủ shop' trong tin báo đơn ký gửi (dành cho admin phụ)."""
+    if not _perms.is_admin(cb.from_user.id):
+        await _cb_answer(cb, "🚫 Chỉ admin mới dùng được.", show_alert=True)
+        return
+    try:
+        order_id = int(cb.data.split(":", 1)[1])
+    except Exception:
+        await _cb_answer(cb, "❌ Đơn không hợp lệ.", show_alert=True)
+        return
+    if not db.acc_order_is_consign(order_id):
+        await _cb_answer(cb, "Đơn này không phải hàng ký gửi.", show_alert=True)
+        return
+    await state.set_state(KgReport.waiting_for_desc)
+    await state.update_data(kgreport_order_id=order_id)
+    await _cb_answer(cb)
+    await cb.message.answer(
+        f"📤 <b>Báo sự cố đơn ký gửi #{order_id} cho chủ shop</b>\n\n"
+        f"Mô tả ngắn gọn sự cố (vd: khách báo acc lỗi, cần kiểm tra):",
+        parse_mode="HTML")
+
+
+@router.message(KgReport.waiting_for_desc)
+async def _on_kgreport_desc(msg: Message, state: FSMContext):
+    """Nhận mô tả sự cố rồi chuyển cho chủ shop."""
+    if not _perms.is_admin(msg.from_user.id):
+        await state.clear()
+        return
+    d = await state.get_data()
+    order_id = d.get("kgreport_order_id")
+    desc = (msg.text or "").strip()[:500]
+    await state.clear()
+    if not order_id or not desc:
+        await msg.answer("❌ Đã hủy (thiếu thông tin).")
+        return
+    order = db.acc_get_order(order_id)
+    order = dict(order) if order else {}
+    owner_id = 0
+    try:
+        owner_id = int(db.get_setting("admin_tg_id", "0") or 0)
+    except Exception:
+        pass
+    reporter = html.escape(msg.from_user.full_name or str(msg.from_user.id))
+    text = (
+        f"📤 <b>Admin phụ báo sự cố ký gửi</b>\n"
+        f"👤 Người báo: {reporter} (<code>{msg.from_user.id}</code>)\n"
+        f"🧾 Đơn ký gửi: <b>#{order_id}</b> — "
+        f"{html.escape(order.get('cat_name') or '')} — "
+        f"UID <code>{html.escape(order.get('uid') or '')}</code>\n"
+        f"📝 Sự cố: {html.escape(desc)}\n\n"
+        f"<i>Xem: /kyguiadm → Tranh chấp / Đơn hàng</i>"
+    )
+    sent = False
+    if owner_id:
+        try:
+            await msg.bot.send_message(owner_id, text, parse_mode="HTML")
+            sent = True
+        except Exception as e:
+            log.warning("kgreport gửi chủ shop lỗi: %s", e)
+    try:
+        C.audit(msg.from_user.id, msg.from_user.full_name, "kgreport",
+                f"order={order_id} desc={desc[:100]}")
+    except Exception:
+        pass
+    if sent:
+        await msg.answer("✅ Đã báo sự cố cho chủ shop. Cảm ơn bạn!")
+    else:
+        await msg.answer("⚠️ Không gửi được cho chủ shop, vui lòng báo trực tiếp.")

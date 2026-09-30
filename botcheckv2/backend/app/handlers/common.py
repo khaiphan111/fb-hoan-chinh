@@ -527,6 +527,19 @@ def _purchase_alert_text(buyer, orders: list) -> str:
              f"👤 Khách: <b>{e(fname)}</b>"
              + (f" @{e(uname)}" if uname else "")
              + f" — <code>{buyer.id}</code>"]
+    # Đánh dấu đơn ký gửi (1 query cho cả list) để admin phụ biết
+    # đây là hàng đối tác — BH/tranh chấp do chủ shop xử lý, không tự hoàn tiền.
+    consign_stock = set()
+    try:
+        sids = [o.get("stock_id") for o in orders if o.get("stock_id")]
+        if sids:
+            q = ",".join("?" * len(sids))
+            rows = db.get_conn().execute(
+                f"SELECT id FROM acc_stock WHERE id IN ({q}) "
+                f"AND COALESCE(source,'shop')='consign'", sids).fetchall()
+            consign_stock = {r["id"] for r in rows}
+    except Exception:
+        pass
     for o in orders:
         lines += ["",
                   f"🆔 Mã đơn: <code>{o['id']}</code>",
@@ -534,6 +547,10 @@ def _purchase_alert_text(buyer, orders: list) -> str:
                   f"👤 UID: <code>{e(o.get('uid') or '')}</code>",
                   f"🔑 MK: <code>{e(_mask_secret(o.get('password')))}</code>",
                   "🔒 <i>MK/Mail/2FA đã che mờ để bảo mật.</i>"]
+        if o.get("stock_id") in consign_stock:
+            lines.append(
+                "🤝 <b>Hàng ký gửi</b> — <i>BH/tranh chấp do chủ shop xử lý, "
+                "không tự hoàn tiền.</i>")
         if o.get("created_date"):
             lines.append(f"📅 Ngày tạo: <code>{e(o['created_date'])}</code>")
         if o.get("backup_mail"):
@@ -579,11 +596,27 @@ async def _notify_purchase_admin(bot, buyer, orders: list):
             priv = set(_notify_bot.privileged_ids())
         except Exception:
             priv = set()
+        # Nút "📤 Báo chủ shop" cho đơn ký gửi (cầu nối admin phụ -> chủ shop)
+        kg_kb = None
+        try:
+            kg_ids = [o["id"] for o in orders
+                      if o.get("id") and db.acc_order_is_consign(o["id"])]
+            if kg_ids:
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                kg_kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text=f"📤 Báo chủ shop (đơn #{oid})",
+                        callback_data=f"kgreport:{oid}")]
+                    for oid in kg_ids[:5]
+                ])
+        except Exception:
+            kg_kb = None
         for tid in _perms.notify_extra_ids("orders"):
             if tid in priv:
                 continue
             try:
-                await bot.send_message(tid, text, parse_mode="HTML")
+                await bot.send_message(tid, text, parse_mode="HTML",
+                                       reply_markup=kg_kb)
             except Exception:
                 pass
     except Exception as e:
@@ -1072,6 +1105,24 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
             pass
     # Báo admin: thông tin khách + acc đã mua
     await _notify_purchase_admin(bot, from_user, delivered)
+    # Đơn nhiều acc: nút tải full thông tin tất cả acc (2 định dạng) ở dòng cuối
+    # Dùng token ngắn thay vì nhét order ID vào callback (giới hạn 64 bytes Telegram)
+    if len(delivered) > 1:
+        order_ids = [int(o["id"]) for o in delivered]
+        try:
+            file_token = db.acc_file_token_create(from_user.id, order_ids)
+        except Exception:
+            file_token = ""
+        if file_token:
+            kb_all = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📄 Tải full .txt (tất cả acc)",
+                                      callback_data=f"accfileall:{file_token}:txt"),
+                 InlineKeyboardButton(text="📊 Tải full .xlsx (tất cả acc)",
+                                      callback_data=f"accfileall:{file_token}:xlsx")],
+            ])
+            await msg.answer(
+                f"📦 Đơn này có <b>{len(delivered)} acc</b> — tải full thông tin tất cả acc:",
+                parse_mode="HTML", reply_markup=kb_all)
     # Quà tặng kèm: credits + vé quay
     extras = []
     bonus_per = int(c.get("credit_bonus") or 0)

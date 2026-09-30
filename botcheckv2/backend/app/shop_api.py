@@ -461,6 +461,7 @@ class ConsignBatchDecideIn(BaseModel):
 class ConsignPayoutDecideIn(BaseModel):
     approve: bool
     paid_ref: str = ""
+    reject_reason: str = ""
 
 
 class ConsignDisputeDecideIn(BaseModel):
@@ -494,6 +495,236 @@ def consign_consignor_status(cid: int, body: dict, admin=Depends(require_role("s
         return {"ok": False, "error": "status không hợp lệ"}
     ok = db.consignor_set_status(cid, st, int(admin["id"] or 0))
     return {"ok": ok}
+
+
+@router.get("/consign/consignors/{cid}")
+def consign_consignor_detail(cid: int, admin=Depends(require_role("super_admin"))):
+    """Chi tiết đối tác: ví, số lô, số acc bán, trạng thái Sheet, bot báo riêng."""
+    c = db.consignor_get_by_id(cid)
+    if not c:
+        return {"ok": False, "error": "Không tìm thấy đối tác"}
+    c["wallets"] = db.consign_wallets(cid)
+    c["n_batch"] = db.get_conn().execute(
+        "SELECT COUNT(*) v FROM consignment_batches WHERE consignor_id=?", (cid,)).fetchone()["v"]
+    c["n_sold"] = db.get_conn().execute(
+        "SELECT COUNT(*) v FROM consignment_orders WHERE consignor_id=?", (cid,)).fetchone()["v"]
+    c["notify_bot_token"] = "•••" if (c.get("notify_bot_token") or "").strip() else ""
+    return {"ok": True, "data": c}
+
+
+@router.get("/consign/consignors/{cid}/batches")
+def consign_consignor_batches(cid: int, admin=Depends(require_role("super_admin"))):
+    return {"ok": True, "data": db.consign_batches_list(cid, "", 50)}
+
+
+@router.get("/consign/consignors/{cid}/notifs")
+def consign_consignor_notifs(cid: int, admin=Depends(require_role("super_admin"))):
+    """Lịch sử tin đã báo cho đối tác (giống bot: 📜 Lịch sử tin báo)."""
+    return {"ok": True, "data": db.consign_notif_history(cid, 30)}
+
+
+class ConsignSheetLinkIn(BaseModel):
+    sheet_url: str
+
+
+@router.post("/consign/consignors/{cid}/sheet/auto")
+async def consign_sheet_auto(cid: int, admin=Depends(require_role("super_admin"))):
+    """Tạo Sheet kho riêng tự động (giống bot: vẫn phải Share tay 1 lần)."""
+    from . import consign_sheet as _cs
+    c = db.consignor_get_by_id(cid)
+    if not c:
+        return {"ok": False, "error": "Không tìm thấy đối tác"}
+    if (c.get("sheet_id") or "").strip():
+        return {"ok": False, "error": "Đối tác đã có Sheet rồi"}
+    email = (c.get("sheet_email") or "").strip()
+    if not email:
+        return {"ok": False, "error": "Đối tác chưa có email Google. Bảo họ vào /kygui → 📧 Email kho Sheet để cập nhật trước."}
+    r = await _cs.create_partner_spreadsheet(c["name"])
+    if not r:
+        return {"ok": False, "error": "Tạo Sheet thất bại, thử lại sau hoặc dùng cách gắn link tay"}
+    db.consignor_update(cid, sheet_id=r["id"], sheet_url=r["url"], sheet_access_granted=0)
+    return {"ok": True, "data": {"sheet_url": r["url"], "sheet_email": email}}
+
+
+@router.post("/consign/consignors/{cid}/sheet/link")
+def consign_sheet_link(cid: int, body: ConsignSheetLinkIn,
+                       admin=Depends(require_role("super_admin"))):
+    """Gắn link Sheet riêng cho đối tác."""
+    from . import consign_sheet as _cs
+    sid = _cs.extract_sheet_id(body.sheet_url or "")
+    if not sid:
+        return {"ok": False, "error": "Link không hợp lệ. Dán link Google Sheets dạng .../spreadsheets/d/XXX/..."}
+    db.consignor_update(cid, sheet_id=sid,
+                        sheet_url=f"https://docs.google.com/spreadsheets/d/{sid}",
+                        sheet_access_granted=0)
+    return {"ok": True}
+
+
+@router.post("/consign/consignors/{cid}/sheet/grant")
+def consign_sheet_grant(cid: int, admin=Depends(require_role("super_admin"))):
+    """Xác nhận đã mở quyền xem Sheet + báo đối tác (giống bot)."""
+    c = db.consignor_get_by_id(cid)
+    if not c or not (c.get("sheet_id") or "").strip():
+        return {"ok": False, "error": "Chưa gắn link Sheet"}
+    db.consignor_update(cid, sheet_access_granted=1)
+    try:
+        if c.get("tg_id"):
+            txt = (f"📊 <b>Kho Sheet riêng của bạn đã sẵn sàng!</b>\n"
+                   f"Xem toàn bộ acc ký gửi (tự cập nhật):\n{c['sheet_url']}")
+            db.outbox_enqueue(f"sheet_grant:{cid}", "sheet_grant",
+                              int(c["tg_id"]), txt, "HTML", ref_consignor_id=cid)
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@router.post("/consign/consignors/{cid}/sheet/sync")
+async def consign_sheet_sync(cid: int, admin=Depends(require_role("super_admin"))):
+    """Đồng bộ kho lên Sheet riêng ngay (giống bot)."""
+    from . import consign_sheet as _cs
+    c = db.consignor_get_by_id(cid)
+    if not c or not (c.get("sheet_id") or "").strip():
+        return {"ok": False, "error": "Đối tác chưa được gắn Sheet riêng"}
+    n = await _cs.push_consign_warehouse(cid)
+    if n == -2:
+        return {"ok": False, "error": "Đối tác chưa được gắn Sheet riêng"}
+    if n < 0:
+        return {"ok": False, "error": "Đồng bộ thất bại, thử lại sau"}
+    return {"ok": True, "data": {"synced": n}}
+
+
+@router.post("/consign/consignors/{cid}/lock")
+def consign_consignor_lock(cid: int, admin=Depends(require_role("super_admin"))):
+    """Khóa đối tác THẬT: tạm dừng lô đang hoạt động + acc đang bán (như bot)."""
+    res = db.consign_lock_partner(cid, int(admin["id"] or 0))
+    try:
+        c = db.consignor_get_by_id(cid)
+        if c and c["tg_id"]:
+            txt = (f"🔒 <b>Tài khoản ký gửi của bạn đã bị khóa.</b>\n"
+                   f"⏸ {res['batches']} lô đang bán đã tạm dừng ({res['items']} acc).\n"
+                   f"💰 Tiền đang giữ trong thời gian BH vẫn được giữ nguyên.\n"
+                   f"Liên hệ chủ shop để biết thêm.")
+            db.outbox_enqueue(f"consignor_lock:{cid}", "consignor_lock",
+                              int(c["tg_id"]), txt, "HTML", ref_consignor_id=cid)
+    except Exception:
+        pass
+    return {"ok": True, "data": res}
+
+
+@router.post("/consign/consignors/{cid}/unlock")
+def consign_consignor_unlock(cid: int, admin=Depends(require_role("super_admin"))):
+    """Mở khóa: khôi phục lô/acc về trạng thái trước khi khóa."""
+    res = db.consign_unlock_partner(cid, int(admin["id"] or 0))
+    try:
+        c = db.consignor_get_by_id(cid)
+        if c and c["tg_id"]:
+            txt = (f"🔓 <b>Tài khoản ký gửi của bạn đã được mở khóa.</b>\n"
+                   f"▶️ {res['batches']} lô đã mở bán lại ({res['items']} acc).")
+            db.outbox_enqueue(f"consignor_unlock:{cid}", "consignor_unlock",
+                              int(c["tg_id"]), txt, "HTML", ref_consignor_id=cid)
+    except Exception:
+        pass
+    return {"ok": True, "data": res}
+
+
+@router.post("/consign/consignors/{cid}/reject")
+def consign_consignor_reject(cid: int, admin=Depends(require_role("super_admin"))):
+    """Từ chối hồ sơ đăng ký đối tác (như nút ❌ Từ chối trên bot)."""
+    ok = db.consignor_set_status(cid, "banned", int(admin["id"] or 0))
+    try:
+        db.get_conn().execute(
+            "INSERT INTO admin_audit(tg_id, name, action, detail, created_at) VALUES(?,?,?,?,?)",
+            (int(admin["id"] or 0), "", "reject_consignor", f"cid={cid} (web)", int(__import__("time").time())))
+        db.get_conn().commit()
+    except Exception:
+        pass
+    return {"ok": ok}
+
+
+@router.get("/consign/batches/living")
+def consign_batches_living(limit: int = Query(30, le=100),
+                           admin=Depends(require_role("super_admin"))):
+    """Lô đang bán (approved/listed) kèm số acc chưa bán — như nút 🟢 Lô đang bán trên bot."""
+    rows = db.consign_batches_list(0, "approved", limit) + db.consign_batches_list(0, "listed", limit)
+    out = []
+    for b in rows:
+        n = db.get_conn().execute(
+            "SELECT COUNT(*) v FROM consignment_items WHERE batch_id=? AND status='listed'",
+            (b["id"],)).fetchone()["v"]
+        b = dict(b)
+        b["unsold"] = n
+        out.append(b)
+    return {"ok": True, "data": out}
+
+
+@router.post("/consign/batches/{bid}/reprice")
+def consign_batch_reprice(bid: int, body: dict, admin=Depends(require_role("super_admin"))):
+    """Sửa giá bán lô đang bán (chỉ acc chưa bán đổi giá)."""
+    try:
+        price = int(body.get("sell_price", 0) or 0)
+    except (TypeError, ValueError):
+        price = 0
+    if price <= 0:
+        return {"ok": False, "error": "Giá bán không hợp lệ"}
+    ok = db.consign_batch_update_price(bid, price, int(admin["id"] or 0))
+    if ok:
+        # Báo đối tác qua outbox (giống bot)
+        try:
+            b = db.consign_batch_get(bid)
+            r = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?", (b["consignor_id"],)).fetchone()
+            if r and r["tg_id"]:
+                txt = (f"💲 <b>Giá bán lô {b['code']} đã đổi</b>\n"
+                       f"Giá mới: <b>{price:,}đ</b>/acc.")
+                db.outbox_enqueue(f"price_change:{bid}:{price}", "price_change",
+                                  int(r["tg_id"]), txt, "HTML",
+                                  ref_consignor_id=int(b["consignor_id"]))
+        except Exception:
+            pass
+    return {"ok": ok}
+
+
+@router.get("/consign/batches/returns")
+def consign_batches_returns(limit: int = Query(30, le=100),
+                            admin=Depends(require_role("super_admin"))):
+    """Lô đối tác xin trả hàng — như nút 🔙 Lô xin trả hàng trên bot."""
+    rows = db.consign_batches_list(0, "return_requested", limit)
+    out = []
+    for b in rows:
+        n = db.get_conn().execute(
+            "SELECT COUNT(*) v FROM consignment_items WHERE batch_id=? AND status='listed'",
+            (b["id"],)).fetchone()["v"]
+        b = dict(b)
+        b["unsold"] = n
+        out.append(b)
+    return {"ok": True, "data": out}
+
+
+@router.post("/consign/batches/{bid}/return")
+def consign_batch_return(bid: int, body: dict, admin=Depends(require_role("super_admin"))):
+    """Duyệt/từ chối yêu cầu trả hàng."""
+    approve = bool(body.get("approve", False))
+    ok = db.consign_batch_do_return(bid, approve, int(admin["id"] or 0))
+    if ok:
+        # Báo đối tác qua outbox (giống bot)
+        try:
+            b = db.consign_batch_get(bid)
+            r = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?", (b["consignor_id"],)).fetchone()
+            if r and r["tg_id"]:
+                txt = (f"🔙 <b>Yêu cầu trả hàng lô {b['code']} đã được duyệt.</b>\nAcc chưa bán đã rời kệ."
+                       if approve else
+                       f"❌ <b>Yêu cầu trả hàng lô {b['code']} bị từ chối.</b>")
+                db.outbox_enqueue(f"batch_return:{bid}", "batch_return",
+                                  int(r["tg_id"]), txt, "HTML",
+                                  ref_consignor_id=int(b["consignor_id"]))
+        except Exception:
+            pass
+    return {"ok": ok}
+
+
+@router.get("/consign/finance")
+def consign_finance(admin=Depends(require_role("super_admin"))):
+    """Báo cáo tài chính ký gửi — như nút 📊 Báo cáo tài chính trên bot."""
+    return {"ok": True, "data": db.consign_finance_stats()}
 
 
 @router.get("/consign/batches")
@@ -550,6 +781,22 @@ def consign_batch_decide_ep(bid: int, body: ConsignBatchDecideIn,
                 db.consign_item_link_stock(it["id"], cur.lastrowid)
                 n += 1
         db.get_conn().execute("UPDATE consignment_batches SET status='listed', ok_items=? WHERE id=?", (n, bid))
+    # Báo đối tác qua outbox (giống bot)
+    try:
+        r = db.get_conn().execute("SELECT tg_id FROM consignors WHERE id=?", (b["consignor_id"],)).fetchone()
+        if r and r["tg_id"]:
+            if body.approve:
+                txt = (f"📦 <b>Lô {b['code']} đã được duyệt!</b>\n"
+                       f"{n} acc đã lên kệ, giá bán {body.sell_price:,}đ/acc.")
+            else:
+                txt = (f"❌ <b>Lô {b['code']} bị từ chối.</b>\n"
+                       + (f"Lý do: {body.note}" if body.note else "")
+                       + "\nLiên hệ chủ shop nếu cần hỗ trợ.")
+            db.outbox_enqueue(f"batch_decide:{bid}", "batch_decide",
+                              int(r["tg_id"]), txt, "HTML",
+                              ref_consignor_id=int(b["consignor_id"]))
+    except Exception:
+        pass
     return {"ok": True, "data": {"listed": n}}
 
 
@@ -579,7 +826,32 @@ def consign_payouts(status: str = Query(""), limit: int = Query(30, le=100),
 @router.post("/consign/payouts/{pid}/decide")
 def consign_payout_decide_ep(pid: int, body: ConsignPayoutDecideIn,
                              admin=Depends(require_role("super_admin"))):
-    ok = db.consign_payout_decide(pid, body.approve, int(admin["id"] or 0), body.paid_ref)
+    # khi từ chối: tham số thứ 4 được dùng làm lý do từ chối (lưu reject_reason)
+    ref = body.reject_reason if not body.approve else body.paid_ref
+    ok = db.consign_payout_decide(pid, body.approve, int(admin["id"] or 0), ref)
+    if ok:
+        # Báo đối tác qua outbox (giống bot)
+        try:
+            p = db.get_conn().execute(
+                "SELECT p.*, cr.tg_id FROM consignment_payouts p"
+                " JOIN consignors cr ON cr.id=p.consignor_id WHERE p.id=?", (pid,)).fetchone()
+            if p and p["tg_id"]:
+                if body.approve:
+                    txt = (f"💸 <b>Tiền rút #{pid} đã được chuyển!</b>\n{p['net']:,}đ → {p['channel']}"
+                           + (f"\nMã GD: {body.paid_ref}" if body.paid_ref else ""))
+                    db.outbox_enqueue(f"payout_approve:{pid}", "payout_approve",
+                                      int(p["tg_id"]), txt, "HTML",
+                                      ref_consignor_id=int(p["consignor_id"]))
+                else:
+                    txt = (f"❌ <b>Yêu cầu rút #{pid} bị từ chối.</b>\n"
+                           f"{p['amount']:,}đ đã trả về ví khả dụng của bạn."
+                           + (f"\nLý do: {body.reject_reason}" if body.reject_reason else "")
+                           + "\nLiên hệ chủ shop nếu cần hỗ trợ.")
+                    db.outbox_enqueue(f"payout_reject:{pid}", "payout_reject",
+                                      int(p["tg_id"]), txt, "HTML",
+                                      ref_consignor_id=int(p["consignor_id"]))
+        except Exception:
+            pass
     return {"ok": ok}
 
 
@@ -595,6 +867,30 @@ def consign_dispute_decide_ep(did: int, body: ConsignDisputeDecideIn,
     if body.decision not in ("refund_buyer", "replace", "reject"):
         return {"ok": False, "error": "decision không hợp lệ"}
     ok = db.consign_dispute_decide(did, body.decision, body.refund_amount, int(admin["id"] or 0))
+    if ok:
+        # Báo đối tác qua outbox (giống bot) — kẻo xử lý trên web mà đối tác không hay
+        try:
+            r = db.get_conn().execute(
+                "SELECT cr.tg_id, o.consignor_id, o.sell_price FROM consignment_disputes d"
+                " JOIN consignment_orders o ON o.id=d.order_id"
+                " JOIN consignors cr ON cr.id=o.consignor_id"
+                " WHERE d.id=?", (did,)).fetchone()
+            if r and r["tg_id"]:
+                if body.decision == "refund_buyer":
+                    amt = body.refund_amount or r["sell_price"] or 0
+                    txt = (f"❌ <b>Tranh chấp #{did}: shop đã hoàn đủ tiền cho khách.</b>\n"
+                           f"Bạn bị khấu trừ <b>{amt:,}đ</b> (chịu 100%).")
+                elif body.decision == "replace":
+                    txt = (f"✅ <b>Tranh chấp #{did}: shop đã đổi acc khác cho khách.</b>\n"
+                           f"Bạn không bị trừ tiền.")
+                else:
+                    txt = (f"✅ <b>Tranh chấp #{did}: shop đã từ chối khiếu nại.</b>\n"
+                           f"Tiền của bạn được mở giữ.")
+                db.outbox_enqueue(f"dispute_done:{did}", "dispute_done",
+                                  int(r["tg_id"]), txt, "HTML",
+                                  ref_consignor_id=int(r["consignor_id"] or 0))
+        except Exception:
+            pass
     return {"ok": ok}
 
 
@@ -606,7 +902,30 @@ def consign_fees(admin=Depends(require_role("super_admin"))):
 
 @router.post("/consign/fees")
 def consign_fee_set_ep(body: ConsignFeeIn, admin=Depends(require_role("super_admin"))):
+    old_fee = db.consign_fee_get(body.category_id)
     ok = db.consign_fee_set(body.category_id, body.fee_fixed, body.fee_pct, int(admin["id"] or 0))
+    if ok and (old_fee.get("fee_fixed") != body.fee_fixed
+               or float(old_fee.get("fee_pct") or 0) != float(body.fee_pct)):
+        # Báo các đối tác có lô đang bán thuộc loại này (giống bot) — chỉ khi phí thật sự đổi
+        try:
+            cat = db.get_conn().execute("SELECT name FROM acc_categories WHERE id=?",
+                                        (body.category_id,)).fetchone()
+            cat_name = cat["name"] if cat else f"#{body.category_id}"
+            partners = db.get_conn().execute(
+                "SELECT DISTINCT c.id, c.tg_id FROM consignors c "
+                "JOIN consignment_batches b ON b.consignor_id=c.id "
+                "WHERE b.category_id=? AND b.status='listed' AND c.status='active'",
+                (body.category_id,)).fetchall()
+            for p in partners:
+                dedupe = f"fee_change:{body.category_id}:{body.fee_fixed}:{body.fee_pct}:{p['id']}"
+                txt = (f"💰 <b>Phí ký gửi thay đổi</b>\n"
+                       f"Loại: {cat_name}\n"
+                       f"Phí mới: <b>{body.fee_fixed:,}đ + {body.fee_pct}%</b>/acc bán được.\n"
+                       f"<i>Áp dụng cho các acc bán từ bây giờ.</i>")
+                db.outbox_enqueue(dedupe, "fee_change", int(p["tg_id"]),
+                                  txt, "HTML", ref_consignor_id=int(p["id"]))
+        except Exception:
+            pass
     return {"ok": ok}
 
 

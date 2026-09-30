@@ -1433,6 +1433,59 @@ async def on_acc_file(cb: CallbackQuery):
         parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("accfileall:"))
+async def on_acc_file_all(cb: CallbackQuery):
+    """Xuất full thông tin tất cả acc của đơn mua nhiều acc ra file .txt / .xlsx.
+    Dùng token (không nhét order ID vào callback để tránh vượt 64 bytes)."""
+    try:
+        _, token, fmt = cb.data.split(":")
+        order_ids = db.acc_file_token_get(token, cb.from_user.id)
+    except Exception:
+        await cb.answer("❌ Link tải không hợp lệ.", show_alert=True)
+        return
+    if not order_ids:
+        await cb.answer("❌ Link tải đã hết hạn, vui lòng mua lại.", show_alert=True)
+        return
+    await cb.answer()
+    rows = []
+    for oid in order_ids:
+        order = db.acc_get_order(oid)
+        if not order or int(order["tg_id"]) != cb.from_user.id:
+            await cb.answer("❌ Không tìm thấy đơn hàng.", show_alert=True)
+            return
+        order = dict(order)
+        rows.append([order.get("uid") or "", order.get("password") or "",
+                     order.get("created_date") or "", order.get("backup_mail") or "",
+                     order.get("note") or "", order.get("totp") or "",
+                     order.get("cookie") or "", order.get("token") or ""])
+    header = ["UID", "MK", "Ngày tạo", "Mail thay", "Ghi chú", "2FA", "Cookie", "Token"]
+    tag = "_".join(str(i) for i in order_ids[:3])
+    if len(order_ids) > 3:
+        tag += f"_v{len(order_ids)}acc"
+    if fmt == "xlsx":
+        import openpyxl
+        import io as _io
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "acc"
+        ws.append(header)
+        for r in rows:
+            ws.append(r)
+        buf = _io.BytesIO()
+        wb.save(buf)
+        data = buf.getvalue()
+        fname = f"acc_full_{tag}.xlsx"
+    else:
+        lines = ["|".join(header)]
+        lines += ["|".join(r) for r in rows]
+        data = "\n".join(lines).encode("utf-8")
+        fname = f"acc_full_{tag}.txt"
+    await cb.message.answer_document(
+        BufferedInputFile(data, filename=fname),
+        caption=f"📥 Full thông tin <b>{len(rows)} acc</b> (đơn {', '.join('#' + str(i) for i in order_ids)})",
+        parse_mode="HTML")
+
+
 @router.message(Command("coc"))
 async def on_coc(msg: Message):
     parts = (msg.text or "").split()
