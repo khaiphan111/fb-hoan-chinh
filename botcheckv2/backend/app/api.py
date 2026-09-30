@@ -1,6 +1,7 @@
 # FB Live/Die Checker & Tiktok Checker
 import secrets
 import time
+from collections import defaultdict
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File, Request
@@ -11,6 +12,40 @@ from . import config, db, fb
 # from .bot import manager, zalo_manager -> lazy trong tung ham (muc 5)
 from .poller import poller
 from .util import now
+
+# --- Chong brute-force /login (them 2026-09-30) ---
+# Theo doi so lan dang nhap sai theo IP. Qua 5 lan trong 15 phut -> khoa 15 phut.
+_LOGIN_FAILS: dict = defaultdict(list)  # ip -> [timestamp, ...]
+_LOGIN_MAX_FAILS = 5
+_LOGIN_WINDOW = 15 * 60  # 15 phut
+
+def _login_blocked(ip: str) -> tuple[bool, int]:
+    """Tra (bi_khoa, so_giay_con_lai)."""
+    now = time.time()
+    fails = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < _LOGIN_WINDOW]
+    _LOGIN_FAILS[ip] = fails
+    if len(fails) >= _LOGIN_MAX_FAILS:
+        wait = int(_LOGIN_WINDOW - (now - fails[0]))
+        return True, max(wait, 1)
+    return False, 0
+
+def _login_fail(ip: str):
+    _LOGIN_FAILS[ip].append(time.time())
+
+def _login_ok(ip: str):
+    _LOGIN_FAILS.pop(ip, None)
+
+def _check_password_strength(pw: str) -> str | None:
+    """Tra None neu manh, tra thong bao loi neu yeu."""
+    if len(pw) < 8:
+        return "Mật khẩu phải từ 8 ký tự trở lên"
+    if not any(c.isupper() for c in pw):
+        return "Mật khẩu phải có ít nhất 1 chữ HOA"
+    if not any(c.islower() for c in pw):
+        return "Mật khẩu phải có ít nhất 1 chữ thường"
+    if not any(c.isdigit() for c in pw):
+        return "Mật khẩu phải có ít nhất 1 chữ số"
+    return None
 from .event_bus import event_bus
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -169,22 +204,30 @@ def verify_user_token(token: str):
 
 @router.post("/login")
 def login(body: LoginIn, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    # Chong brute-force: khoa IP 15 phut sau 5 lan sai
+    blocked, wait = _login_blocked(ip)
+    if blocked:
+        raise HTTPException(status_code=429, detail=f"Quá nhiều lần thử sai. Vui lòng đợi {wait//60} phút {wait%60} giây.")
     admin = db.get_admin_by_username(body.username)
     if not admin:
+        _login_fail(ip)
         raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
-        
+
     import hashlib
     hash_pw = hashlib.sha256(body.password.encode()).hexdigest()
     if admin["password_hash"] != hash_pw:
+        _login_fail(ip)
         raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
-        
+
     if not admin["is_active"]:
         raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa")
-        
+
+    _login_ok(ip)  # dang nhap dung -> xoa lich su sai
     db.update_admin_last_login(admin["id"])
     ip = request.client.host if request.client else ""
     db.log_admin_action(admin["id"], "login", admin["username"], "Admin logged in", ip)
-    
+
     tok = create_admin_token(admin["id"])
     return {"ok": True, "token": tok, "role": admin["role"]}
 
@@ -266,6 +309,9 @@ def api_get_admins(admin: dict = Depends(require_role("super_admin"))):
 def api_create_admin(body: AdminUserIn, admin: dict = Depends(require_role("super_admin")), request: Request = None):
     if not body.password:
         raise HTTPException(status_code=400, detail="Mật khẩu là bắt buộc khi tạo")
+    pw_err = _check_password_strength(body.password)
+    if pw_err:
+        raise HTTPException(status_code=400, detail=pw_err)
     existing = db.get_admin_by_username(body.username)
     if existing:
         raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
@@ -285,7 +331,12 @@ def api_update_admin(id: int, body: AdminUserIn, admin: dict = Depends(require_r
     target_admin = db.get_admin_by_id(id)
     if not target_admin:
         raise HTTPException(status_code=404, detail="Không tìm thấy")
-        
+
+    if body.password:
+        pw_err = _check_password_strength(body.password)
+        if pw_err:
+            raise HTTPException(status_code=400, detail=pw_err)
+
     import hashlib
     hash_pw = hashlib.sha256(body.password.encode()).hexdigest() if body.password else None
     
