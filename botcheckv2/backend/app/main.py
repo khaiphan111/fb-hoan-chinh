@@ -11,11 +11,16 @@ from .api import router as api_router
 from .campaigns_api import router as campaigns_router
 from .shop_api import router as shop_router
 from .reseller_api import router as reseller_router
-from .bot import manager, zalo_manager
-from .admin_bot import manager as admin_manager
-from .notify_bot import manager as notify_manager
-from .poller import poller
+# Bot managers import LAZY trong start_services() (muc 5: giam boot <10s).
+# aiogram.types mat ~7s de import; health endpoint khong can bot.
 from .keep_alive import start_keep_alive, stop_keep_alive
+
+# Globals cho bot managers (duoc gan trong start_services)
+_bot_manager = None
+_zalo_manager = None
+_admin_manager = None
+_notify_manager = None
+_poller = None
 
 app = FastAPI(title=config.APP_NAME)
 
@@ -123,6 +128,15 @@ async def on_startup():
     db.migrate_new_features()
     
     async def start_services():
+        # Lazy import bot managers (nang, ~7s aiogram) - chay background sau khi health da len
+        global _bot_manager, _zalo_manager, _admin_manager, _notify_manager, _poller
+        from .bot import manager as _m, zalo_manager as _zm
+        from .admin_bot import manager as _am
+        from .notify_bot import manager as _nm
+        from .poller import poller as _p
+        _bot_manager, _zalo_manager, _admin_manager, _notify_manager, _poller = _m, _zm, _am, _nm, _p
+        # Alias de code ben duoi khong phai sua
+        manager, zalo_manager, admin_manager, notify_manager, poller = _m, _zm, _am, _nm, _p
         token = db.get_setting("bot_token")
         zalo_token = db.get_setting("zalo_bot_token")
         setup_done = db.get_setting("setup_done")
@@ -218,16 +232,21 @@ async def on_shutdown():
         except Exception as e:
             print(f"WARNING: shutdown step '{name}' error: {e}", flush=True)
 
-    await _stop_step("poller.stop", poller.stop())
+    if _poller is not None:
+        await _stop_step("poller.stop", _poller.stop())
     try:
         from . import payos as payos_mod
         await _stop_step("payos.stop", payos_mod.stop())
     except Exception:
         pass
-    await _stop_step("manager.stop", manager.stop())
-    await _stop_step("zalo_manager.stop", zalo_manager.stop())
-    await _stop_step("admin_manager.stop", admin_manager.stop())
-    await _stop_step("notify_manager.stop", notify_manager.stop())
+    if _bot_manager is not None:
+        await _stop_step("manager.stop", _bot_manager.stop())
+    if _zalo_manager is not None:
+        await _stop_step("zalo_manager.stop", _zalo_manager.stop())
+    if _admin_manager is not None:
+        await _stop_step("admin_manager.stop", _admin_manager.stop())
+    if _notify_manager is not None:
+        await _stop_step("notify_manager.stop", _notify_manager.stop())
     await _stop_step("stop_keep_alive", stop_keep_alive())
     try:
         with open(_HEARTBEAT_FILE, "w") as f:

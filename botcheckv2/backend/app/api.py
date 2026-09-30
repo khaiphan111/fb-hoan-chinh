@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import os
 
 from . import config, db, fb
-from .bot import manager, zalo_manager
+# from .bot import manager, zalo_manager -> lazy trong tung ham (muc 5)
 from .poller import poller
 from .util import now
 from .event_bus import event_bus
@@ -371,6 +371,7 @@ def user_analytics(tg_id: int = Depends(user_auth)):
 
 @router.get("/status")
 def status(_=Depends(auth)):
+    from .bot import manager, zalo_manager  # lazy (muc 5: tranh import aiogram nang luc boot)
     watches = db.all_watches()
     live = sum(1 for w in watches if w["last_status"] == "live")
     die = sum(1 for w in watches if w["last_status"] == "die")
@@ -415,6 +416,7 @@ def get_settings(_=Depends(auth)):
 
 @router.post("/settings")
 async def save_settings(body: SettingsIn, _=Depends(auth)):
+    from .bot import manager, zalo_manager  # lazy (muc 5: tranh import aiogram nang luc boot)
     restart_bot = False
     restart_zalo = False
     restart_admin_bot = False
