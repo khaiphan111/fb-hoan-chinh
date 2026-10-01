@@ -14,3 +14,7 @@ node_modules/
 watchdog/
 .DS_Store
 buff_session.json
+
+# Deploy money test runtime state
+.last_deploy_test_sha
+deploy_test.log
