@@ -598,8 +598,12 @@ async def check_uid_direct(uid: str) -> dict:
                         if t_name:
                             result["name"] = t_name
                     elif t_alive is False:
+                        # traodoisub không resolve được: KHÔNG đánh "dead".
+                        # Theo quyết định user 2026-09-26: không báo DIE khi không
+                        # đọc được tên (tránh đánh DIE oan acc còn sống).
+                        # Báo "exists" để hiển thị 🟡 TỒN TẠI (Chưa rõ trạng thái).
                         result["alive"] = False
-                        result["status"] = "dead"
+                        result["status"] = "exists"
                     else:
                         result["alive"] = False
                         result["status"] = "error"
@@ -712,6 +716,10 @@ def build_fb_caption(res: dict) -> str:
             status_icon = "🟡"
             status_text = "TỒN TẠI (Chưa rõ trạng thái)"
             note = "⚠️ <i>Chỉ xác định được acc tồn tại, chưa kiểm tra được có bị khoá/checkpoint hay không (FB chặn IP server)</i>"
+        elif status == "error":
+            status_icon = "⚠️"
+            status_text = "Không thể xác định (Lỗi mạng)"
+            note = "🌐 <i>Không kết nối được Facebook lúc này, vui lòng thử lại sau. Không kết luận acc live/die từ lỗi mạng.</i>"
         elif res["alive"] or status == "live":
             status_icon = "🟢"
             if res.get("has_real_avatar"):
