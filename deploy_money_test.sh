@@ -53,9 +53,9 @@ fi
 
 log "Phat hien deploy moi: ${LAST_SHA:0:7} -> ${LATEST_SHA:0:7}"
 
-# 2. Fetch code moi (khong doi working tree)
+# 2. Fetch code moi (khong doi working tree) - co timeout tranh treo
 cd "$REPO_DIR" || { log "ERROR: khong vao duoc $REPO_DIR"; exit 1; }
-git fetch origin main 2>&1 | head -3
+timeout 60 git fetch origin main 2>&1 | head -3
 
 # 3. Tao worktree tam thoi
 WORKTREE_DIR="$WORKTREE_BASE-${LATEST_SHA:0:8}"
@@ -74,13 +74,13 @@ if [ ! -f "$WORKTREE_DIR/test_money_paths.py" ] && [ -f "$REPO_DIR/test_money_pa
     cp "$REPO_DIR/test_money_paths.py" "$WORKTREE_DIR/test_money_paths.py"
 fi
 
-# 4. Chay test voi code moi
+# 4. Chay test voi code moi (timeout 180s tranh treo)
 # Dung tunnel Supabase san co (127.0.0.1:5433), chi du lieu test, tu don sach
 log "Chay test luong tien voi commit ${LATEST_SHA:0:7}..."
 TEST_OUTPUT=$(cd "$WORKTREE_DIR" && \
     TEST_BACKEND_PATH="$WORKTREE_DIR/botcheckv2/backend" \
     TEST_ENV_PATH="$ENV_FILE" \
-    /home/hatch/fbvenv/bin/python test_money_paths.py 2>&1)
+    timeout 180 /home/hatch/fbvenv/bin/python test_money_paths.py 2>&1)
 TEST_EXIT=$?
 
 # 5. Xu ly ket qua
