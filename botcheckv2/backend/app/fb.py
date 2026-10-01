@@ -1,8 +1,30 @@
 import asyncio
 import httpx
 import re
+import os
 from datetime import datetime
 from . import db
+
+def _make_http_client(**kwargs):
+    """Tạo httpx.AsyncClient, workaround lỗi httpx parse no_proxy chứa IPv6 [::1].
+    
+    httpx parse no_proxy=[::1],... bị lỗi 'Invalid port: :1]' khi khởi tạo client.
+    Tạm loại bỏ các entry IPv6 có ngoặc vuông khỏi no_proxy trước khi tạo client,
+    rồi restore lại ngay sau đó.
+    """
+    saved = {}
+    for key in ("no_proxy", "NO_PROXY"):
+        val = os.environ.get(key)
+        if val and "[" in val:
+            saved[key] = val
+            entries = [e.strip() for e in val.split(",")]
+            clean = [e for e in entries if "[" not in e and "]" not in e]
+            os.environ[key] = ",".join(clean)
+    try:
+        return httpx.AsyncClient(**kwargs)
+    finally:
+        for key, val in saved.items():
+            os.environ[key] = val
 
 USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
@@ -168,7 +190,7 @@ async def resolve_fb_uid(link: str) -> tuple:
             from .safeurl import fetch_with_safe_redirects, FB_HOSTS, is_safe_url
 
             if await is_safe_url(link, FB_HOSTS):
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with _make_http_client(timeout=15) as client:
                     r = await fetch_with_safe_redirects(
                         client, link, FB_HOSTS,
                         headers={"User-Agent": "Mozilla/5.0"},
@@ -194,7 +216,7 @@ async def resolve_fb_uid(link: str) -> tuple:
     tds_answered = False  # API đã trả lời dứt khoát (dù được hay không)
     for _att in range(3):
         try:
-            async with httpx.AsyncClient(timeout=25) as client:
+            async with _make_http_client(timeout=25) as client:
                 uid2, name2 = await _resolve_via_traodoisub(link, client)
                 tds_answered = True
                 if uid2:
@@ -226,7 +248,7 @@ async def resolve_fb_uid(link: str) -> tuple:
     token = db.get_setting("fb_avatar_token", "")
     if token:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with _make_http_client(timeout=15) as client:
                 r = await client.get(
                     f"https://graph.facebook.com/v18.0/{username}?access_token={token}"
                 )
@@ -367,7 +389,7 @@ async def _check_with_cookie(uid: str, cookie: str) -> dict:
     }
     
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with _make_http_client(timeout=15, follow_redirects=True) as client:
             # Check mbasic.facebook.com with cookie - phân biệt được LIVE vs CHECKPOINT
             r = await client.get(
                 f"https://mbasic.facebook.com/profile.php?id={uid}",
@@ -483,7 +505,7 @@ async def check_uid_direct(uid: str) -> dict:
     token = db.get_setting("fb_avatar_token", "")
     
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with _make_http_client(timeout=15) as client:
             result["ok"] = True
             result["avatar_url"] = avatar_url(uid)
             
@@ -639,7 +661,7 @@ async def check_uid_via_worker(uid: str) -> dict | None:
         return {"uid": uid, "alive": False, "avatar_url": None,
                 "ok": False, "status": "unknown", "name": ""}
     try:
-        async with httpx.AsyncClient(timeout=FB_WORKER_TIMEOUT) as client:
+        async with _make_http_client(timeout=FB_WORKER_TIMEOUT) as client:
             r = await client.post(f"{FB_WORKER_URL}/check", json={"uid": uid})
             r.raise_for_status()
             data = r.json()
