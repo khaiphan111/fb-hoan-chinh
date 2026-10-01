@@ -226,8 +226,13 @@ async def _notify_super_subadmin_action(actor_id: int, actor_name: str, text: st
         pass
 
 def status_caption(status: str, note: str, price, header: str = "") -> str:
-    icon = "🟢" if status == "live" else "🔴"
-    word = "LIVE" if status == "live" else "DIE"
+    # Fix 2026-10-02: hiển thị đúng trạng thái "exists" (🟡 TỒN TẠI) thay vì nhầm thành DIE
+    if status == "live":
+        icon, word = "🟢", "LIVE"
+    elif status == "exists":
+        icon, word = "🟡", "TỒN TẠI (Chưa rõ trạng thái)"
+    else:
+        icon, word = "🔴", "DIE"
     lines = []
     if header:
         lines.append(header)

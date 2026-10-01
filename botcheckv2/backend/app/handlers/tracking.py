@@ -400,6 +400,39 @@ async def on_trackviglist(msg: Message):
         )
     await msg.answer("\n\n".join(lines))
 
+@router.message(Command("trackfb"))
+async def on_trackfb(msg: Message):
+    """Thêm theo dõi UID Facebook qua lệnh: /trackfb <uid> (Fix 2026-10-02: lệnh bị thiếu)."""
+    parts = (msg.text or "").split()
+    if len(parts) < 2 or not parts[1].strip():
+        await msg.answer("⚠️ Cú pháp: /trackfb &lt;uid&gt;\nVí dụ: /trackfb 100002368123958")
+        return
+    uid = parts[1].strip()
+    user = db.get_user(msg.chat.id)
+    if not user or not _sub_active(user):
+        await msg.answer("❌ Bạn cần có gói còn hạn để dùng tính năng theo dõi.")
+        return
+    wait = await msg.answer("⏳ Đang kiểm tra UID...")
+    try:
+        from ..fb import check_uid, avatar_url
+        res = await check_uid(uid)
+        _fb_status = (res.get("status") or "").lower()
+        if _fb_status == "live":
+            status = "live"
+        elif _fb_status == "exists":
+            status = "exists"
+        else:
+            status = "die"
+        avatar = res.get("avatar_url") or avatar_url(uid)
+        wid, is_new = db.add_watch(msg.chat.id, res.get("uid") or uid, "", 0, 0)
+        db.update_watch_status(wid, status, avatar)
+        if is_new:
+            db.add_log("add", f"Thêm UID {res.get('uid') or uid} ({status})", msg.from_user.id, res.get("uid") or uid)
+        await wait.delete()
+        await _send_card(msg.bot, msg.chat.id, res.get("uid") or uid, status, "", 0, avatar, "Đã thêm theo dõi:")
+    except Exception as e:
+        await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
 @router.message(Command("list", "trackfblist"))
 async def on_list(msg: Message):
     rows = db.user_watches(msg.chat.id)
@@ -409,7 +442,7 @@ async def on_list(msg: Message):
     lines = ["<b>Danh sách đang theo dõi</b>"]
     for w in rows:
         st = w["last_status"] or "?"
-        icon = "🟢" if st == "live" else ("🔴" if st == "die" else "⚪")
+        icon = "🟢" if st == "live" else ("🟡" if st == "exists" else ("🔴" if st == "die" else "⚪"))
         extra = f" — {w['note']}" if w["note"] else ""
         lines.append(f"{icon} {w['uid']}{extra}")
     await msg.answer("\n".join(lines))
@@ -433,7 +466,15 @@ async def on_fb_track_btn(cb: CallbackQuery):
         
     from ..fb import check_uid, avatar_url
     res = await check_uid(uid)
-    status = "live" if res["alive"] else "die"
+    # Fix 2026-10-02: check_uid trả về status="exists" (alive=True) khi chỉ xác định
+    # được acc tồn tại mà không đọc được tên (FB chặn IP). Không được map thành "live".
+    _fb_status = (res.get("status") or "").lower()
+    if _fb_status == "live":
+        status = "live"
+    elif _fb_status == "exists":
+        status = "exists"
+    else:
+        status = "die"
     avatar = res.get("avatar_url") or avatar_url(uid)
     
     wid, is_new = db.add_watch(cb.from_user.id, res["uid"], "", 0, 0)
@@ -463,7 +504,14 @@ async def on_trackmenu_fb_input(msg: Message, state: FSMContext):
     try:
         from ..fb import check_uid, avatar_url
         res = await check_uid(uid)
-        status = "live" if res.get("alive") else "die"
+        # Fix 2026-10-02: map đúng status "exists" thay vì nhầm thành "live"
+        _fb_status = (res.get("status") or "").lower()
+        if _fb_status == "live":
+            status = "live"
+        elif _fb_status == "exists":
+            status = "exists"
+        else:
+            status = "die"
         avatar = res.get("avatar_url") or avatar_url(uid)
         wid, is_new = db.add_watch(msg.chat.id, res.get("uid") or uid, "", 0, 0)
         db.update_watch_status(wid, status, avatar)
