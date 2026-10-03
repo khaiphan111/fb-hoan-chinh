@@ -43,6 +43,8 @@ from ..poller import poller
 from .core import _SHOP_WALLET_HINT, router
 from .common import AccShopState, _acc_after_purchase, _acc_delivery_caption, _acc_delivery_kb, _cart_render, _cat_icon, _cat_live_check, _check_stock_live, _do_deposit, _line_price, _live_line, _mail_app_line, _notify_admin_smart, _notify_die_quarantine, _notify_purchase_admin, _pickup_suffix, _sell_live_stock, _sell_uid_items, _send_merged_acc_file, _shop_bulk_pcts, _shop_list, _shop_stall_picker, _spin_kb, _totp_now, _uid_final_price
 
+log = logging.getLogger("shop")
+
 _PICK_PAGE_SIZE = 10
 
 @router.message(Command("shop"))
@@ -422,25 +424,55 @@ async def on_acc_confirm(cb: CallbackQuery):
             parse_mode="HTML")
         return
     # Check LIVE trước khi giao (chỉ sạp Acc Facebook): chỉ bán acc đã check live
-    _need_check = _cat_live_check(cat_id)
-    if _need_check:
-        await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
-    sold_orders, _sell_fail = await _sell_live_stock(
-        cb.bot, tg_id, final, qty,
-        lambda seen: db.acc_stock_pick_candidates(cat_id, qty + 4, seen),
-        check_live=_need_check)
-    if not sold_orders:
-        db.add_shop_balance_only(tg_id, final, "hoan_tien_khong_du_hang_live")
-        await cb.message.answer(
-            "😔 <b>Rất tiếc, hiện không đủ hàng</b> để giao cho bạn.\n"
-            f"Tiền <b>{vnd(final)}</b> đã được hoàn vào ví shop.\n"
-            "Bạn quay lại sau hoặc chọn loại acc khác nhé!",
-            parse_mode="HTML")
-        return
-    db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi giao acc thành công
-    await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id, tg_id,
-                              final, qty, sold_orders,
-                              want_upsell, upsell_pct_cfg, wmin)
+    # FIX 2026-10-03: bọc toàn bộ luồng sau khi trừ tiền. Lỗi bất thường ở bất kỳ
+    # bước nào (check live, tạo đơn, giao acc) đều phải hoàn tiền — trước đây chỉ
+    # hoàn khi thiếu hàng live, còn exception thì khách mất tiền oan (ca 21:06).
+    try:
+        _need_check = _cat_live_check(cat_id)
+        if _need_check:
+            await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
+        sold_orders, _sell_fail = await _sell_live_stock(
+            cb.bot, tg_id, final, qty,
+            lambda seen: db.acc_stock_pick_candidates(cat_id, qty + 4, seen),
+            check_live=_need_check)
+        if not sold_orders:
+            db.add_shop_balance_only(tg_id, final, "hoan_tien_khong_du_hang_live")
+            await cb.message.answer(
+                "😔 <b>Rất tiếc, hiện không đủ hàng</b> để giao cho bạn.\n"
+                f"Tiền <b>{vnd(final)}</b> đã được hoàn vào ví shop.\n"
+                "Bạn quay lại sau hoặc chọn loại acc khác nhé!",
+                parse_mode="HTML")
+            return
+        db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi giao acc thành công
+        await _acc_after_purchase(cb.bot, cb.message, cb.from_user, c, cat_id, tg_id,
+                                  final, qty, sold_orders,
+                                  want_upsell, upsell_pct_cfg, wmin)
+    except Exception as e:
+        log.exception("Lỗi giao acc sau trừ tiền: tg=%s cat=%s qty=%s %sđ",
+                      tg_id, cat_id, qty, final)
+        if db.acc_has_recent_order(tg_id, cat_id, within_sec=180):
+            # Đơn đã kịp tạo trước khi lỗi — không tự hoàn (tránh hoàn thừa
+            # khi acc đã giao), báo admin xử lý tay.
+            try:
+                await _notify_admin_smart(
+                    cb.bot,
+                    f"⚠️ <b>CẦN XỬ LÝ TAY:</b> lỗi giao acc sau khi trừ tiền\n"
+                    f"User <code>{tg_id}</code>, loại #{cat_id} x{qty}, {vnd(final)}\n"
+                    f"Đơn đã được tạo — kiểm tra và giao lại cho khách.\n"
+                    f"Lỗi: <code>{html.escape(str(e)[:200])}</code>")
+            except Exception:
+                pass
+            await cb.message.answer(
+                "⚠️ <b>Có lỗi khi giao acc.</b> Đơn của bạn đã được tạo, "
+                "admin sẽ kiểm tra và giao lại trong ít phút nhé.",
+                parse_mode="HTML")
+        else:
+            db.add_shop_balance_only(tg_id, final, "hoan_tien_loi_he_thong")
+            await cb.message.answer(
+                "⚠️ <b>Có lỗi hệ thống khi giao acc.</b>\n"
+                f"Tiền <b>{vnd(final)}</b> đã được hoàn vào ví shop.\n"
+                "Bạn thử mua lại giúp mik nhé!",
+                parse_mode="HTML")
 
 def _pick_uid_page(cat_id: int, page: int):
     """1 trang UID còn hàng. Trả (rows, has_next)."""
@@ -1201,30 +1233,56 @@ async def on_cart_confirm(cb: CallbackQuery):
                                 parse_mode="HTML")
         return
     await cb.message.answer("🔍 <b>Đang kiểm tra chất lượng acc...</b>", parse_mode="HTML")
-    delivered, paid_total = [], 0
+    # FIX 2026-10-03: bọc toàn bộ luồng sau khi trừ tiền — exception bất thường
+    # cũng phải hoàn phần tiền chưa được xử lý, tránh khách mất tiền oan.
+    delivered, paid_total, refunded_total = [], 0, 0
     failed = []
-    for c, qty, lp in priced:
-        cat_id = c["id"]
-        sold, _fail = await _sell_live_stock(
-            cb.bot, tg_id, lp["final"], qty,
-            lambda seen, _cid=cat_id, _q=qty: db.acc_stock_pick_candidates(_cid, _q + 4, seen),
-            check_live=_cat_live_check(cat_id))
-        if sold:
-            delivered += sold
-            paid_total += lp["final"]
-        else:
-            failed.append((c, qty))
-            db.add_shop_balance_only(tg_id, lp["final"], "hoan_tien_giohang_thieu_live")
     uid_failed = []
-    if uid_priced:
-        u_delivered, u_failed = await _sell_uid_items(cb.bot, tg_id, uid_priced)
-        delivered += u_delivered
-        paid_total += sum(p for _, _, p in uid_priced) - sum(p for _, _, p in u_failed)
-        for cat, stock, price in u_failed:
-            uid_failed.append((cat, stock))
-            db.add_shop_balance_only(tg_id, price, "hoan_tien_giohang_uid")
-    db.cart_clear(tg_id)
-    db.cart_uid_clear(tg_id)
+    try:
+        for c, qty, lp in priced:
+            cat_id = c["id"]
+            sold, _fail = await _sell_live_stock(
+                cb.bot, tg_id, lp["final"], qty,
+                lambda seen, _cid=cat_id, _q=qty: db.acc_stock_pick_candidates(_cid, _q + 4, seen),
+                check_live=_cat_live_check(cat_id))
+            if sold:
+                delivered += sold
+                paid_total += lp["final"]
+            else:
+                failed.append((c, qty))
+                db.add_shop_balance_only(tg_id, lp["final"], "hoan_tien_giohang_thieu_live")
+                refunded_total += lp["final"]
+        if uid_priced:
+            u_delivered, u_failed = await _sell_uid_items(cb.bot, tg_id, uid_priced)
+            delivered += u_delivered
+            paid_total += sum(p for _, _, p in uid_priced) - sum(p for _, _, p in u_failed)
+            for cat, stock, price in u_failed:
+                uid_failed.append((cat, stock))
+                db.add_shop_balance_only(tg_id, price, "hoan_tien_giohang_uid")
+                refunded_total += price
+        db.cart_clear(tg_id)
+        db.cart_uid_clear(tg_id)
+    except Exception as e:
+        log.exception("Lỗi thanh toán giỏ hàng sau trừ tiền: tg=%s %sđ", tg_id, grand)
+        missing = grand - paid_total - refunded_total
+        if missing > 0:
+            db.add_shop_balance_only(tg_id, missing, "hoan_tien_giohang_loi_he_thong")
+            refunded_total += missing
+        try:
+            await _notify_admin_smart(
+                cb.bot,
+                f"⚠️ <b>CẦN KIỂM TRA:</b> lỗi thanh toán giỏ hàng sau khi trừ tiền\n"
+                f"User <code>{tg_id}</code>, tổng {vnd(grand)}, "
+                f"đã giao {vnd(paid_total)}, đã hoàn {vnd(refunded_total)}\n"
+                f"Lỗi: <code>{html.escape(str(e)[:200])}</code>")
+        except Exception:
+            pass
+        await cb.message.answer(
+            "⚠️ <b>Có lỗi hệ thống khi thanh toán giỏ hàng.</b>\n"
+            f"Phần tiền chưa giao hàng <b>{vnd(max(0, missing))}</b> đã được hoàn vào ví shop.\n"
+            "Admin sẽ kiểm tra lại các món đã giao nhé.",
+            parse_mode="HTML")
+        return
     if not delivered:
         await cb.message.answer(
             "😔 <b>Rất tiếc, hiện không đủ hàng</b> để giao.\n"

@@ -462,29 +462,43 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
     if subcmd in ("help", "?"):
         await _show_adm_help(msg)
 
-    # ── /adm topup <id> <tiền> ────────────────────────────────────────────
+    # ── /adm topup <id> <tiền> [main|shop|buff] ─────────────────────────────
     elif subcmd == "topup":
         args = rest.split()
         if len(args) < 2:
-            await msg.answer("❌ HDSD: /adm topup &lt;user_id&gt; &lt;số_tiền&gt;", parse_mode="HTML")
+            await msg.answer("❌ HDSD: /adm topup &lt;user_id&gt; &lt;số_tiền&gt; [main|shop|buff]", parse_mode="HTML")
             return
         try:
             uid = int(args[0]); amount = int(args[1].replace(",","").replace("k","000").replace("K","000"))
         except ValueError:
             await msg.answer("❌ ID hoặc số tiền không hợp lệ!"); return
+        wallet = args[2].lower() if len(args) > 2 else "main"
+        if wallet not in ("main", "shop", "buff"):
+            await msg.answer("❌ Ví phải là <b>main</b>, <b>shop</b> hoặc <b>buff</b>!",
+                             parse_mode="HTML"); return
         user = db.get_user(uid)
         if not user:
             await msg.answer(f"❌ Không tìm thấy user <code>{uid}</code>!", parse_mode="HTML"); return
-        db.adjust_balance(uid, amount, f"Admin topup by {tg_id}")
+        wname = {"main": "💰 Ví chính", "shop": "🛒 Ví shop", "buff": "👛 Ví buff"}[wallet]
+        wcol = {"main": "balance", "shop": "shop_balance", "buff": "buff_balance"}[wallet]
+        try:
+            if wallet == "main":
+                db.adjust_balance(uid, amount, f"Admin topup by {tg_id}")
+            else:
+                db.credit_topup(uid, amount, f"Admin topup by {tg_id}", wallet=wallet)
+        except Exception as e:
+            await msg.answer(f"❌ Lỗi cộng tiền: <code>{html.escape(str(e)[:200])}</code>",
+                             parse_mode="HTML"); return
+        new_bal = db.get_user(uid)[wcol] or 0
         await msg.answer(
-            f"✅ Cộng <b>{util.vnd(amount)}</b> cho user <code>{uid}</code> ({user['name'] or '?'})\n"
-            f"💳 Số dư mới: <b>{util.vnd(db.get_user(uid)['balance'])}</b>",
+            f"✅ Cộng <b>{util.vnd(amount)}</b> vào {wname} cho user <code>{uid}</code> ({user['name'] or '?'})\n"
+            f"💳 Số dư ví mới: <b>{util.vnd(new_bal)}</b>",
             parse_mode="HTML"
         )
         try:
             target_bot = bot_instance or msg.bot
             await target_bot.send_message(uid,
-                f"✅ <b>NẠP TIỀN THÀNH CÔNG</b>\nBạn vừa được cộng <b>{util.vnd(amount)}</b> vào tài khoản.",
+                f"✅ <b>NẠP TIỀN THÀNH CÔNG</b>\nBạn vừa được cộng <b>{util.vnd(amount)}</b> vào {wname}.",
                 parse_mode="HTML")
         except Exception: pass
 
@@ -870,6 +884,7 @@ class AdmMenuState(StatesGroup):
     """States nhập liệu từng bước cho menu /adm."""
     topup_uid = State()
     topup_amount = State()
+    topup_wallet = State()
     setbal_uid = State()
     setbal_amount = State()
     ban_uid = State()
@@ -1018,7 +1033,7 @@ _USER_PICK_ACTIONS = {
     "go_adddays": "adddays",
 }
 _USER_PICK_FLOWS = {
-    "topup": "💰 <b>CỘNG TIỀN</b> (bước 1/2)",
+    "topup": "💰 <b>CỘNG TIỀN</b> (bước 1/3)",
     "setbal": "✏️ <b>SET SỐ DƯ</b> (bước 1/2)",
     "ban": "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)",
     "unban": "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>",
@@ -1036,7 +1051,7 @@ async def _admm_sel_uid(cb, state, flow: str, uid: int):
         await state.update_data(uid=uid)
         await state.set_state(AdmMenuState.topup_amount)
         await cb.message.edit_text(
-            "💰 <b>CỘNG TIỀN</b> (bước 2/2)\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
+            "💰 <b>CỘNG TIỀN</b> (bước 2/3)\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
             parse_mode="HTML", reply_markup=_admm_back_kb())
     elif flow == "setbal":
         await state.update_data(uid=uid)
@@ -1405,6 +1420,33 @@ def register_adm_menu(target_router):
             await _cb_answer(cb, )
             return
 
+        # ── Cộng tiền: chọn ví (bước 3/3) ──
+        if action.startswith("topup_wallet:"):
+            wallet = action.split(":", 1)[1]
+            if wallet not in ("main", "shop", "buff"):
+                await _cb_answer(cb, "❌ Ví không hợp lệ.", show_alert=True)
+                return
+            data = await state.get_data()
+            uid = data.get("uid")
+            amount = data.get("amount")
+            if not uid or not amount:
+                await _cb_answer(cb, "❌ Phiên đã hết hạn, vui lòng làm lại từ đầu.",
+                                show_alert=True)
+                await state.clear()
+                return
+            from . import util as _util
+            user = db.get_user(uid)
+            wname = {"main": "💰 Ví chính", "shop": "🛒 Ví shop",
+                     "buff": "👛 Ví buff"}[wallet]
+            await _admm_show_confirm_msg(
+                cb.message, state, "💰 <b>XÁC NHẬN CỘNG TIỀN</b>",
+                [f"👤 User: <code>{uid}</code> ({html.escape(str((user or {}).get('name') or ''))})",
+                 f"💵 Số tiền: <b>{_util.vnd(amount)}</b>",
+                 f"👛 Ví: <b>{wname}</b>"],
+                f"/adm topup {uid} {amount} {wallet}")
+            await _cb_answer(cb, )
+            return
+
         # ── Tạm dừng / mở lại bot (chỉ chủ shop) ──
         if action == "pause":
             if not _perms.is_super(cb.from_user.id):
@@ -1649,7 +1691,7 @@ def register_adm_menu(target_router):
 
         # ── Bắt đầu các flow nhập liệu ──
         prompts = {
-            "go_topup": (AdmMenuState.topup_uid, "💰 <b>CỘNG TIỀN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần cộng tiền."),
+            "go_topup": (AdmMenuState.topup_uid, "💰 <b>CỘNG TIỀN</b> (bước 1/3)\n\nGửi <b>User ID</b> cần cộng tiền."),
             "go_setbal": (AdmMenuState.setbal_uid, "✏️ <b>SET SỐ DƯ</b> (bước 1/2)\n\nGửi <b>User ID</b> cần set lại số dư."),
             "go_ban": (AdmMenuState.ban_uid, "🔴 <b>KHOÁ TÀI KHOẢN</b> (bước 1/2)\n\nGửi <b>User ID</b> cần khoá."),
             "go_unban": (AdmMenuState.unban_uid, "🟢 <b>MỞ KHOÁ TÀI KHOẢN</b>\n\nGửi <b>User ID</b> cần mở khoá."),
@@ -1833,7 +1875,7 @@ def register_adm_menu(target_router):
             return
         await state.update_data(uid=uid)
         await state.set_state(AdmMenuState.topup_amount)
-        await msg.answer("💰 <b>CỘNG TIỀN</b> (bước 2/2)\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
+        await msg.answer("💰 <b>CỘNG TIỀN</b> (bước 2/3)\n\nGửi <b>số tiền</b> (VD: 50000 hoặc 50k).\nGõ /huy để huỷ.",
                          parse_mode="HTML")
 
     @target_router.message(AdmMenuState.topup_amount)
@@ -1848,11 +1890,21 @@ def register_adm_menu(target_router):
         data = await state.get_data()
         uid = data["uid"]
         user = db.get_user(uid)
-        await _admm_show_confirm_msg(
-            msg, state, "💰 <b>XÁC NHẬN CỘNG TIỀN</b>",
-            [f"👤 User: <code>{uid}</code> ({html.escape(str((user or {}).get('name') or ''))})",
-             f"💵 Số tiền: <b>{_util.vnd(amount)}</b>"],
-            f"/adm topup {uid} {amount}")
+        # FIX 2026-10-03: thêm bước chọn ví (trước đây chỉ cộng được ví chính).
+        await state.update_data(amount=amount)
+        await state.set_state(AdmMenuState.topup_wallet)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Ví chính", callback_data="admm:topup_wallet:main")],
+            [InlineKeyboardButton(text="🛒 Ví shop", callback_data="admm:topup_wallet:shop")],
+            [InlineKeyboardButton(text="👛 Ví buff", callback_data="admm:topup_wallet:buff")],
+            [InlineKeyboardButton(text="◀️ Quay lại menu Admin", callback_data="admm:main")],
+        ])
+        await msg.answer(
+            f"💰 <b>CỘNG TIỀN</b> (bước 3/3)\n\n"
+            f"👤 User: <code>{uid}</code> ({html.escape(str((user or {}).get('name') or ''))})\n"
+            f"💵 Số tiền: <b>{_util.vnd(amount)}</b>\n\n"
+            f"Chọn <b>ví</b> để cộng tiền:",
+            parse_mode="HTML", reply_markup=kb)
 
     @target_router.message(AdmMenuState.setbal_uid)
     async def _admm_setbal_uid(msg: Message, state: FSMContext):

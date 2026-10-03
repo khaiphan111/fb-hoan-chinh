@@ -5682,6 +5682,19 @@ def acc_last_order_at(tg_id: int) -> int:
     return int(r["m"] or 0)
 
 
+def acc_has_recent_order(tg_id: int, cat_id: int, within_sec: int = 120) -> bool:
+    """True nếu tg_id có đơn loại cat_id được tạo trong within_sec giây qua.
+
+    Dùng khi luồng mua gãy giữa chừng sau khi trừ tiền: nếu đơn đã kịp commit
+    thì KHÔNG tự hoàn tiền (tránh hoàn thừa khi acc đã giao), để admin xử lý tay.
+    """
+    cutoff = int(time.time()) - max(1, int(within_sec))
+    r = get_conn().execute(
+        "SELECT 1 FROM acc_orders WHERE tg_id=? AND cat_id=? AND created_at>=? LIMIT 1",
+        (tg_id, cat_id, cutoff)).fetchone()
+    return bool(r)
+
+
 def db_backup(keep: int = 7) -> str:
     """Sao lưu database mỗi đêm. SQLite: dùng backup API (an toàn khi DB đang
     chạy). Postgres: bỏ qua (cần pg_dump riêng). Trả về đường dẫn file backup
