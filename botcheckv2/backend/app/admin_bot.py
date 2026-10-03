@@ -204,13 +204,15 @@ async def on_admin_confirm(cb: CallbackQuery):
     parts = cb.data.split("_")
     user_id = int(parts[3])
     amount = int(parts[4])
-    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop", "buff") else "main"
+    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop", "buff", "rent") else "main"
 
     try:
         if target == "shop":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="shop")
         elif target == "buff":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="buff")
+        elif target == "rent":
+            db.credit_topup(user_id, amount, reason="bank_transfer", wallet="rent")
         else:
             db.adjust_balance(user_id, amount, reason="bank_transfer")
         success = True
@@ -473,8 +475,8 @@ async def _handle_adm_cmd(msg: Message, bot_instance=None):
         except ValueError:
             await msg.answer("❌ ID hoặc số tiền không hợp lệ!"); return
         wallet = args[2].lower() if len(args) > 2 else "main"
-        if wallet not in ("main", "shop", "buff"):
-            await msg.answer("❌ Ví phải là <b>main</b>, <b>shop</b> hoặc <b>buff</b>!",
+        if wallet not in ("main", "shop", "buff", "rent"):
+            await msg.answer("❌ Ví phải là <b>main</b>, <b>shop</b>, <b>buff</b> hoặc <b>rent</b>!",
                              parse_mode="HTML"); return
         user = db.get_user(uid)
         if not user:
@@ -1423,7 +1425,7 @@ def register_adm_menu(target_router):
         # ── Cộng tiền: chọn ví (bước 3/3) ──
         if action.startswith("topup_wallet:"):
             wallet = action.split(":", 1)[1]
-            if wallet not in ("main", "shop", "buff"):
+            if wallet not in ("main", "shop", "buff", "rent"):
                 await _cb_answer(cb, "❌ Ví không hợp lệ.", show_alert=True)
                 return
             data = await state.get_data()

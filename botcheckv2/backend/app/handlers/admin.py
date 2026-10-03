@@ -59,13 +59,15 @@ async def on_main_admin_confirm(cb: CallbackQuery):
     parts = cb.data.split("_")
     user_id = int(parts[3])
     amount = int(parts[4])
-    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop", "buff") else "main"
+    target = parts[5] if len(parts) > 5 and parts[5] in ("main", "shop", "buff", "rent") else "main"
 
     try:
         if target == "shop":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="shop")
         elif target == "buff":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="buff")
+        elif target == "rent":
+            db.credit_topup(user_id, amount, reason="bank_transfer", wallet="rent")
         else:
             db.adjust_balance(user_id, amount, reason="bank_transfer")
         success = True

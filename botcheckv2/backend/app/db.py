@@ -3433,7 +3433,7 @@ def create_payos_order(order_code: int, tg_id: int, amount: int,
                        payment_link_id: str = "", checkout_url: str = "",
                        qr_code: str = "", target: str = "main") -> None:
     now = int(time.time())
-    if target not in ("main", "shop", "buff"):
+    if target not in ("main", "shop", "buff", "rent"):
         target = "main"
     with _lock:
         c = get_conn()
@@ -3517,7 +3517,7 @@ def settle_payos_order(order_code: int) -> dict:
             return {"ok": False}
         tg_id, amount = int(order["tg_id"]), int(order["amount"])
         target = order["target"] or "main"
-        if target not in ("main", "shop", "buff"):
+        if target not in ("main", "shop", "buff", "rent"):
             target = "main"
         cur = c.execute(
             "UPDATE payos_orders SET status='PAID', updated_at=? "
