@@ -261,6 +261,8 @@ MESSAGE_ORDER = [
     "on_kyguiadm",
     "on_thueso_cmd",
     "on_ts_search_input",
+    "on_thueoadm",
+    "on_tsadm_markup_input",
 ]
 CALLBACK_ORDER = [
     "_on_admm_cb",
@@ -457,4 +459,5 @@ CALLBACK_ORDER = [
     "on_ts_check",
     "on_ts_my",
     "on_ts_detail",
+    "on_tsadm_cb",
 ]

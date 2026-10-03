@@ -444,3 +444,120 @@ async def on_ts_detail(cb: CallbackQuery):
     await cb.answer()
     await cb.message.edit_text(txt, parse_mode="HTML",
                                reply_markup=_rental_kb(rid, r["status"]))
+
+
+# ---------------------------------------------------------------- admin: /thueoadm
+
+class ThueSoAdmState(StatesGroup):
+    waiting_for_markup = State()
+
+
+def _thueoadm_kb() -> InlineKeyboardMarkup:
+    enabled = db.get_setting("viotp_enabled", "1") == "1"
+    markup = db.get_setting("viotp_markup_pct", "50")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"{'🟢 Đang BẬT' if enabled else '🔴 Đang TẮT'} — bấm để đổi",
+            callback_data="tsadm:toggle")],
+        [InlineKeyboardButton(text=f"💰 Lãi thêm: {markup}% — bấm để đổi",
+                              callback_data="tsadm:markup")],
+        [InlineKeyboardButton(text="📋 10 đơn gần nhất", callback_data="tsadm:recent")],
+        [InlineKeyboardButton(text="🔄 Làm mới", callback_data="tsadm:menu")],
+    ])
+
+
+def _thueoadm_text() -> str:
+    st = db.viotp_stats()
+    enabled = db.get_setting("viotp_enabled", "1") == "1"
+    markup = db.get_setting("viotp_markup_pct", "50")
+    return (
+        "📱 <b>QUẢN LÝ SHOP THUÊ SỐ</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"📊 Tổng đơn: <b>{st['total']}</b> • "
+        f"Doanh thu: <b>{vnd(st['revenue'])}đ</b>\n"
+        f"💵 Lãi: <b>{vnd(st['profit'])}đ</b> • "
+        f"⏳ Đang chờ OTP: <b>{st['waiting']}</b>\n\n"
+        f"Trạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'} • Lãi thêm: {markup}%"
+    )
+
+
+@router.message(Command("thueoadm"))
+async def on_thueoadm(msg: Message, state: FSMContext):
+    from .core import _is_admin
+    if not _is_admin(msg.from_user.id):
+        return
+    await state.clear()
+    await msg.answer(_thueoadm_text(), parse_mode="HTML", reply_markup=_thueoadm_kb())
+
+
+@router.callback_query(F.data.startswith("tsadm:"))
+async def on_tsadm_cb(cb: CallbackQuery, state: FSMContext):
+    from .core import _is_admin
+    from ..perms import is_super
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("⛔ Không có quyền.", show_alert=True)
+        return
+    await cb.answer()
+    action = cb.data.split(":")[1] if ":" in cb.data else ""
+
+    if action == "menu":
+        await state.clear()
+        await cb.message.edit_text(_thueoadm_text(), parse_mode="HTML",
+                                   reply_markup=_thueoadm_kb())
+        return
+
+    if action == "toggle":
+        if not is_super(cb.from_user.id):
+            await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
+            return
+        cur = db.get_setting("viotp_enabled", "1") == "1"
+        db.set_setting("viotp_enabled", "0" if cur else "1")
+        await cb.message.edit_text(_thueoadm_text(), parse_mode="HTML",
+                                   reply_markup=_thueoadm_kb())
+        return
+
+    if action == "markup":
+        if not is_super(cb.from_user.id):
+            await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
+            return
+        await state.set_state(ThueSoAdmState.waiting_for_markup)
+        await cb.message.answer("💰 Nhập % lãi thêm mới (0–500, vd: 50):")
+        return
+
+    if action == "recent":
+        rows = db.viotp_rental_list_all(10)
+        if not rows:
+            await cb.message.answer("📭 Chưa có đơn thuê số nào.")
+            return
+        lines = ["📋 <b>10 ĐƠN THUÊ GẦN NHẤT</b>", ""]
+        for r in rows:
+            label = db.VIOTP_STATUS_LABEL.get(r["status"], r["status"])
+            otp = f" — OTP: <code>{html.escape(r['otp_code'])}</code>" if r["otp_code"] else ""
+            lines.append(
+                f"• #{r['id']} {html.escape(r['service_name'])} — "
+                f"<b>{vnd(r['sell_price'])}đ</b> — {label}{otp}\n"
+                f"  📞 <code>{html.escape(r['phone_number'])}</code> "
+                f"👤 <code>{r['tg_id']}</code>"
+            )
+        await cb.message.answer("\n".join(lines), parse_mode="HTML")
+        return
+
+
+@router.message(StateFilter(ThueSoAdmState.waiting_for_markup))
+async def on_tsadm_markup_input(msg: Message, state: FSMContext):
+    from .core import _is_admin
+    from ..perms import is_super
+    if not _is_admin(msg.from_user.id) or not is_super(msg.from_user.id):
+        await state.clear()
+        return
+    try:
+        pct = int((msg.text or "").strip())
+        if not 0 <= pct <= 500:
+            raise ValueError
+    except ValueError:
+        await msg.answer("⚠️ Nhập số 0–500 thôi nhé.")
+        return
+    db.set_setting("viotp_markup_pct", str(pct))
+    await state.clear()
+    await msg.answer(f"✅ Đã đặt lãi thêm <b>{pct}%</b>.", parse_mode="HTML",
+                     reply_markup=_thueoadm_kb())
