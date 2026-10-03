@@ -919,6 +919,7 @@ def migrate_db():
             "ALTER TABLE tg_users ADD COLUMN daily_report_hour INTEGER DEFAULT -1",
             "ALTER TABLE tg_users ADD COLUMN shop_balance BIGINT DEFAULT 0",
             "ALTER TABLE tg_users ADD COLUMN buff_balance BIGINT DEFAULT 0",
+            "ALTER TABLE tg_users ADD COLUMN rent_balance BIGINT DEFAULT 0",
             "ALTER TABLE payos_orders ADD COLUMN target TEXT DEFAULT 'main'",
             "ALTER TABLE acc_restock_subs ADD COLUMN qty INTEGER DEFAULT 1",
             "ALTER TABLE acc_restock_subs ADD COLUMN auto_buy INTEGER DEFAULT 0",
@@ -1100,7 +1101,9 @@ def _credit_topup_nolock(c, tg_id: int, amount: int, reason: str, wallet: str = 
     'f2': (id, bonus)} cho các mức có bonus > 0 (để caller báo tin nhắn sau).
     """
     now = int(time.time())
-    col = "shop_balance" if wallet == "shop" else ("buff_balance" if wallet == "buff" else "balance")
+    col = ("shop_balance" if wallet == "shop"
+           else ("buff_balance" if wallet == "buff"
+           else ("rent_balance" if wallet == "rent" else "balance")))
     c.execute(
         f"UPDATE tg_users SET {col} = {col} + ?, total_topup = total_topup + ? WHERE tg_id=?",
         (amount, amount, tg_id),
@@ -1359,7 +1362,8 @@ def activate_trial(tg_id: int, days: int) -> bool:
 
 # --- GIFTCODES ---
 # ─── VÍ (wallet): 'main' = ví chính, 'shop' = ví shop, 'credits' = lượt credits ─
-WALLET_LABEL = {"main": "ví chính", "shop": "ví shop", "credits": "credits"}
+WALLET_LABEL = {"main": "ví chính", "shop": "ví shop", "credits": "credits",
+                "buff": "ví buff", "rent": "ví thuê số"}
 
 def wallet_label(wallet: str) -> str:
     return WALLET_LABEL.get((wallet or "main").strip().lower(), "ví chính")
@@ -5767,6 +5771,38 @@ def buff_adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
             if not r or int(r["buff_balance"] or 0) + amount < 0:
                 return False
         c.execute("UPDATE tg_users SET buff_balance = buff_balance + ? WHERE tg_id=?",
+                  (amount, tg_id))
+        c.execute(
+            "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+            (int(time.time()), tg_id, amount, reason),
+        )
+        c.commit()
+    return True
+
+
+def rent_get_balance(tg_id: int) -> int:
+    """Số dư ví thuê số của user (0 nếu chưa có cột/user)."""
+    try:
+        r = get_conn().execute(
+            "SELECT rent_balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+        return int(r["rent_balance"] or 0) if r else 0
+    except Exception:
+        return 0
+
+
+def rent_adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
+    """Cộng/trừ ví thuê số. Trừ tiền kiểm tra nguyên tử: không đủ -> False."""
+    with _lock:
+        c = get_conn()
+        if amount < 0:
+            try:
+                r = c.execute("SELECT rent_balance FROM tg_users WHERE tg_id=?",
+                              (tg_id,)).fetchone()
+            except Exception:
+                return False
+            if not r or int(r["rent_balance"] or 0) + amount < 0:
+                return False
+        c.execute("UPDATE tg_users SET rent_balance = rent_balance + ? WHERE tg_id=?",
                   (amount, tg_id))
         c.execute(
             "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",

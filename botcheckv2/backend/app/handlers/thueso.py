@@ -229,7 +229,7 @@ async def on_ts_svc(cb: CallbackQuery):
         f"📱 <b>{html.escape(s['name'])}</b>\n\n"
         f"💰 Giá thuê: <b>{vnd(sell)}đ</b>\n"
         f"⏳ Số dùng trong {RENT_TTL_MIN} phút, bot tự chờ mã OTP.\n"
-        f"💳 Trừ vào <b>ví chính</b>.",
+        f"💳 Trừ vào <b>ví thuê số</b>.",
         parse_mode="HTML", reply_markup=kb)
 
 
@@ -275,8 +275,7 @@ async def on_ts_rent(cb: CallbackQuery):
         await cb.answer("Dịch vụ không còn", show_alert=True)
         return
     sell = db.viotp_sell_price(s["price"])
-    u = db.get_user(cb.from_user.id)
-    bal = int(dict(u).get("balance", 0)) if u else 0
+    bal = db.rent_get_balance(cb.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"✅ Xác nhận thuê — {vnd(sell)}đ",
                               callback_data=f"ts:confirm:{sid}")],
@@ -286,8 +285,8 @@ async def on_ts_rent(cb: CallbackQuery):
     await cb.message.edit_text(
         f"🧾 <b>Xác nhận thuê số</b>\n\n"
         f"📱 Dịch vụ: <b>{html.escape(s['name'])}</b>\n"
-        f"💰 Giá: <b>{vnd(sell)}đ</b> (trừ ví chính)\n"
-        f"👛 Số dư ví chính: <b>{vnd(bal)}đ</b>\n\n"
+        f"💰 Giá: <b>{vnd(sell)}đ</b> (trừ ví thuê số)\n"
+        f"👛 Số dư ví thuê số: <b>{vnd(bal)}đ</b>\n\n"
         f"Sau khi thuê, bạn sẽ nhận số điện thoại và bot tự chờ mã OTP trong {RENT_TTL_MIN} phút.",
         parse_mode="HTML", reply_markup=kb)
 
@@ -308,21 +307,21 @@ async def on_ts_confirm(cb: CallbackQuery):
         await cb.answer("Dịch vụ không còn", show_alert=True)
         return
     cost, sell = s["price"], db.viotp_sell_price(s["price"])
-    # 1. Trừ ví chính (nguyên tử, không đủ -> False)
-    if not db.adjust_balance(tg_id, -sell, f"thue_so:{s['name'][:40]}"):
-        await cb.answer("Ví chính không đủ tiền. Nạp thêm bằng /nap nhé.",
+    # 1. Trừ ví thuê số (nguyên tử, không đủ -> False)
+    if not db.rent_adjust_balance(tg_id, -sell, f"thue_so:{s['name'][:40]}"):
+        await cb.answer("Ví thuê số không đủ tiền. Nạp thêm bằng /napthueso nhé.",
                         show_alert=True)
         return
     # 2. Gọi API thuê số — lỗi sau khi trừ tiền thì HOÀN TIỀN (chống mất tiền)
     try:
         rent = await viotp.rent_number(_token(), sid)
     except Exception as e:
-        db.adjust_balance(tg_id, sell, "hoan_tien_thue_so_loi")
+        db.rent_adjust_balance(tg_id, sell, "hoan_tien_thue_so_loi")
         log.error("thue so that bai sau khi tru tien tg=%s: %s", tg_id, e)
-        await cb.answer("Thuê số thất bại, đã hoàn tiền vào ví chính.", show_alert=True)
+        await cb.answer("Thuê số thất bại, đã hoàn tiền vào ví thuê số.", show_alert=True)
         await cb.message.edit_text(
             "⚠️ Thuê số thất bại (lỗi nhà cung cấp). "
-            f"Đã hoàn <b>{vnd(sell)}đ</b> vào ví chính.",
+            f"Đã hoàn <b>{vnd(sell)}đ</b> vào ví thuê số.",
             parse_mode="HTML", reply_markup=_back_menu_kb())
         return
     rid = db.viotp_rental_create(
@@ -347,7 +346,7 @@ async def on_ts_confirm(cb: CallbackQuery):
         f"✅ <b>Thuê số thành công!</b>\n\n"
         f"📱 Dịch vụ: <b>{html.escape(s['name'])}</b>\n"
         f"📞 Số: <code>{html.escape(rent['phone_number'])}</code>\n"
-        f"💰 Đã trừ: <b>{vnd(sell)}đ</b> (ví chính)\n\n"
+        f"💰 Đã trừ: <b>{vnd(sell)}đ</b> (ví thuê số)\n\n"
         f"⏳ Bot đang tự chờ mã OTP trong {RENT_TTL_MIN} phút. "
         f"Có mã sẽ báo ngay cho bạn.",
         parse_mode="HTML", reply_markup=kb)

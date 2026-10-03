@@ -579,6 +579,7 @@ COMMANDS = [
     BotCommand(command="nap",         description="Nạp tiền tự động qua PayOS (chọn ví)"),
     BotCommand(command="napshop",     description="Nạp tiền vào ví shop mua acc"),
     BotCommand(command="napbuff",     description="Nạp tiền vào ví buff (buff tương tác MXH)"),
+    BotCommand(command="napthueso",   description="Nạp tiền vào ví thuê số OTP"),
     BotCommand(command="buff",        description="🛍️ Shop buff tương tác MXH"),
     BotCommand(command="shopbuff",    description="🛍️ Shop buff tương tác MXH"),
     BotCommand(command="buffadm",     description="🛠️ Quản lý shop buff (admin)"),
@@ -718,7 +719,7 @@ _HUONGDAN_TEXTS = {
         "2️⃣ Xem giá → bấm Thuê số → xác nhận\n"
         "3️⃣ Nhận số điện thoại, nhập vào app cần xác minh\n"
         "4️⃣ Bot tự chờ mã OTP, có mã báo ngay\n\n"
-        "💡 Trừ <b>ví chính</b> — nạp bằng /nap.\n"
+        "💡 Trừ <b>ví thuê số</b> — nạp bằng /napthueso.\n"
         "⏳ Số dùng trong 15 phút."
     ),
 }

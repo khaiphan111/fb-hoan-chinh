@@ -111,6 +111,8 @@ MESSAGE_ORDER = [
     "on_buffadm_margin_input",
     "on_napbuff",
     "on_napbuff_amount",
+    "on_napthueso",
+    "on_napthueso_amount",
     "on_hopmutile",
     "on_hopmutoggle",
     "on_hopmutilemulti",
