@@ -606,7 +606,7 @@ async def on_bank_wallet(cb: CallbackQuery):
     try:
         _, target, amount_s = cb.data.split(":")
         amount = int(amount_s)
-        assert target in ("main", "shop", "buff") and amount > 0
+        assert target in ("main", "shop", "buff", "rent") and amount > 0
     except Exception:
         await cb.message.answer("❌ Yêu cầu không hợp lệ.")
         return
@@ -696,7 +696,7 @@ def _parse_payos_amount(raw: str) -> int:
 
 async def _make_payos_order(tg_id: int, amount: int, target: str = "main"):
     """Tạo (hoặc dùng lại) đơn PayOS. Trả (order_code, checkout_url, qr_code, reused)."""
-    if target not in ("main", "shop", "buff"):
+    if target not in ("main", "shop", "buff", "rent"):
         target = "main"
     from .. import payos as payos_mod
     if not payos_mod.is_configured():
@@ -793,6 +793,7 @@ async def _ask_payos_wallet(msg, amount: int):
     main_bal = int(u["balance"] or 0) if u else 0
     shop_bal = int(u["shop_balance"] or 0) if u and "shop_balance" in u.keys() else 0
     buff_bal = int(u["buff_balance"] or 0) if u and "buff_balance" in u.keys() else 0
+    rent_bal = int(u["rent_balance"] or 0) if u and "rent_balance" in u.keys() else 0
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"💰 Ví chính — đang có {vnd(main_bal)}",
@@ -803,6 +804,9 @@ async def _ask_payos_wallet(msg, amount: int):
         [InlineKeyboardButton(
             text=f"👛 Ví buff — đang có {vnd(buff_bal)}",
             callback_data=f"payos_wallet:buff:{amount}")],
+        [InlineKeyboardButton(
+            text=f"📱 Ví thuê số — đang có {vnd(rent_bal)}",
+            callback_data=f"payos_wallet:rent:{amount}")],
     ])
     await msg.answer(
         f"💳 <b>NẠP {vnd(amount)}</b>\n"
@@ -845,11 +849,11 @@ async def on_nap_amt(cb: CallbackQuery):
     try:
         _, target, amount_s = cb.data.split(":")
         amount = int(amount_s)
-        assert target in ("main", "shop", "buff") and amount > 0
+        assert target in ("main", "shop", "buff", "rent") and amount > 0
     except Exception:
         await cb.message.answer("❌ Yêu cầu không hợp lệ, gõ /nap lại nhé.")
         return
-    if target in ("shop", "buff"):
+    if target in ("shop", "buff", "rent"):
         try:
             order_code, checkout_url, qr_code, reused = await _make_payos_order(
                 cb.from_user.id, amount, target)
@@ -895,7 +899,7 @@ async def on_payos_wallet(cb: CallbackQuery):
     try:
         _, target, amount_s = cb.data.split(":")
         amount = int(amount_s)
-        assert target in ("main", "shop", "buff") and amount > 0
+        assert target in ("main", "shop", "buff", "rent") and amount > 0
     except Exception:
         await cb.message.answer("❌ Yêu cầu không hợp lệ, gõ /nap lại nhé.")
         return
