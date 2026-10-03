@@ -578,6 +578,7 @@ async def _ask_bank_wallet(msg, amount: int):
         [InlineKeyboardButton(text="💰 Ví chính", callback_data=f"bank_wallet:main:{amount}")],
         [InlineKeyboardButton(text="🛒 Ví shop", callback_data=f"bank_wallet:shop:{amount}")],
         [InlineKeyboardButton(text="👛 Ví buff", callback_data=f"bank_wallet:buff:{amount}")],
+        [InlineKeyboardButton(text="📱 Ví thuê số", callback_data=f"bank_wallet:rent:{amount}")],
     ])
     await msg.answer(f"💳 Cộng <b>{vnd(amount)}</b> vào ví nào (sau khi admin duyệt)?",
                      parse_mode="HTML", reply_markup=kb)
@@ -622,7 +623,7 @@ async def process_bank_amount(msg: Message, user, amount: int, target: str = "ma
         f"👤 Khách: {html.escape(username_str)}\n"
         f"🆔 ID Telegram: {user.id}\n"
         f"💰 Số tiền: {vnd(amount)}\n"
-        f"👛 Ví: {'🛒 Ví shop' if target == 'shop' else ('👛 Ví buff' if target == 'buff' else '💰 Ví chính')}\n\n"
+        f"👛 Ví: {'🛒 Ví shop' if target == 'shop' else ('👛 Ví buff' if target == 'buff' else ('📱 Ví thuê số' if target == 'rent' else '💰 Ví chính'))}\n\n"
         f"👉 ĐỂ TẠO & PHÁT CODE, gửi lệnh:\n/phatcode {user.id} {amount}\n\n"
         f"👉 Cú pháp cộng thẳng: /topup {user.id} {amount}\n"
         "👉 Hoặc cộng thủ công trên trang Quản lý."
