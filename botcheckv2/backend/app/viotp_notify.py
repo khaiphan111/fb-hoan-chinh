@@ -8,6 +8,10 @@
 import asyncio
 import logging
 import os
+import sys
+
+sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+import dynamic_credentials as _dc
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
@@ -21,6 +25,15 @@ from . import db
 
 log = logging.getLogger("viotp_notify")
 router = Router()
+
+_VAULT_CRED = "custom.viotp-notify-bot"
+
+
+def _vault_token() -> str:
+    """Surrogate token từ Secure Vault (Sentinel thay bằng token thật khi gọi ra ngoài)."""
+    entry = _dc.dynamic_credential_entry(_VAULT_CRED)
+    tok = str(entry.get("surrogate") or "").strip()
+    return tok
 
 
 def privileged_ids() -> set:
@@ -90,7 +103,7 @@ class ViotpNotifyManager:
         self.running = False
 
     async def start(self):
-        token = (db.get_setting("viotp_notify_bot_token") or "").strip()
+        token = _vault_token()
         main_token = (db.get_setting("bot_token", "") or "").strip()
         admin_token = (db.get_setting("admin_bot_token", "") or "").strip()
         acc_token = (db.get_setting("notify_bot_token", "") or "").strip()

@@ -948,6 +948,14 @@ def consign_setting_set_ep(body: ConsignSettingIn, admin=Depends(require_role("s
 
 # ---------------- Thuê số OTP (ViOTP) ----------------
 
+def _viotp_notify_configured() -> bool:
+    try:
+        from . import viotp_notify as _vn
+        return bool(_vn._vault_token())
+    except Exception:
+        return False
+
+
 @router.get("/viotp/overview")
 def viotp_overview(_=Depends(auth)):
     """Tổng quan thuê số: thống kê + cấu hình."""
@@ -957,7 +965,7 @@ def viotp_overview(_=Depends(auth)):
             "stats": db.viotp_stats(),
             "enabled": db.get_setting("viotp_enabled", "1") == "1",
             "markup_pct": db.get_setting("viotp_markup_pct", "50"),
-            "has_notify_bot": bool((db.get_setting("viotp_notify_bot_token") or "").strip()),
+            "has_notify_bot": _viotp_notify_configured(),
         },
     }
 
