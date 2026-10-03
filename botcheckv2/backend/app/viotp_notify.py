@@ -36,6 +36,22 @@ def _vault_token() -> str:
     return tok
 
 
+# aiogram validate format token Telegram (digits:xxx) -> patch để chấp nhận surrogate hsurr:
+try:
+    import aiogram.client.bot as _botmod
+    import aiogram.utils.token as _tokmod
+    _orig_validate = _tokmod.validate_token
+
+    def _validate_allow_surrogate(token: str):
+        if isinstance(token, str) and token.startswith("hsurr:"):
+            return True
+        return _orig_validate(token)
+
+    _botmod.validate_token = _validate_allow_surrogate
+except Exception:
+    pass
+
+
 def privileged_ids() -> set:
     ids = set()
     raw = (db.get_setting("notify_privileged_ids", "") or "").strip()
