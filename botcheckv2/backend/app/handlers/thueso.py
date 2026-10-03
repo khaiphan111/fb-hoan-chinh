@@ -39,7 +39,8 @@ def _enabled() -> bool:
 
 
 def _token() -> str:
-    return db.get_setting("viotp_token", "")
+    # Token lấy từ Secure Vault (custom.viotp) trong app/viotp.py
+    return ""
 
 
 def _menu_kb() -> InlineKeyboardMarkup:
@@ -58,16 +59,8 @@ def _back_menu_kb() -> InlineKeyboardMarkup:
 
 async def _services_or_error(obj) -> list | None:
     """Lấy danh sách dịch vụ; trả None + báo lỗi nếu không được."""
-    token = _token()
-    if not token:
-        txt = "⚠️ Shop thuê số chưa được cấu hình xong. Vui lòng quay lại sau."
-        if isinstance(obj, CallbackQuery):
-            await obj.answer(txt, show_alert=True)
-        else:
-            await obj.answer(txt)
-        return None
     try:
-        return await viotp.get_services(token)
+        return await viotp.get_services()
     except viotp.ViotpError as e:
         txt = f"⚠️ Không lấy được danh sách dịch vụ: {html.escape(str(e))}"
         if isinstance(obj, CallbackQuery):

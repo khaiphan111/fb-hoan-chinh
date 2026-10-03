@@ -10,6 +10,10 @@ Session Status: 0 = đang chờ OTP, 1 = đã nhận OTP, 2 = hết hạn/hủy.
 """
 import logging
 import time
+import sys
+
+sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+import dynamic_credentials as _dc
 
 from .fb import _make_http_client
 
@@ -17,6 +21,7 @@ log = logging.getLogger("viotp")
 
 BASE = "https://api.viotp.com"
 TIMEOUT = 25
+_VAULT_CRED = "custom.viotp"
 
 # Cache danh sách dịch vụ trong RAM (tránh spam API mỗi lần mở menu).
 _services_cache: dict = {"at": 0, "country": "", "items": []}
@@ -27,9 +32,28 @@ class ViotpError(Exception):
     pass
 
 
+def _vault_token() -> str:
+    """Lấy surrogate token từ Secure Vault (authd thay bằng token thật khi gọi ra ngoài)."""
+    entry = _dc.dynamic_credential_entry(_VAULT_CRED)
+    tok = str(entry.get("surrogate") or "").strip()
+    if not tok:
+        raise ViotpError("Không lấy được credential ViOTP từ vault")
+    return tok
+
+
+def _resolve_token(token: str = "") -> str:
+    if token:
+        return token
+    try:
+        return _vault_token()
+    except ViotpError:
+        raise
+    except Exception as e:
+        raise ViotpError(f"Lỗi đọc credential ViOTP: {e}") from e
+
+
 async def _get(token: str, path: str, params: dict) -> dict:
-    if not token:
-        raise ViotpError("Chưa cấu hình ViOTP token")
+    token = _resolve_token(token)
     q = {"token": token}
     q.update(params or {})
     try:
@@ -46,7 +70,7 @@ async def _get(token: str, path: str, params: dict) -> dict:
     return body.get("data") or {}
 
 
-async def get_services(token: str, country: str = "vn", force: bool = False) -> list:
+async def get_services(token: str = "", country: str = "vn", force: bool = False) -> list:
     """Danh sách dịch vụ: [{id, name, price}] — price là giá vốn (đồng)."""
     global _services_cache
     now = time.time()
@@ -89,7 +113,7 @@ async def rent_number(token: str, service_id: int, country: str = "vn") -> dict:
     }
 
 
-async def get_session(token: str, request_id: str) -> dict:
+async def get_session(token: str = "", request_id: str = "") -> dict:
     """Poll OTP: trả về {status: 0|1|2, code: str}."""
     data = await _get(token, "/session/getv2", {"requestId": request_id})
     try:

@@ -1478,14 +1478,13 @@ class FollowerPoller:
     async def _process_viotp_waiting(self):
         from . import viotp as _viotp_mod
         from .util import vnd
-        token = db.get_setting("viotp_token", "")
-        if not token or db.get_setting("viotp_enabled", "1") != "1":
+        if db.get_setting("viotp_enabled", "1") != "1":
             return
         # 1. Poll các đơn đang chờ
         for r in db.viotp_rental_waiting(15):
             rid = int(r["id"])
             try:
-                sess = await _viotp_mod.get_session(token, r["request_id"])
+                sess = await _viotp_mod.get_session(request_id=r["request_id"])
             except Exception as e:
                 log.warning("viotp poll #%s lỗi: %s", rid, e)
                 continue
