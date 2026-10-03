@@ -710,6 +710,17 @@ _HUONGDAN_TEXTS = {
         "💡 Mua bằng <b>ví buff riêng</b> — nạp bằng /napbuff.\n"
         "⚠️ Link đúng định dạng, tài khoản để công khai."
     ),
+    "thueso": (
+        "📱 <b>THUÊ SỐ NHẬN OTP</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "1️⃣ Gõ <b>/thueso</b> → chọn dịch vụ\n"
+        "(Facebook, Gmail, Telegram, Zalo, TikTok...)\n"
+        "2️⃣ Xem giá → bấm Thuê số → xác nhận\n"
+        "3️⃣ Nhận số điện thoại, nhập vào app cần xác minh\n"
+        "4️⃣ Bot tự chờ mã OTP, có mã báo ngay\n\n"
+        "💡 Trừ <b>ví chính</b> — nạp bằng /nap.\n"
+        "⏳ Số dùng trong 15 phút."
+    ),
 }
 
 _HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
@@ -718,6 +729,7 @@ _HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🛡️ Bảo hành", callback_data="hd:bh"),
      InlineKeyboardButton(text="🔍 Kiểm tra acc", callback_data="hd:check")],
     [InlineKeyboardButton(text="🛍️ Buff tương tác", callback_data="hd:buff")],
+    [InlineKeyboardButton(text="📱 Thuê số OTP", callback_data="hd:thueso")],
 ])
 
 manager = BotManager()
