@@ -26,7 +26,7 @@ POPULAR_KEYS = [
     "facebook", "gmail", "telegram", "zalo", "tiktok", "whatsapp",
     "instagram", "openai", "shopee", "lazada",
 ]
-PAGE_SIZE = 10
+PAGE_SIZE = 12
 RENT_TTL_MIN = 15  # thời gian chờ OTP mỗi lượt thuê
 
 
@@ -46,6 +46,7 @@ def _token() -> str:
 def _menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔥 Dịch vụ phổ biến", callback_data="ts:hot")],
+        [InlineKeyboardButton(text="📋 Tất cả dịch vụ", callback_data="ts:all:0")],
         [InlineKeyboardButton(text="🔍 Tìm dịch vụ", callback_data="ts:search")],
         [InlineKeyboardButton(text="📋 Đơn thuê của tôi", callback_data="ts:my")],
     ])
@@ -151,6 +152,23 @@ async def on_ts_hot(cb: CallbackQuery):
         parse_mode="HTML", reply_markup=_svc_rows(hot, 0, "hot"))
 
 
+@router.callback_query(F.data.startswith("ts:all:"))
+async def on_ts_all(cb: CallbackQuery):
+    try:
+        page = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        page = 0
+    items = await _services_or_error(cb)
+    if items is None:
+        return
+    # Sắp xếp theo tên cho dễ tìm
+    items = sorted(items, key=lambda s: s["name"].lower())
+    await cb.answer()
+    await cb.message.edit_text(
+        f"📋 <b>Tất cả dịch vụ</b> ({len(items)} dịch vụ) — chọn để xem giá và thuê số:",
+        parse_mode="HTML", reply_markup=_svc_rows(items, page, "all"))
+
+
 @router.callback_query(F.data == "ts:search")
 async def on_ts_search(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
@@ -228,6 +246,9 @@ async def on_ts_page(cb: CallbackQuery, state: FSMContext):
         return
     if prefix == "hot":
         lst, title = _popular(items), "🔥 <b>Dịch vụ phổ biến</b> — chọn để xem giá và thuê số:"
+    elif prefix == "all":
+        lst = sorted(items, key=lambda s: s["name"].lower())
+        title = f"📋 <b>Tất cả dịch vụ</b> ({len(lst)} dịch vụ) — chọn để xem giá và thuê số:"
     else:
         data = await state.get_data()
         ids = data.get("search_results") or []

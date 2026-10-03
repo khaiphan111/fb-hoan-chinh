@@ -448,6 +448,7 @@ CALLBACK_ORDER = [
 
     "on_ts_menu",
     "on_ts_hot",
+    "on_ts_all",
     "on_ts_search",
     "on_ts_svc",
     "on_ts_page",
