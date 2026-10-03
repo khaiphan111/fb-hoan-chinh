@@ -462,6 +462,7 @@ def _thueoadm_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=f"💰 Lãi thêm: {markup}% — bấm để đổi",
                               callback_data="tsadm:markup")],
         [InlineKeyboardButton(text="📋 10 đơn gần nhất", callback_data="tsadm:recent")],
+        [InlineKeyboardButton(text="🤖 Bot báo riêng", callback_data="tsadm:bot")],
         [InlineKeyboardButton(text="🔄 Làm mới", callback_data="tsadm:menu")],
     ])
 
@@ -477,8 +478,24 @@ def _thueoadm_text() -> str:
         f"Doanh thu: <b>{vnd(st['revenue'])}đ</b>\n"
         f"💵 Lãi: <b>{vnd(st['profit'])}đ</b> • "
         f"⏳ Đang chờ OTP: <b>{st['waiting']}</b>\n\n"
-        f"Trạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'} • Lãi thêm: {markup}%"
+        f"Trạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'} • Lãi thêm: {markup}%\n"
+        f"🤖 Bot báo riêng: {_viotp_bot_status()}"
     )
+
+
+def _viotp_bot_status() -> str:
+    try:
+        from ..viotp_notify import manager
+        return "🟢 đang chạy" if manager.running else "🔴 chưa chạy"
+    except Exception:
+        return "❓ không rõ"
+
+
+def _thueoadm_bot_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📨 Gửi tin test", callback_data="tsadm:bottest")],
+        [InlineKeyboardButton(text="⬅️ Quay lại", callback_data="tsadm:menu")],
+    ])
 
 
 @router.message(Command("thueoadm"))
@@ -522,6 +539,33 @@ async def on_tsadm_cb(cb: CallbackQuery, state: FSMContext):
             return
         await state.set_state(ThueSoAdmState.waiting_for_markup)
         await cb.message.answer("💰 Nhập % lãi thêm mới (0–500, vd: 50):")
+        return
+
+    if action == "bot":
+        status = _viotp_bot_status()
+        try:
+            from ..viotp_notify import privileged_ids
+            pids = ", ".join(f"<code>{p}</code>" for p in sorted(privileged_ids()))
+        except Exception:
+            pids = "?"
+        await cb.message.edit_text(
+            f"🤖 <b>BOT BÁO RIÊNG THUÊ SỐ</b>\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"Trạng thái: <b>{status}</b>\n"
+            f"Người nhận: {pids}\n\n"
+            f"Bot này báo đơn thuê mới + OTP về cho admin.",
+            parse_mode="HTML", reply_markup=_thueoadm_bot_kb())
+        return
+
+    if action == "bottest":
+        try:
+            from ..viotp_notify import manager
+            ok = await manager.send_to_privileged(
+                "🧪 <b>Tin test bot báo thuê số</b>\nBot đang hoạt động bình thường.")
+        except Exception:
+            ok = False
+        await cb.answer("✅ Đã gửi!" if ok else "❌ Gửi thất bại (bot chưa chạy).",
+                        show_alert=True)
         return
 
     if action == "recent":
