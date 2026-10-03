@@ -12,6 +12,7 @@ from . import admin  # noqa: F401  (đăng ký handlers)
 from . import pauseadm  # noqa: F401  (đăng ký handlers: tạm dừng/mở lại bot)
 from . import buff  # noqa: F401  (đăng ký handlers: shop buff tương tác)
 from . import consign  # noqa: F401  (đăng ký handlers: ký gửi acc /kygui /kyguiadm)
+from . import thueso  # noqa: F401  (đăng ký handlers: shop thuê số OTP /thueso)
 from . import fallback  # noqa: F401  (đăng ký handlers)
 
 # Khôi phục đúng thứ tự handler gốc (aiogram ưu tiên handler đăng ký trước).

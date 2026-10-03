@@ -259,7 +259,8 @@ MESSAGE_ORDER = [
     "_kga_set_value",
     "_kg_wd_ch",
     "on_kyguiadm",
-
+    "on_thueso_cmd",
+    "on_ts_search_input",
 ]
 CALLBACK_ORDER = [
     "_on_admm_cb",
@@ -445,4 +446,14 @@ CALLBACK_ORDER = [
     "_approve_batch",
     "_kga_set_pick",
 
+    "on_ts_menu",
+    "on_ts_hot",
+    "on_ts_search",
+    "on_ts_svc",
+    "on_ts_page",
+    "on_ts_rent",
+    "on_ts_confirm",
+    "on_ts_check",
+    "on_ts_my",
+    "on_ts_detail",
 ]

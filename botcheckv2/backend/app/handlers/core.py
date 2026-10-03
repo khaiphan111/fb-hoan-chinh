@@ -540,6 +540,7 @@ MENU = ReplyKeyboardMarkup(
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
         [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
         [KeyboardButton(text="/web"), KeyboardButton(text="/huongdan"), KeyboardButton(text="/buff")],
+        [KeyboardButton(text="/thueso")],
     ],
     resize_keyboard=True,
 )

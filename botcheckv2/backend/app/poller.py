@@ -105,6 +105,8 @@ class FollowerPoller:
         if not hasattr(self, '_buff_task') or not (self._buff_task and not self._buff_task.done()):
             self._buff_task = asyncio.create_task(self._buff_loop())
             self._buff_running = False
+        if not hasattr(self, '_viotp_task') or not (self._viotp_task and not self._viotp_task.done()):
+            self._viotp_task = asyncio.create_task(self._viotp_loop())
         log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign + maintenance + buff).")
 
     async def _daily_summary_loop(self):
@@ -1441,6 +1443,8 @@ class FollowerPoller:
             tasks.append(self._proxy_task)
         if hasattr(self, '_buff_task'):
             tasks.append(self._buff_task)
+        if hasattr(self, '_viotp_task'):
+            tasks.append(self._viotp_task)
         for t in tasks:
             if t:
                 t.cancel()
@@ -1450,6 +1454,74 @@ class FollowerPoller:
         self._proxy_task = None
         if hasattr(self, '_buff_task'):
             self._buff_task = None
+        if hasattr(self, '_viotp_task'):
+            self._viotp_task = None
+
+    # ══ VIOTP LOOP: poll OTP các đơn thuê số đang chờ, mỗi 30s ══
+    async def _viotp_loop(self):
+        """Quét đơn thuê số 'waiting' mỗi 30s, poll OTP từ ViOTP.
+
+        Có mã -> 'done' + báo khách ngay. Hết hạn -> 'expired' + báo khách.
+        Quá 15 phút chưa có mã -> 'expired' (không hoàn tiền: số đã thuê là
+        chi phí nhà cung cấp, giống chính sách các shop thuê số).
+        """
+        await asyncio.sleep(45)
+        while True:
+            try:
+                await self._process_viotp_waiting()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.error("viotp_loop lỗi: %s", e)
+            await asyncio.sleep(30)
+
+    async def _process_viotp_waiting(self):
+        from . import viotp as _viotp_mod
+        from .util import vnd
+        token = db.get_setting("viotp_token", "")
+        if not token or db.get_setting("viotp_enabled", "1") != "1":
+            return
+        # 1. Poll các đơn đang chờ
+        for r in db.viotp_rental_waiting(15):
+            rid = int(r["id"])
+            try:
+                sess = await _viotp_mod.get_session(token, r["request_id"])
+            except Exception as e:
+                log.warning("viotp poll #%s lỗi: %s", rid, e)
+                continue
+            if sess["status"] == 1 and sess["code"]:
+                db.viotp_rental_set_status(rid, "done", sess["code"])
+                try:
+                    await self._bot.send_message(
+                        int(r["tg_id"]),
+                        f"🎉 <b>Đã nhận mã OTP!</b>\n\n"
+                        f"📱 {r['service_name']}\n"
+                        f"📞 <code>{r['phone_number']}</code>\n"
+                        f"🔑 Mã: <code>{sess['code']}</code>\n\n"
+                        f"Chạm vào mã để copy.",
+                        parse_mode="HTML")
+                except Exception as e:
+                    log.warning("viotp notify #%s lỗi: %s", rid, e)
+            elif sess["status"] == 2:
+                db.viotp_rental_set_status(rid, "expired")
+                try:
+                    await self._bot.send_message(
+                        int(r["tg_id"]),
+                        f"⌛ Đơn thuê số #{rid} ({r['service_name']}) đã hết hạn, "
+                        f"chưa nhận được OTP.",
+                        parse_mode="HTML")
+                except Exception:
+                    pass
+        # 2. Đánh dấu hết hạn các đơn chờ quá 15 phút
+        for r in db.viotp_rental_expire_old(15):
+            try:
+                await self._bot.send_message(
+                    int(r["tg_id"]),
+                    f"⌛ Đơn thuê số #{r['id']} ({r['service_name']}) đã hết "
+                    f"thời gian chờ OTP ({vnd(r['sell_price'])}đ).",
+                    parse_mode="HTML")
+            except Exception:
+                pass
 
     # ══ BUFF LOOP: đặt đơn buff hộ trên panel mỗi 2 phút ══
     async def _buff_loop(self):

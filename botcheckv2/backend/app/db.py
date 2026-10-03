@@ -2595,6 +2595,21 @@ def migrate_new_features():
             supplier_id  INTEGER NOT NULL DEFAULT 0,
             cost         INTEGER NOT NULL DEFAULT 0
         )""",
+        """CREATE TABLE IF NOT EXISTS viotp_rentals (
+            id           INTEGER PRIMARY KEY,
+            tg_id        BIGINT NOT NULL DEFAULT 0,
+            request_id   TEXT NOT NULL DEFAULT '',
+            phone_number TEXT NOT NULL DEFAULT '',
+            service_id   INTEGER NOT NULL DEFAULT 0,
+            service_name TEXT NOT NULL DEFAULT '',
+            country      TEXT NOT NULL DEFAULT 'vn',
+            cost_price   INTEGER NOT NULL DEFAULT 0,
+            sell_price   INTEGER NOT NULL DEFAULT 0,
+            status       TEXT NOT NULL DEFAULT 'waiting',
+            otp_code     TEXT NOT NULL DEFAULT '',
+            created_at   BIGINT NOT NULL DEFAULT 0,
+            updated_at   BIGINT NOT NULL DEFAULT 0
+        )""",
     ]:
         _migrate_one(c, sql, applied)
     try:
@@ -6989,3 +7004,105 @@ def consign_batch_do_return(bid: int, approve: bool, by_id: int = 0) -> bool:
             (by_id, "", "consign_return", f"bid={bid} approve={int(approve)}", now))
         c.commit()
         return True
+
+
+# ---------------------------------------------------------------- ViOTP: shop thuê số
+VIOTP_STATUS_LABEL = {
+    "waiting": "⏳ Đang chờ OTP",
+    "done": "✅ Đã nhận OTP",
+    "expired": "⌛ Hết hạn",
+    "cancelled": "❌ Đã hủy",
+    "failed": "⚠️ Lỗi thuê số",
+}
+
+
+def viotp_sell_price(cost: int) -> int:
+    """Giá bán = giá vốn + markup% (setting viotp_markup_pct, mặc định 50), làm tròn 100đ."""
+    try:
+        pct = int(get_setting("viotp_markup_pct", "50") or 50)
+    except ValueError:
+        pct = 50
+    sell = int(cost) * (100 + max(0, pct)) / 100
+    return int(round(sell / 100) * 100)
+
+
+def viotp_rental_create(tg_id: int, request_id: str, phone: str, service_id: int,
+                       service_name: str, country: str, cost: int, sell: int) -> int:
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "INSERT INTO viotp_rentals(tg_id, request_id, phone_number, service_id,"
+            " service_name, country, cost_price, sell_price, status, created_at, updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?, 'waiting',?,?)",
+            (tg_id, request_id, phone, service_id, service_name, country, cost, sell, now, now),
+        )
+        rid = cur.lastrowid
+        if hasattr(c, "cursor"):
+            pass
+        # Postgres: lastrowid không có -> lấy id vừa insert
+        try:
+            rid = int(rid) if rid else None
+        except (TypeError, ValueError):
+            rid = None
+        if not rid:
+            r = c.execute(
+                "SELECT id FROM viotp_rentals WHERE tg_id=? AND request_id=? ORDER BY id DESC LIMIT 1",
+                (tg_id, request_id)).fetchone()
+            rid = int(r["id"]) if r else 0
+        c.commit()
+        return rid or 0
+
+
+def viotp_rental_get(rid: int) -> dict:
+    c = get_conn()
+    r = c.execute("SELECT * FROM viotp_rentals WHERE id=?", (rid,)).fetchone()
+    return dict(r) if r else {}
+
+
+def viotp_rental_set_status(rid: int, status: str, otp: str = "") -> None:
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        if otp:
+            c.execute("UPDATE viotp_rentals SET status=?, otp_code=?, updated_at=? WHERE id=?",
+                      (status, otp, now, rid))
+        else:
+            c.execute("UPDATE viotp_rentals SET status=?, updated_at=? WHERE id=?",
+                      (status, now, rid))
+        c.commit()
+
+
+def viotp_rental_list(tg_id: int, limit: int = 10) -> list:
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM viotp_rentals WHERE tg_id=? ORDER BY id DESC LIMIT ?",
+        (tg_id, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def viotp_rental_waiting(max_age_min: int = 15) -> list:
+    """Các đơn đang chờ OTP còn trong thời gian thuê (cho poller nền)."""
+    cutoff = int(time.time()) - max_age_min * 60
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM viotp_rentals WHERE status='waiting' AND created_at>=? ORDER BY id",
+        (cutoff,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def viotp_rental_expire_old(max_age_min: int = 15) -> list:
+    """Đánh dấu hết hạn các đơn chờ quá lâu, trả về danh sách để báo user."""
+    cutoff = int(time.time()) - max_age_min * 60
+    with _lock:
+        c = get_conn()
+        rows = c.execute(
+            "SELECT * FROM viotp_rentals WHERE status='waiting' AND created_at<?",
+            (cutoff,)).fetchall()
+        out = [dict(r) for r in rows]
+        if out:
+            c.execute("UPDATE viotp_rentals SET status='expired', updated_at=? "
+                      "WHERE status='waiting' AND created_at<?",
+                      (int(time.time()), cutoff))
+            c.commit()
+        return out
