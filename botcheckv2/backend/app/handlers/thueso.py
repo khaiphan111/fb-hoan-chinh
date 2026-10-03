@@ -498,7 +498,7 @@ def _thueoadm_bot_kb() -> InlineKeyboardMarkup:
     ])
 
 
-@router.message(Command("thueoadm"))
+@router.message(Command("thuesoadm"))
 async def on_thueoadm(msg: Message, state: FSMContext):
     from .core import _is_admin
     if not _is_admin(msg.from_user.id):
