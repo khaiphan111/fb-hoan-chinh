@@ -15,6 +15,7 @@ import {
   IconAffiliate,
   IconBell,
   IconRocket,
+  IconDeviceMobile,
   IconShoppingCart,
   IconHeartHandshake,
   IconPlayerPause,
@@ -44,6 +45,7 @@ import Referral from "./pages/Referral";
 import Alerts from "./pages/Alerts";
 import Shop from "./pages/Shop";
 import Buff from "./pages/Buff";
+import ThueSo from "./pages/ThueSo";
 import Consign from "./pages/Consign";
 import PauseModal from "./components/PauseModal";
 
@@ -57,6 +59,7 @@ const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "users", label: "Người dùng", icon: IconUsers },
   { key: "shop", label: "Shop Acc", icon: IconShoppingCart, roles: ["super_admin", "admin"] },
   { key: "buff", label: "Buff tương tác", icon: IconRocket, roles: ["super_admin", "admin"] },
+  { key: "thueso", label: "Thuê số OTP", icon: IconDeviceMobile, roles: ["super_admin", "admin"] },
   { key: "consign", label: "Ký gửi", icon: IconHeartHandshake, roles: ["super_admin"] },
   { key: "codes", label: "Kho Code", icon: IconListCheck },
   { key: "proxies", label: "Hệ thống Proxy", icon: IconServer, roles: ["super_admin", "admin"] },
@@ -289,6 +292,7 @@ export default function App() {
         { tab === "alerts" && <Alerts /> }
         { tab === "shop" && <Shop /> }
         { tab === "buff" && <Buff /> }
+        { tab === "thueso" && <ThueSo /> }
         { tab === "consign" && <Consign /> }
       </main>
       <PauseModal

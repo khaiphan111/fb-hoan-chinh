@@ -944,3 +944,47 @@ def consign_setting_set_ep(body: ConsignSettingIn, admin=Depends(require_role("s
         return {"ok": False, "error": "key không hợp lệ"}
     db.set_setting(body.key, body.value)
     return {"ok": True}
+
+
+# ---------------- Thuê số OTP (ViOTP) ----------------
+
+@router.get("/viotp/overview")
+def viotp_overview(_=Depends(auth)):
+    """Tổng quan thuê số: thống kê + cấu hình."""
+    return {
+        "ok": True,
+        "data": {
+            "stats": db.viotp_stats(),
+            "enabled": db.get_setting("viotp_enabled", "1") == "1",
+            "markup_pct": db.get_setting("viotp_markup_pct", "50"),
+            "has_notify_bot": bool((db.get_setting("viotp_notify_bot_token") or "").strip()),
+        },
+    }
+
+
+class ViotpCfgIn(BaseModel):
+    key: str
+    value: str
+
+
+@router.post("/viotp/config")
+def viotp_config_set(body: ViotpCfgIn, admin=Depends(require_role("super_admin"))):
+    """Đổi cấu hình: viotp_enabled (0/1), viotp_markup_pct."""
+    allowed = {"viotp_enabled", "viotp_markup_pct"}
+    if body.key not in allowed:
+        return {"ok": False, "error": "key không hợp lệ"}
+    if body.key == "viotp_markup_pct":
+        try:
+            pct = int(body.value)
+            if not 0 <= pct <= 500:
+                return {"ok": False, "error": "markup phải 0–500%"}
+        except ValueError:
+            return {"ok": False, "error": "markup phải là số"}
+    db.set_setting(body.key, body.value)
+    return {"ok": True}
+
+
+@router.get("/viotp/rentals")
+def viotp_rentals(limit: int = Query(50, le=200), _=Depends(auth)):
+    """Danh sách đơn thuê số mới nhất."""
+    return {"ok": True, "data": db.viotp_rental_list_all(limit)}

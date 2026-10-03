@@ -20,6 +20,7 @@ _bot_manager = None
 _zalo_manager = None
 _admin_manager = None
 _notify_manager = None
+_viotp_notify_manager = None
 _poller = None
 
 app = FastAPI(title=config.APP_NAME)
@@ -129,12 +130,14 @@ async def on_startup():
     
     async def start_services():
         # Lazy import bot managers (nang, ~7s aiogram) - chay background sau khi health da len
-        global _bot_manager, _zalo_manager, _admin_manager, _notify_manager, _poller
+        global _bot_manager, _zalo_manager, _admin_manager, _notify_manager, _viotp_notify_manager, _poller
         from .bot import manager as _m, zalo_manager as _zm
         from .admin_bot import manager as _am
         from .notify_bot import manager as _nm
+        from .viotp_notify import manager as _vnm
         from .poller import poller as _p
         _bot_manager, _zalo_manager, _admin_manager, _notify_manager, _poller = _m, _zm, _am, _nm, _p
+        _viotp_notify_manager = _vnm
         # Alias de code ben duoi khong phai sua
         manager, zalo_manager, admin_manager, notify_manager, poller = _m, _zm, _am, _nm, _p
         token = db.get_setting("bot_token")
@@ -181,6 +184,8 @@ async def on_startup():
         await admin_manager.start()
         print("DEBUG: Start notify_manager.start()", flush=True)
         await notify_manager.start()
+        print("DEBUG: Start viotp_notify_manager.start()", flush=True)
+        await _viotp_notify_manager.start()
                 
         if started_any:
             print("DEBUG: Start poller.start()", flush=True)
@@ -247,6 +252,8 @@ async def on_shutdown():
         await _stop_step("admin_manager.stop", _admin_manager.stop())
     if _notify_manager is not None:
         await _stop_step("notify_manager.stop", _notify_manager.stop())
+    if _viotp_notify_manager is not None:
+        await _stop_step("viotp_notify_manager.stop", _viotp_notify_manager.stop())
     await _stop_step("stop_keep_alive", stop_keep_alive())
     try:
         with open(_HEARTBEAT_FILE, "w") as f:

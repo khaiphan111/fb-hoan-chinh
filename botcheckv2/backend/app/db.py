@@ -7106,3 +7106,29 @@ def viotp_rental_expire_old(max_age_min: int = 15) -> list:
                       (int(time.time()), cutoff))
             c.commit()
         return out
+
+
+def viotp_rental_list_all(limit: int = 20) -> list:
+    """Tất cả đơn thuê số mới nhất (cho bot báo admin / web admin)."""
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM viotp_rentals ORDER BY id DESC LIMIT ?",
+        (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def viotp_stats() -> dict:
+    """Thống kê thuê số: tổng đơn, doanh thu, lãi."""
+    c = get_conn()
+    r = c.execute(
+        "SELECT COUNT(*) n, COALESCE(SUM(sell_price),0) rev, "
+        "COALESCE(SUM(sell_price - cost_price),0) profit FROM viotp_rentals").fetchone()
+    r = dict(r) if r else {}
+    w = c.execute(
+        "SELECT COUNT(*) n FROM viotp_rentals WHERE status='waiting'").fetchone()
+    return {
+        "total": r.get("n", 0),
+        "revenue": r.get("rev", 0),
+        "profit": r.get("profit", 0),
+        "waiting": (dict(w).get("n", 0) if w else 0),
+    }

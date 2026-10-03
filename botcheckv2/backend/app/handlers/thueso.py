@@ -308,6 +308,14 @@ async def on_ts_confirm(cb: CallbackQuery):
         tg_id, rent["request_id"], rent["phone_number"], sid,
         s["name"], "vn", cost, sell)
     await cb.answer("Thuê số thành công!")
+    # Báo bot riêng cho admin
+    try:
+        from .. import viotp_notify as _vn
+        r = db.viotp_rental_get(rid)
+        username = (cb.from_user.username or "")
+        await _vn.manager.send_to_privileged(_vn.rental_notify_text(r, username))
+    except Exception as e:
+        log.warning("bao admin thue so that bai: %s", e)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Kiểm tra OTP ngay",
                               callback_data=f"ts:check:{rid}")],

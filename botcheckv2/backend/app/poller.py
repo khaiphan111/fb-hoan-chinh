@@ -1501,6 +1501,13 @@ class FollowerPoller:
                         parse_mode="HTML")
                 except Exception as e:
                     log.warning("viotp notify #%s lỗi: %s", rid, e)
+                # Báo bot riêng cho admin
+                try:
+                    from . import viotp_notify as _vn
+                    rr = db.viotp_rental_get(rid)
+                    await _vn.manager.send_to_privileged(_vn.otp_notify_text(rr))
+                except Exception as e:
+                    log.warning("bao admin OTP #%s lỗi: %s", rid, e)
             elif sess["status"] == 2:
                 db.viotp_rental_set_status(rid, "expired")
                 try:
