@@ -73,12 +73,6 @@ def _can_request(tg_id: int) -> tuple[bool, str]:
     return True, ""
 
 
-def _my_debt_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 Xin ứng tiền", callback_data="loan:req")],
-    ])
-
-
 # ---------- KHÁCH: xin ứng ----------
 
 @router.callback_query(F.data == "loan:req")
@@ -130,7 +124,7 @@ async def on_loan_amount(msg: Message, state: FSMContext):
         f"✅ <b>Đã gửi đơn xin ứng {vnd(amount)}đ</b>\n"
         f"Chờ admin duyệt nhé, có kết quả mik báo ngay.",
         parse_mode="HTML")
-    # Báo admin qua bot riêng
+    # Báo admin qua bot riêng (1 lần duy nhất, kèm nút Duyệt/Từ chối)
     try:
         user = db.get_user(tg_id) or {}
         name = user.get("full_name", "") or user.get("username", "") or str(tg_id)
@@ -148,13 +142,22 @@ async def on_loan_amount(msg: Message, state: FSMContext):
             InlineKeyboardButton(text="✅ Duyệt", callback_data=f"loan:ap:{lid}"),
             InlineKeyboardButton(text="❌ Từ chối", callback_data=f"loan:rj:{lid}"),
         ]])
-        await _notify_admin_smart(msg.bot, text + "\u200b", perm=None)
-        # Gửi kèm nút qua notify bot manager trực tiếp để có inline keyboard
-        from . import notify_bot as _nb
+        # Ưu tiên gửi qua notify bot kèm nút; nếu không được mới fallback text thường
+        sent = False
         try:
-            await _nb.manager.send_to_privileged(text, reply_markup=kb)
+            from . import notify_bot as _nb
+            if _nb.manager.running and _nb.manager.bot:
+                for pid in _nb.privileged_ids():
+                    try:
+                        await _nb.manager.bot.send_message(
+                            pid, text, parse_mode="HTML", reply_markup=kb)
+                        sent = True
+                    except Exception:
+                        pass
         except Exception:
             pass
+        if not sent:
+            await _notify_admin_smart(msg.bot, text, perm=None)
     except Exception as e:
         log.warning("loan notify failed: %s", e)
 
@@ -218,11 +221,15 @@ async def on_loan_approve(cb: CallbackQuery):
     if not loan:
         await cb.answer("Đơn đã được xử lý rồi.", show_alert=True)
         return
-    # Cộng tiền vào ví shop khách
+    # Cộng tiền vào ví shop khách (bắt buộc thành công, nếu không báo lỗi)
     try:
-        db.adjust_shop_balance(loan["tg_id"], loan["amount"], f"ung_tien:loan#{lid}")
+        ok_credit = db.adjust_shop_balance(loan["tg_id"], loan["amount"], f"ung_tien:loan#{lid}")
     except Exception as e:
+        ok_credit = False
         log.warning("adjust_shop_balance failed: %s", e)
+    if not ok_credit:
+        await cb.answer("⚠️ Duyệt xong nhưng cộng tiền thất bại, kiểm tra tay!", show_alert=True)
+        log.error("loan #%s approved but credit failed for %s", lid, loan["tg_id"])
     try:
         db.admin_audit_log(admin_id, "loan_approve", f"duyệt ứng #{lid} {vnd(loan['amount'])}đ cho {loan['tg_id']}")
     except Exception:
@@ -273,9 +280,13 @@ async def on_loan_reject_reason(msg: Message, state: FSMContext):
     data = await state.get_data()
     lid = data.get("reject_lid")
     reason = (msg.text or "").strip()[:200]
-    await state.clear()
     if not lid:
+        await state.clear()
         return
+    if not reason:
+        await msg.answer("Lý do không được để trống. Nhập lý do từ chối:")
+        return
+    await state.clear()
     if db.loan_reject(lid, admin_id, reason):
         try:
             db.admin_audit_log(admin_id, "loan_reject", f"từ chối ứng #{lid}: {reason}")
@@ -436,8 +447,9 @@ async def on_loanadm_view(cb: CallbackQuery):
                       "adjust_up": "tăng nợ", "adjust_down": "giảm nợ"}
         for p in pays[-8:]:
             kl = kind_label.get(p["kind"], p["kind"])
+            amt_disp = vnd(abs(p["amount"]))
             lines.append(f"• {time.strftime('%d/%m %H:%M', time.localtime(p['created_at']))}: "
-                         f"{kl} {vnd(p['amount'])}đ" + (f" — {html.escape(p['note'])}" if p["note"] else ""))
+                         f"{kl} {amt_disp}đ" + (f" — {html.escape(p['note'])}" if p["note"] else ""))
     rows = []
     if ln["status"] == "pending":
         rows.append([
@@ -634,6 +646,11 @@ async def apply_auto_deduct(bot, tg_id: int, credited_amount: int) -> int:
             total_deducted += take
             remaining -= take
     if total_deducted > 0:
+        # Trừ tiền khỏi ví shop (tiền trả nợ không được tiêu tiếp)
+        try:
+            db.adjust_shop_balance(tg_id, -total_deducted, "tru_no_ung_tien")
+        except Exception as e:
+            log.warning("deduct wallet for loan failed: %s", e)
         debt_left = db.loan_total_debt(tg_id)
         try:
             await bot.send_message(
