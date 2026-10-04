@@ -951,6 +951,15 @@ def _admm_main_kb(tg_id=None):
     if not rows:
         rows.append([InlineKeyboardButton(text="🚫 Không có quyền nào",
                                           callback_data="admm:noop")])
+    # Hub quản lý các shop (gộp lệnh adm riêng lẻ vào 1 chỗ)
+    rows.append([InlineKeyboardButton(text="🛒 Shop Acc",
+                                      callback_data="admm:hub:shop"),
+                 InlineKeyboardButton(text="🚀 Shop Buff",
+                                      callback_data="admm:hub:buff")])
+    rows.append([InlineKeyboardButton(text="📱 Thuê số OTP",
+                                      callback_data="admm:hub:thueso"),
+                 InlineKeyboardButton(text="💰 Công nợ",
+                                      callback_data="admm:hub:loan")])
     rows.append([InlineKeyboardButton(text="📖 Hướng dẫn đầy đủ",
                                       callback_data="admm:help")])
     rows.append([InlineKeyboardButton(text="📥 File hướng dẫn cài đặt (SETUP.md)",
@@ -1420,6 +1429,53 @@ def register_adm_menu(target_router):
 
         if action == "noop":
             await _cb_answer(cb, )
+            return
+
+        # ── Hub: mở menu quản lý từng shop (gộp lệnh adm) ──
+        if action.startswith("hub:"):
+            hub = action.split(":", 1)[1]
+            tg_id = cb.from_user.id
+            await _cb_answer(cb, )
+            try:
+                if hub == "shop":
+                    from .shop_menu import _main_text, _main_kb
+                    await cb.message.answer(_main_text(), parse_mode="HTML",
+                                            reply_markup=_main_kb(tg_id))
+                elif hub == "buff":
+                    from .handlers.buff import _buffadm_menu_kb
+                    from . import db as _db
+                    n_svc = _db.get_conn().execute(
+                        "SELECT COUNT(*) n FROM buff_services").fetchone()["n"]
+                    n_pend = _db.get_conn().execute(
+                        "SELECT COUNT(*) n FROM buff_orders WHERE status='pending'").fetchone()["n"]
+                    await cb.message.answer(
+                        "🛍️ <b>QUẢN LÝ SHOP BUFF</b>\n"
+                        "━━━━━━━━━━━━━━\n"
+                        f"📦 Dịch vụ: <b>{n_svc}</b> • ⏳ Đơn chờ: <b>{n_pend}</b>\n\n"
+                        "Chọn nền tảng để xem/sửa giá:",
+                        parse_mode="HTML",
+                        reply_markup=_buffadm_menu_kb(tg_id))
+                elif hub == "thueso":
+                    from .handlers.thueso import _thueoadm_text, _thueoadm_kb
+                    await cb.message.answer(_thueoadm_text(), parse_mode="HTML",
+                                            reply_markup=_thueoadm_kb())
+                elif hub == "loan":
+                    from .handlers.loan import _loanadm_kb
+                    from . import db as _db2
+                    from . import perms as _perms2
+                    from .util import vnd as _vnd
+                    st = _db2.loan_stats()
+                    await cb.message.answer(
+                        f"💰 <b>CÔNG NỢ ỨNG TIỀN</b>\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"⏳ Chờ duyệt: <b>{st['pending_count']}</b>\n"
+                        f"📋 Đang nợ: <b>{st['active_count']}</b> khoản — <b>{_vnd(st['active_debt'])}đ</b>\n"
+                        f"🔴 Quá hạn: <b>{st['overdue_count']}</b> khoản — <b>{_vnd(st['overdue_debt'])}đ</b>",
+                        parse_mode="HTML",
+                        reply_markup=_loanadm_kb(_perms2.is_super(tg_id)))
+            except Exception as e:
+                log.warning("admm hub %s failed: %s", hub, e)
+                await cb.message.answer("⚠️ Không mở được menu. Thử gõ lệnh tay nhé.")
             return
 
         # ── Cộng tiền: chọn ví (bước 3/3) ──
