@@ -7144,12 +7144,20 @@ def viotp_rental_expire_old(max_age_min: int = 15) -> list:
         return out
 
 
-def viotp_rental_list_all(limit: int = 20) -> list:
-    """Tất cả đơn thuê số mới nhất (cho bot báo admin / web admin)."""
+def viotp_rental_list_all(limit: int = 20, q: str = "") -> list:
+    """Tất cả đơn thuê số mới nhất (cho bot báo admin / web admin). Có tìm kiếm."""
     c = get_conn()
-    rows = c.execute(
-        "SELECT * FROM viotp_rentals ORDER BY id DESC LIMIT ?",
-        (limit,)).fetchall()
+    if q:
+        like = f"%{q}%"
+        rows = c.execute(
+            "SELECT * FROM viotp_rentals WHERE service_name LIKE ? OR phone_number LIKE ?"
+            " OR CAST(tg_id AS TEXT) LIKE ? OR CAST(id AS TEXT) LIKE ?"
+            " ORDER BY id DESC LIMIT ?",
+            (like, like, like, like, limit)).fetchall()
+    else:
+        rows = c.execute(
+            "SELECT * FROM viotp_rentals ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()
     return [dict(r) for r in rows]
 
 

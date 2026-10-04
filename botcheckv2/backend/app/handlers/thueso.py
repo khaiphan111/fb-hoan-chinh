@@ -29,6 +29,25 @@ POPULAR_KEYS = [
 PAGE_SIZE = 12
 RENT_TTL_MIN = 15  # thời gian chờ OTP mỗi lượt thuê
 
+# Quốc gia hỗ trợ (mã ISO cho API ViOTP)
+COUNTRIES = [
+    ("vn", "🇻🇳 Việt Nam"),
+    ("th", "🇹🇭 Thái Lan"),
+    ("id", "🇮🇩 Indonesia"),
+    ("ph", "🇵🇭 Philippines"),
+    ("my", "🇲🇾 Malaysia"),
+    ("us", "🇺🇸 Mỹ"),
+    ("gb", "🇬🇧 Anh"),
+]
+DEFAULT_COUNTRY = "vn"
+
+
+def _country_name(code: str) -> str:
+    for c, name in COUNTRIES:
+        if c == code:
+            return name
+    return code.upper()
+
 
 class ThueSoState(StatesGroup):
     waiting_for_search = State()
@@ -43,13 +62,22 @@ def _token() -> str:
     return ""
 
 
-def _menu_kb() -> InlineKeyboardMarkup:
+def _menu_kb(country: str = DEFAULT_COUNTRY) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🌍 Quốc gia: {_country_name(country)}",
+                              callback_data="ts:country")],
         [InlineKeyboardButton(text="🔥 Dịch vụ phổ biến", callback_data="ts:hot")],
         [InlineKeyboardButton(text="📋 Tất cả dịch vụ", callback_data="ts:all:0")],
         [InlineKeyboardButton(text="🔍 Tìm dịch vụ", callback_data="ts:search")],
         [InlineKeyboardButton(text="📋 Đơn thuê của tôi", callback_data="ts:my")],
     ])
+
+
+def _country_kb() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=name, callback_data=f"ts:ct:{code}")]
+            for code, name in COUNTRIES]
+    rows.append([InlineKeyboardButton(text="⬅️ Menu thuê số", callback_data="ts:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _back_menu_kb() -> InlineKeyboardMarkup:
@@ -58,10 +86,31 @@ def _back_menu_kb() -> InlineKeyboardMarkup:
     ])
 
 
-async def _services_or_error(obj) -> list | None:
-    """Lấy danh sách dịch vụ; trả None + báo lỗi nếu không được."""
+async def _get_country(state) -> str:
     try:
-        return await viotp.get_services()
+        data = await state.get_data()
+        return data.get("ts_country", DEFAULT_COUNTRY)
+    except Exception:
+        return DEFAULT_COUNTRY
+
+
+def _disabled_service_ids() -> set:
+    import json as _json
+    try:
+        return set(_json.loads(db.get_setting("viotp_disabled_services", "[]")))
+    except Exception:
+        return set()
+
+
+async def _services_or_error(obj, state=None) -> list | None:
+    """Lấy danh sách dịch vụ; trả None + báo lỗi nếu không được."""
+    country = await _get_country(state) if state else DEFAULT_COUNTRY
+    try:
+        items = await viotp.get_services(country=country)
+        disabled = _disabled_service_ids()
+        if disabled:
+            items = [s for s in items if s.get("id") not in disabled]
+        return items
     except viotp.ViotpError as e:
         txt = f"⚠️ Không lấy được danh sách dịch vụ: {html.escape(str(e))}"
         if isinstance(obj, CallbackQuery):
@@ -130,16 +179,38 @@ async def on_thueso_cmd(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data == "ts:menu")
 async def on_ts_menu(cb: CallbackQuery, state: FSMContext):
-    await state.clear()
+    country = await _get_country(state)
     await cb.answer()
     await cb.message.edit_text(
         "📱 <b>SHOP THUÊ SỐ OTP</b>\nChọn dịch vụ bên dưới nhé:",
-        parse_mode="HTML", reply_markup=_menu_kb())
+        parse_mode="HTML", reply_markup=_menu_kb(country))
+
+
+@router.callback_query(F.data == "ts:country")
+async def on_ts_country(cb: CallbackQuery):
+    await cb.answer()
+    await cb.message.edit_text(
+        "🌍 <b>Chọn quốc gia</b> cho số điện thoại:",
+        parse_mode="HTML", reply_markup=_country_kb())
+
+
+@router.callback_query(F.data.startswith("ts:ct:"))
+async def on_ts_country_pick(cb: CallbackQuery, state: FSMContext):
+    code = cb.data.split(":")[2]
+    if code not in [c for c, _ in COUNTRIES]:
+        await cb.answer("Quốc gia không hợp lệ", show_alert=True)
+        return
+    await state.update_data(ts_country=code)
+    viotp.clear_services_cache()
+    await cb.answer(f"Đã chọn {_country_name(code)}")
+    await cb.message.edit_text(
+        "📱 <b>SHOP THUÊ SỐ OTP</b>\nChọn dịch vụ bên dưới nhé:",
+        parse_mode="HTML", reply_markup=_menu_kb(code))
 
 
 @router.callback_query(F.data == "ts:hot")
-async def on_ts_hot(cb: CallbackQuery):
-    items = await _services_or_error(cb)
+async def on_ts_hot(cb: CallbackQuery, state: FSMContext):
+    items = await _services_or_error(cb, state)
     if items is None:
         return
     hot = _popular(items)
@@ -153,12 +224,12 @@ async def on_ts_hot(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("ts:all:"))
-async def on_ts_all(cb: CallbackQuery):
+async def on_ts_all(cb: CallbackQuery, state: FSMContext):
     try:
         page = int(cb.data.split(":")[2])
     except (ValueError, IndexError):
         page = 0
-    items = await _services_or_error(cb)
+    items = await _services_or_error(cb, state)
     if items is None:
         return
     # Sắp xếp theo tên cho dễ tìm
@@ -185,7 +256,7 @@ async def on_ts_search_input(msg: Message, state: FSMContext):
     if not q:
         await msg.answer("Bạn chưa nhập gì cả. Gõ /thueso để thử lại nhé.")
         return
-    items = await _services_or_error(msg)
+    items = await _services_or_error(msg, state)
     if items is None:
         return
     found = [s for s in items if q in s["name"].lower()][:50]
@@ -203,14 +274,14 @@ async def on_ts_search_input(msg: Message, state: FSMContext):
 # ---------------------------------------------------------------- chi tiết + thuê
 
 @router.callback_query(F.data.startswith("ts:svc:"))
-async def on_ts_svc(cb: CallbackQuery):
+async def on_ts_svc(cb: CallbackQuery, state: FSMContext):
     try:
         _, _, sid_s, page_s, prefix = cb.data.split(":")
         sid, page = int(sid_s), int(page_s)
     except (ValueError, IndexError):
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
-    items = await _services_or_error(cb)
+    items = await _services_or_error(cb, state)
     if items is None:
         return
     s = _svc_by_id(items, sid)
@@ -241,7 +312,7 @@ async def on_ts_page(cb: CallbackQuery, state: FSMContext):
     except (ValueError, IndexError):
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
-    items = await _services_or_error(cb)
+    items = await _services_or_error(cb, state)
     if items is None:
         return
     if prefix == "hot":
@@ -261,13 +332,13 @@ async def on_ts_page(cb: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("ts:rent:"))
-async def on_ts_rent(cb: CallbackQuery):
+async def on_ts_rent(cb: CallbackQuery, state: FSMContext):
     try:
         sid = int(cb.data.split(":")[2])
     except (ValueError, IndexError):
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
-    items = await _services_or_error(cb)
+    items = await _services_or_error(cb, state)
     if items is None:
         return
     s = _svc_by_id(items, sid)
@@ -292,14 +363,14 @@ async def on_ts_rent(cb: CallbackQuery):
 
 
 @router.callback_query(F.data.startswith("ts:confirm:"))
-async def on_ts_confirm(cb: CallbackQuery):
+async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
     try:
         sid = int(cb.data.split(":")[2])
     except (ValueError, IndexError):
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
     tg_id = cb.from_user.id
-    items = await _services_or_error(cb)
+    items = await _services_or_error(cb, state)
     if items is None:
         return
     s = _svc_by_id(items, sid)
@@ -314,7 +385,8 @@ async def on_ts_confirm(cb: CallbackQuery):
         return
     # 2. Gọi API thuê số — lỗi sau khi trừ tiền thì HOÀN TIỀN (chống mất tiền)
     try:
-        rent = await viotp.rent_number(_token(), sid)
+        country = await _get_country(state)
+        rent = await viotp.rent_number(_token(), sid, country=country)
     except Exception as e:
         db.rent_adjust_balance(tg_id, sell, "hoan_tien_thue_so_loi")
         log.error("thue so that bai sau khi tru tien tg=%s: %s", tg_id, e)
@@ -326,7 +398,7 @@ async def on_ts_confirm(cb: CallbackQuery):
         return
     rid = db.viotp_rental_create(
         tg_id, rent["request_id"], rent["phone_number"], sid,
-        s["name"], "vn", cost, sell)
+        s["name"], country, cost, sell)
     await cb.answer("Thuê số thành công!")
     # Báo bot riêng cho admin
     try:
@@ -385,6 +457,13 @@ async def on_ts_check(cb: CallbackQuery):
             f"🔑 Mã: <code>{html.escape(sess['code'])}</code>\n\n"
             f"Chạm vào mã để copy.",
             parse_mode="HTML")
+        # Báo bot riêng cho admin (đồng nhất với poller nền)
+        try:
+            from . import viotp_notify as _vn
+            rr = db.viotp_rental_get(rid)
+            await _vn.manager.send_to_privileged(_vn.otp_notify_text(rr))
+        except Exception:
+            pass
     elif sess["status"] == 2:
         db.viotp_rental_set_status(rid, "expired")
         await cb.message.answer("⌛ Số đã hết hạn, chưa nhận được OTP.")

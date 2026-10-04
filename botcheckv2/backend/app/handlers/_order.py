@@ -451,6 +451,8 @@ CALLBACK_ORDER = [
     "_kga_set_pick",
 
     "on_ts_menu",
+    "on_ts_country",
+    "on_ts_country_pick",
     "on_ts_hot",
     "on_ts_all",
     "on_ts_search",

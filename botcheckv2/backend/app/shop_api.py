@@ -993,6 +993,67 @@ def viotp_config_set(body: ViotpCfgIn, admin=Depends(require_role("super_admin")
 
 
 @router.get("/viotp/rentals")
-def viotp_rentals(limit: int = Query(50, le=200), _=Depends(auth)):
-    """Danh sách đơn thuê số mới nhất."""
-    return {"ok": True, "data": db.viotp_rental_list_all(limit)}
+def viotp_rentals(limit: int = Query(50, le=200), q: str = Query(""),
+                  _=Depends(auth)):
+    """Danh sách đơn thuê số mới nhất, có tìm kiếm."""
+    return {"ok": True, "data": db.viotp_rental_list_all(limit, q)}
+
+
+@router.get("/viotp/services")
+def viotp_services(_=Depends(auth)):
+    """Danh sách dịch vụ ViOTP kèm giá vốn và trạng thái bật/tắt."""
+    import json as _json
+    from . import viotp as _viotp
+    try:
+        items = _viotp.get_services_sync() if hasattr(_viotp, "get_services_sync") else []
+    except Exception:
+        items = []
+    # Nếu không có sync, thử lấy từ cache
+    if not items:
+        try:
+            items = _viotp._services_cache.get("items", [])
+        except Exception:
+            items = []
+    disabled_raw = db.get_setting("viotp_disabled_services", "[]")
+    try:
+        disabled = set(_json.loads(disabled_raw))
+    except Exception:
+        disabled = set()
+    markup = int(db.get_setting("viotp_markup_pct", "50") or 50)
+    out = []
+    for s in items:
+        sid = s.get("id")
+        cost = int(s.get("price", 0) or 0)
+        sell = db.viotp_sell_price(cost)
+        out.append({
+            "id": sid,
+            "name": s.get("name", ""),
+            "cost": cost,
+            "sell": sell,
+            "enabled": sid not in disabled,
+        })
+    out.sort(key=lambda x: x["name"].lower())
+    return {"ok": True, "data": out, "markup_pct": markup}
+
+
+class ViotpSvcToggleIn(BaseModel):
+    service_id: int
+    enabled: bool
+
+
+@router.post("/viotp/service/toggle")
+def viotp_service_toggle(body: ViotpSvcToggleIn,
+                         admin=Depends(require_role("super_admin"))):
+    """Bật/tắt một dịch vụ thuê số."""
+    import json as _json
+    disabled_raw = db.get_setting("viotp_disabled_services", "[]")
+    try:
+        disabled = set(_json.loads(disabled_raw))
+    except Exception:
+        disabled = set()
+    if body.enabled:
+        disabled.discard(body.service_id)
+    else:
+        disabled.add(body.service_id)
+    db.set_setting("viotp_disabled_services", _json.dumps(sorted(disabled)))
+    return {"ok": True, "enabled": body.enabled}
