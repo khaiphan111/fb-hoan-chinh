@@ -394,6 +394,15 @@ async def on_acc_confirm(cb: CallbackQuery):
         return
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
+    # Chặn mua khi quá hạn nợ ứng tiền (GĐ2)
+    try:
+        from .loan import check_overdue_block as _loan_block
+        _blocked, _bmsg = _loan_block(tg_id)
+        if _blocked:
+            await cb.message.answer(_bmsg, parse_mode="HTML")
+            return
+    except Exception:
+        pass
     if balance < final:
         disc_txt = []
         if bulk_pct:
@@ -939,6 +948,15 @@ async def on_acc_buy_uid(cb: CallbackQuery):
     final, promo_code = db.preview_user_promo(tg_id, final, wallet="shop")
     u = db.get_user(tg_id)
     balance = int(u["shop_balance"] or 0) if u else 0
+    # Chặn mua khi quá hạn nợ ứng tiền (GĐ2)
+    try:
+        from .loan import check_overdue_block as _loan_block2
+        _blocked2, _bmsg2 = _loan_block2(tg_id)
+        if _blocked2:
+            await cb.message.answer(_bmsg2, parse_mode="HTML")
+            return
+    except Exception:
+        pass
     if balance < final:
         await cb.message.answer(
             f"😢 <b>VÍ SHOP KHÔNG ĐỦ</b>\n"

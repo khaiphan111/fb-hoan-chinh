@@ -216,6 +216,13 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
         msg_text += "- Hạn sử dụng: <b>VĨNH VIỄN</b>\n\n" if is_lifetime else "\n"
     if manager.running and manager.bot:
         import asyncio as _aio2
+        # Tự trừ nợ ứng tiền khi nạp vào ví shop (GĐ2)
+        if target == "shop":
+            try:
+                from .handlers.loan import apply_auto_deduct
+                await apply_auto_deduct(manager.bot, tg_id, amount)
+            except Exception as e:
+                log.warning("auto_deduct failed: %s", e)
         for _attempt in range(3):
             try:
                 await manager.bot.send_message(tg_id, msg_text, parse_mode="HTML")

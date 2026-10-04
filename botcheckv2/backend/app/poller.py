@@ -321,6 +321,16 @@ class FollowerPoller:
                         log.warning("backup db: %s", e)
                     finally:
                         db.set_setting("maint_db_backup", today)
+                # Nhắc nợ ứng tiền mua acc (9h sáng mỗi ngày)
+                if now_t.tm_hour == 9 and db.get_setting("maint_loan_remind") != today and _job_on("loan_remind"):
+                    try:
+                        from .handlers.loan import loan_reminder_tick
+                        stats = await loan_reminder_tick(self._bot)
+                        log.info("loan remind: %s", stats)
+                    except Exception as e:
+                        log.warning("loan remind: %s", e)
+                    finally:
+                        db.set_setting("maint_loan_remind", today)
                 # 5.4 Nhập kho tự động từ NCC (6h sáng)
                 if now_t.tm_hour == 6 and db.get_setting("maint_supplier_import") != today and _job_on("supplier_import"):
                     try:

@@ -64,6 +64,12 @@ async def on_main_admin_confirm(cb: CallbackQuery):
     try:
         if target == "shop":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="shop")
+            # Tự trừ nợ ứng tiền (GĐ2)
+            try:
+                from .loan import apply_auto_deduct
+                await apply_auto_deduct(cb.bot, user_id, amount)
+            except Exception:
+                pass
         elif target == "buff":
             db.credit_topup(user_id, amount, reason="bank_transfer", wallet="buff")
         elif target == "rent":

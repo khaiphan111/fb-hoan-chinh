@@ -32,6 +32,10 @@ class LoanState(StatesGroup):
     manual_tgid = State()    # tạo tay: chờ nhập ID khách
     manual_amount = State()  # tạo tay: chờ nhập số tiền
     manual_note = State()    # tạo tay: chờ nhập ghi chú
+    adjust_dir = State()     # điều chỉnh: chờ chọn tăng/giảm
+    adjust_amount = State()  # điều chỉnh: chờ nhập số tiền
+    adjust_reason = State()  # điều chỉnh: chờ nhập lý do
+    cfg_value = State()      # cài đặt: chờ nhập giá trị mới
 
 
 # ---------- helpers ----------
@@ -443,6 +447,9 @@ async def on_loanadm_view(cb: CallbackQuery):
     if ln["status"] in ("active", "overdue"):
         rows.append([InlineKeyboardButton(text="✅ Đánh dấu đã nhận tiền",
                                           callback_data=f"loanadm:repay:{lid}")])
+        # Điều chỉnh nợ: chỉ chủ shop được giảm, admin phụ được tăng
+        rows.append([InlineKeyboardButton(text="✏️ Điều chỉnh nợ",
+                                          callback_data=f"loanadm:adj:{lid}")])
     rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="loanadm:menu")])
     await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
                                reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
@@ -595,3 +602,303 @@ async def on_loanadm_manual_note(msg: Message, state: FSMContext):
             parse_mode="HTML")
     except Exception:
         pass
+
+
+# ---------- TỰ TRỪ NỢ KHI NẠP (GĐ2) ----------
+
+async def apply_auto_deduct(bot, tg_id: int, credited_amount: int) -> int:
+    """Tự trừ nợ khi khách nạp tiền vào ví shop.
+    Trả về tổng số tiền đã trừ vào nợ."""
+    if not db.loan_enabled() or db.loan_setting("loan_auto_deduct") != "1":
+        return 0
+    if credited_amount <= 0:
+        return 0
+    loans = db.loan_list_active()
+    my_loans = [ln for ln in loans if ln["tg_id"] == tg_id]
+    if not my_loans:
+        return 0
+    # Ưu tiên khoản sắp đến hạn nhất
+    my_loans.sort(key=lambda x: x["due_date"] or 0)
+    remaining = credited_amount
+    total_deducted = 0
+    for ln in my_loans:
+        if remaining <= 0:
+            break
+        rest = ln["amount"] - ln["paid_amount"]
+        if rest <= 0:
+            continue
+        take = min(remaining, rest)
+        new_loan = db.loan_add_payment(ln["id"], take, "repay_auto",
+                                       "nạp ví tự trừ", 0)
+        if new_loan:
+            total_deducted += take
+            remaining -= take
+    if total_deducted > 0:
+        debt_left = db.loan_total_debt(tg_id)
+        try:
+            await bot.send_message(
+                tg_id,
+                f"💰 <b>TỰ TRỪ NỢ</b>\n"
+                f"Bạn nạp {vnd(credited_amount)}đ → đã trừ <b>{vnd(total_deducted)}đ</b> vào nợ.\n"
+                f"Còn nợ: <b>{vnd(debt_left)}đ</b>",
+                parse_mode="HTML")
+        except Exception:
+            pass
+    return total_deducted
+
+
+def check_overdue_block(tg_id: int) -> tuple[bool, str]:
+    """Kiểm tra có bị chặn mua do quá hạn không. Trả về (bị_chặn, tin_nhắn)."""
+    if not db.loan_enabled():
+        return False, ""
+    loans = db.loan_list_active()
+    overdue = [ln for ln in loans if ln["tg_id"] == tg_id and ln["status"] == "overdue"]
+    if overdue:
+        rest = sum(ln["amount"] - ln["paid_amount"] for ln in overdue)
+        return True, (
+            f"🔴 <b>Bạn đang quá hạn {len(overdue)} khoản ứng ({vnd(rest)}đ).</b>\n"
+            f"Trả hết nợ quá hạn mới mua tiếp được nhé.\n"
+            f"Xem chi tiết: /congno")
+    return False, ""
+
+
+async def loan_reminder_tick(bot) -> dict:
+    """Quét 1 lượt: đánh dấu quá hạn + nhắc nợ. Trả về thống kê."""
+    import time as _time
+    stats = {"overdue_marked": 0, "reminded": 0}
+    if not db.loan_enabled() or db.loan_setting("loan_remind") != "1":
+        return stats
+    now = int(_time.time())
+    # 1. Đánh dấu quá hạn
+    stats["overdue_marked"] = db.loan_mark_overdue()
+    # 2. Nhắc nợ: trước hạn 1 ngày + quá hạn mỗi ngày
+    loans = db.loan_list_active()
+    for ln in loans:
+        due = ln["due_date"] or 0
+        if not due:
+            continue
+        rest = ln["amount"] - ln["paid_amount"]
+        if rest <= 0:
+            continue
+        days_left = (due - now) / 86400
+        txt = ""
+        if 0 < days_left <= 1:
+            txt = (f"⏰ <b>NHẮC NỢ</b>\nKhoản ứng #{ln['id']} còn <b>{vnd(rest)}đ</b> "
+                   f"sẽ đến hạn vào <b>{_fmt_date(due)}</b> (mai).\nTrả sớm nhé!")
+        elif days_left <= 0:
+            txt = (f"🔴 <b>QUÁ HẠN</b>\nKhoản ứng #{ln['id']} còn nợ <b>{vnd(rest)}đ</b> "
+                   f"đã quá hạn từ <b>{_fmt_date(due)}</b>.\n"
+                   f"Trả ngay để mua tiếp nhé! Xem: /congno")
+        if txt:
+            try:
+                await bot.send_message(ln["tg_id"], txt, parse_mode="HTML")
+                stats["reminded"] += 1
+            except Exception:
+                pass
+    return stats
+
+
+# ---------- ADMIN: điều chỉnh nợ (GĐ2) ----------
+
+@router.callback_query(F.data.startswith("loanadm:adj:"))
+async def on_loanadm_adj(cb: CallbackQuery, state: FSMContext):
+    admin_id = cb.from_user.id
+    if not _is_loan_admin(admin_id):
+        await cb.answer("Bạn không có quyền.", show_alert=True)
+        return
+    try:
+        lid = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
+        return
+    ln = db.loan_get(lid)
+    if not ln or ln["status"] not in ("active", "overdue"):
+        await cb.answer("Khoản này không còn nợ.", show_alert=True)
+        return
+    await state.set_state(LoanState.adjust_dir)
+    await state.update_data(adj_lid=lid)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Tăng nợ", callback_data="loanadj:up"),
+         InlineKeyboardButton(text="📉 Giảm nợ", callback_data="loanadj:down")],
+    ])
+    rest = ln["amount"] - ln["paid_amount"]
+    await cb.message.answer(
+        f"✏️ <b>Điều chỉnh khoản #{lid}</b> (còn nợ {vnd(rest)}đ)\n"
+        f"Chọn tăng hay giảm:",
+        parse_mode="HTML", reply_markup=kb)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("loanadj:"))
+async def on_loanadj_dir(cb: CallbackQuery, state: FSMContext):
+    direction = cb.data.split(":")[1]  # up / down
+    if direction == "down" and not _perms.is_super(cb.from_user.id):
+        await cb.answer("Chỉ chủ shop được giảm nợ.", show_alert=True)
+        return
+    await state.update_data(adj_dir=direction)
+    await state.set_state(LoanState.adjust_amount)
+    label = "tăng" if direction == "up" else "giảm"
+    await cb.message.answer(f"Nhập số tiền muốn {label} (vd: 20000):")
+    await cb.answer()
+
+
+@router.message(StateFilter(LoanState.adjust_amount))
+async def on_loanadj_amount(msg: Message, state: FSMContext):
+    try:
+        amount = int(msg.text.replace(".", "").replace(",", "").replace("đ", "").strip())
+    except (ValueError, AttributeError):
+        await msg.answer("Số tiền không hợp lệ.")
+        return
+    if amount <= 0:
+        await msg.answer("Số tiền phải lớn hơn 0.")
+        return
+    data = await state.get_data()
+    lid = data.get("adj_lid")
+    direction = data.get("adj_dir", "up")
+    ln = db.loan_get(lid) if lid else None
+    if not ln:
+        await state.clear()
+        return
+    if direction == "down":
+        rest = ln["amount"] - ln["paid_amount"]
+        if amount > rest:
+            await msg.answer(f"Chỉ được giảm tối đa {vnd(rest)}đ (số còn nợ). Nhập lại nhé.")
+            return
+    await state.update_data(adj_amount=amount)
+    await state.set_state(LoanState.adjust_reason)
+    await msg.answer("Nhập <b>lý do</b> điều chỉnh (bắt buộc, vd: bớt cho khách quen):",
+                     parse_mode="HTML")
+
+
+@router.message(StateFilter(LoanState.adjust_reason))
+async def on_loanadj_reason(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    lid = data.get("adj_lid")
+    amount = data.get("adj_amount", 0)
+    direction = data.get("adj_dir", "up")
+    reason = (msg.text or "").strip()[:200]
+    await state.clear()
+    if not lid or amount <= 0 or not reason:
+        await msg.answer("Lý do không được để trống. Làm lại nhé.")
+        return
+    kind = "adjust_up" if direction == "up" else "adjust_down"
+    ln = db.loan_add_payment(lid, amount, kind, reason, msg.from_user.id)
+    if not ln:
+        await msg.answer("Không điều chỉnh được.")
+        return
+    try:
+        db.admin_audit_log(msg.from_user.id, "loan_adjust",
+                           f"{kind} #{lid} {vnd(amount)}đ: {reason}")
+    except Exception:
+        pass
+    rest = ln["amount"] - ln["paid_amount"]
+    label = "tăng" if direction == "up" else "giảm"
+    await msg.answer(
+        f"✅ Đã {label} nợ khoản #{lid} thêm {vnd(amount)}đ.\n"
+        f"Lý do: {html.escape(reason)}\n"
+        f"Còn nợ: <b>{vnd(rest)}đ</b>",
+        parse_mode="HTML")
+
+
+# ---------- ADMIN: cài đặt (GĐ2, chỉ chủ shop) ----------
+
+_LOAN_CFG = [
+    ("loan_enabled", "Bật/tắt ứng tiền", "bool"),
+    ("loan_min_acc", "Số acc tối thiểu để được ứng", "int"),
+    ("loan_max_per_request", "Mỗi lần ứng tối đa (đ)", "int"),
+    ("loan_max_total", "Tổng nợ tối đa/khách (đ)", "int"),
+    ("loan_due_days", "Hạn trả (ngày)", "int"),
+    ("loan_auto_deduct", "Nạp ví tự trừ nợ", "bool"),
+    ("loan_remind", "Nhắc nợ tự động", "bool"),
+]
+
+
+def _cfg_text() -> str:
+    lines = ["⚙️ <b>CÀI ĐẶT ỨNG TIỀN</b>", ""]
+    for key, label, typ in _LOAN_CFG:
+        val = db.loan_setting(key)
+        if typ == "bool":
+            disp = "🟢 Bật" if val == "1" else "🔴 Tắt"
+        elif "max" in key or "per_request" in key:
+            disp = f"{vnd(int(val or 0))}đ"
+        else:
+            disp = val
+        lines.append(f"• {label}: <b>{disp}</b>")
+    lines.append("")
+    lines.append("Bấm vào từng dòng để đổi.")
+    return "\n".join(lines)
+
+
+def _cfg_kb() -> InlineKeyboardMarkup:
+    rows = []
+    for key, label, _typ in _LOAN_CFG:
+        short = label.split("(")[0].strip()[:22]
+        rows.append([InlineKeyboardButton(text=f"✏️ {short}",
+                                          callback_data=f"loancfg:{key}")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="loanadm:menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "loanadm:cfg")
+async def on_loanadm_cfg(cb: CallbackQuery):
+    if not _perms.is_super(cb.from_user.id):
+        await cb.answer("Chỉ chủ shop đổi được cài đặt.", show_alert=True)
+        return
+    await cb.message.edit_text(_cfg_text(), parse_mode="HTML", reply_markup=_cfg_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("loancfg:"))
+async def on_loancfg_edit(cb: CallbackQuery, state: FSMContext):
+    if not _perms.is_super(cb.from_user.id):
+        await cb.answer("Chỉ chủ shop đổi được cài đặt.", show_alert=True)
+        return
+    key = cb.data.split(":")[1]
+    cfg = next((c for c in _LOAN_CFG if c[0] == key), None)
+    if not cfg:
+        await cb.answer("Không hợp lệ", show_alert=True)
+        return
+    _, label, typ = cfg
+    if typ == "bool":
+        cur = db.loan_setting(key)
+        new = "0" if cur == "1" else "1"
+        db.set_setting(key, new)
+        try:
+            db.admin_audit_log(cb.from_user.id, "loan_cfg", f"{key} -> {new}")
+        except Exception:
+            pass
+        await cb.message.edit_text(_cfg_text(), parse_mode="HTML", reply_markup=_cfg_kb())
+        await cb.answer("Đã đổi!")
+        return
+    await state.set_state(LoanState.cfg_value)  # state riêng cho cài đặt
+    await state.update_data(cfg_key=key, cfg_label=label)
+    await cb.message.answer(f"Nhập giá trị mới cho <b>{label}</b> (hiện tại: {db.loan_setting(key)}):",
+                            parse_mode="HTML")
+    await cb.answer()
+
+
+@router.message(StateFilter(LoanState.cfg_value))
+async def on_loancfg_value(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    key = data.get("cfg_key")
+    if not key:
+        return
+    try:
+        val = int(msg.text.replace(".", "").replace(",", "").strip())
+    except (ValueError, AttributeError):
+        await msg.answer("Nhập số thôi nhé.")
+        return
+    if val < 0:
+        await msg.answer("Giá trị phải >= 0.")
+        return
+    if key == "loan_min_acc" and val < 1:
+        await msg.answer("Số acc tối thiểu phải >= 1.")
+        return
+    await state.clear()
+    db.set_setting(key, str(val))
+    try:
+        db.admin_audit_log(msg.from_user.id, "loan_cfg", f"{key} -> {val}")
+    except Exception:
+        pass
+    await msg.answer(f"✅ Đã đổi <b>{key}</b> = <b>{val}</b>.", parse_mode="HTML",
+                     reply_markup=_cfg_kb())
