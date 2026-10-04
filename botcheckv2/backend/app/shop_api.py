@@ -1057,3 +1057,103 @@ def viotp_service_toggle(body: ViotpSvcToggleIn,
         disabled.add(body.service_id)
     db.set_setting("viotp_disabled_services", _json.dumps(sorted(disabled)))
     return {"ok": True, "enabled": body.enabled}
+
+
+# ==================== CÔNG NỢ ỨNG TIỀN (GĐ3) ====================
+
+@router.get("/loans/overview")
+def loans_overview(_=Depends(auth)):
+    """Tổng quan công nợ."""
+    return {"ok": True, "data": db.loan_stats()}
+
+
+@router.get("/loans")
+def loans_list(status: str = Query("active"), q: str = Query(""),
+               limit: int = Query(50, le=200), _=Depends(auth)):
+    """Danh sách khoản ứng: status=pending|active|overdue|done|all, q=tìm theo tg_id."""
+    if status == "pending":
+        data = db.loan_list_pending()
+    elif status == "active":
+        data = db.loan_list_active()
+    elif status == "overdue":
+        data = [l for l in db.loan_list_active() if l["status"] == "overdue"]
+    elif status == "done":
+        data = db.loan_list_done(limit)
+    else:
+        data = db.loan_list_active() + db.loan_list_pending()
+    if q:
+        data = [l for l in data if q in str(l["tg_id"]) or q in str(l["id"])]
+    for l in data:
+        l["rest"] = l["amount"] - l["paid_amount"]
+    return {"ok": True, "data": data[:limit]}
+
+
+@router.get("/loans/{loan_id}")
+def loan_detail(loan_id: int, _=Depends(auth)):
+    """Chi tiết khoản ứng + lịch sử."""
+    ln = db.loan_get(loan_id)
+    if not ln:
+        return {"ok": False, "error": "not_found"}
+    ln["rest"] = ln["amount"] - ln["paid_amount"]
+    ln["payments"] = db.loan_payments(loan_id)
+    return {"ok": True, "data": ln}
+
+
+class LoanApproveIn(BaseModel):
+    action: str  # approve | reject
+    reason: str = ""
+
+
+@router.post("/loans/{loan_id}/review")
+def loan_review(loan_id: int, body: LoanApproveIn, admin=Depends(auth)):
+    """Duyệt / từ chối đơn xin ứng."""
+    adm_id = admin.get("tg_id", 0) if isinstance(admin, dict) else 0
+    if body.action == "approve":
+        ln = db.loan_approve(loan_id, adm_id)
+        if not ln:
+            return {"ok": False, "error": "already_done"}
+        try:
+            db.adjust_shop_balance(ln["tg_id"], ln["amount"], f"ung_tien:loan#{loan_id}")
+        except Exception:
+            pass
+        return {"ok": True, "data": {"status": "active"}}
+    elif body.action == "reject":
+        ok = db.loan_reject(loan_id, adm_id, body.reason)
+        return {"ok": ok}
+    return {"ok": False, "error": "bad_action"}
+
+
+class LoanRepayIn(BaseModel):
+    amount: int
+    note: str = ""
+
+
+@router.post("/loans/{loan_id}/repay")
+def loan_repay(loan_id: int, body: LoanRepayIn, admin=Depends(auth)):
+    """Đánh dấu đã nhận tiền (trả tay)."""
+    adm_id = admin.get("tg_id", 0) if isinstance(admin, dict) else 0
+    ln = db.loan_add_payment(loan_id, body.amount, "repay_manual", body.note, adm_id)
+    if not ln:
+        return {"ok": False, "error": "cannot"}
+    return {"ok": True, "data": {"rest": ln["amount"] - ln["paid_amount"],
+                                 "status": ln["status"]}}
+
+
+class LoanAdjustIn(BaseModel):
+    direction: str  # up | down
+    amount: int
+    reason: str
+
+
+@router.post("/loans/{loan_id}/adjust")
+def loan_adjust(loan_id: int, body: LoanAdjustIn,
+                admin=Depends(require_role("super_admin"))):
+    """Điều chỉnh tăng/giảm nợ (chỉ chủ shop)."""
+    if not body.reason.strip():
+        return {"ok": False, "error": "need_reason"}
+    adm_id = admin.get("tg_id", 0) if isinstance(admin, dict) else 0
+    kind = "adjust_up" if body.direction == "up" else "adjust_down"
+    ln = db.loan_add_payment(loan_id, body.amount, kind, body.reason.strip(), adm_id)
+    if not ln:
+        return {"ok": False, "error": "cannot"}
+    return {"ok": True, "data": {"rest": ln["amount"] - ln["paid_amount"]}}

@@ -22,6 +22,7 @@ const TABS = [
   { key: "auto", label: "Nhập tự động" },
   { key: "profit", label: "Lãi theo lô" },
   { key: "orders", label: "Đơn hàng" },
+  { key: "loans", label: "💰 Công nợ" },
 ];
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
@@ -734,6 +735,166 @@ function OrdersTab() {
 }
 
 // ---------------- Trang chính ----------------
+function LoansTab() {
+  const [stats, setStats] = useState<any>({});
+  const [loans, setLoans] = useState<any[]>([]);
+  const [status, setStatus] = useState("active");
+  const [q, setQ] = useState("");
+  const [detail, setDetail] = useState<any>(null);
+
+  async function load() {
+    try {
+      setStats((await api("/api/loans/overview")).data || {});
+      setLoans((await api(`/api/loans?status=${status}&q=${encodeURIComponent(q)}`)).data || []);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+  useEffect(() => { load(); }, [status]);
+
+  async function openDetail(id: number) {
+    try {
+      setDetail((await api(`/api/loans/${id}`)).data || null);
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
+  async function review(id: number, action: string) {
+    const reason = action === "reject" ? prompt("Lý do từ chối:") || "" : "";
+    if (action === "reject" && !reason) return;
+    try {
+      await api(`/api/loans/${id}/review`, {
+        method: "POST",
+        body: JSON.stringify({ action, reason }),
+      });
+      toast.success(action === "approve" ? "Đã duyệt" : "Đã từ chối");
+      setDetail(null);
+      load();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
+  async function repay(id: number) {
+    const amount = prompt("Số tiền đã nhận:");
+    if (!amount) return;
+    const note = prompt("Ghi chú (vd: nhận tiền mặt):") || "";
+    try {
+      await api(`/api/loans/${id}/repay`, {
+        method: "POST",
+        body: JSON.stringify({ amount: parseInt(amount.replace(/\D/g, "")), note }),
+      });
+      toast.success("Đã ghi nhận");
+      openDetail(id);
+      load();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
+  const STATUS_LABEL: Record<string, string> = {
+    pending: "⏳ Chờ duyệt",
+    active: "📋 Đang nợ",
+    overdue: "🔴 Quá hạn",
+    paid: "✅ Đã xong",
+    rejected: "❌ Từ chối",
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card><CardHeader><CardTitle className="text-sm font-normal">Chờ duyệt</CardTitle></CardHeader><CardContent><div className="text-2xl font-bold">{stats.pending_count ?? 0}</div></CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-sm font-normal">Đang nợ</CardTitle></CardHeader><CardContent><div className="text-2xl font-bold">{vnd(stats.active_debt ?? 0)}</div><div className="text-xs text-muted-foreground">{stats.active_count ?? 0} khoản</div></CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-sm font-normal">Quá hạn</CardTitle></CardHeader><CardContent><div className="text-2xl font-bold text-red-600">{vnd(stats.overdue_debt ?? 0)}</div><div className="text-xs text-muted-foreground">{stats.overdue_count ?? 0} khoản</div></CardContent></Card>
+      </div>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>Danh sách</CardTitle>
+            <div className="flex gap-2">
+              {(["active", "pending", "overdue", "done"] as const).map((s) => (
+                <Button key={s} size="sm" variant={status === s ? "default" : "outline"}
+                  onClick={() => setStatus(s)}>
+                  {s === "active" ? "Đang nợ" : s === "pending" ? "Chờ duyệt" : s === "overdue" ? "Quá hạn" : "Đã xong"}
+                </Button>
+              ))}
+              <Input className="w-40" placeholder="Tìm ID/TG ID..."
+                value={q} onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && load()} />
+              <Button size="sm" onClick={load}><IconRefresh size={14} /></Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="overflow-x-auto p-0">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-muted">
+              <tr>
+                <th className="p-2">#</th>
+                <th className="p-2">Khách</th>
+                <th className="p-2">Ứng</th>
+                <th className="p-2">Đã trả</th>
+                <th className="p-2">Còn nợ</th>
+                <th className="p-2">Hạn trả</th>
+                <th className="p-2">Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loans.map((l: any) => (
+                <tr key={l.id} className="border-b cursor-pointer hover:bg-muted/50"
+                  onClick={() => openDetail(l.id)}>
+                  <td className="p-2">#{l.id}</td>
+                  <td className="p-2 font-mono">{l.tg_id}</td>
+                  <td className="p-2">{vnd(l.amount)}</td>
+                  <td className="p-2">{vnd(l.paid_amount)}</td>
+                  <td className="p-2 font-bold">{vnd(l.rest)}</td>
+                  <td className="p-2 text-muted-foreground">
+                    {l.due_date ? new Date(l.due_date * 1000).toLocaleDateString("vi-VN") : "—"}
+                  </td>
+                  <td className="p-2">{STATUS_LABEL[l.status] || l.status}</td>
+                </tr>
+              ))}
+              {!loans.length && (
+                <tr><td colSpan={7} className="p-4 text-center text-muted-foreground">Không có.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      {detail && (
+        <Modal title={`Khoản ứng #${detail.id}`} onClose={() => setDetail(null)}>
+          <div className="flex flex-col gap-3 text-sm">
+            <div>Khách: <span className="font-mono">{detail.tg_id}</span></div>
+            <div>Ứng: <b>{vnd(detail.amount)}</b> | Đã trả: <b>{vnd(detail.paid_amount)}</b> | Còn nợ: <b>{vnd(detail.rest)}</b></div>
+            <div>Trạng thái: {STATUS_LABEL[detail.status]}</div>
+            {detail.note && <div>Ghi chú: {detail.note}</div>}
+            <div className="font-medium">Lịch sử:</div>
+            <div className="max-h-40 overflow-y-auto flex flex-col gap-1">
+              {(detail.payments || []).map((p: any) => (
+                <div key={p.id} className="text-xs text-muted-foreground">
+                  {new Date(p.created_at * 1000).toLocaleString("vi-VN")} — {p.kind} — {vnd(p.amount)}{p.note ? ` — ${p.note}` : ""}
+                </div>
+              ))}
+              {!(detail.payments || []).length && <div className="text-xs text-muted-foreground">Chưa có.</div>}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {detail.status === "pending" && (
+                <>
+                  <Button size="sm" onClick={() => review(detail.id, "approve")}>✅ Duyệt</Button>
+                  <Button size="sm" variant="outline" onClick={() => review(detail.id, "reject")}>❌ Từ chối</Button>
+                </>
+              )}
+              {(detail.status === "active" || detail.status === "overdue") && (
+                <Button size="sm" variant="outline" onClick={() => repay(detail.id)}>✅ Đánh dấu đã nhận tiền</Button>
+              )}
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 export default function Shop() {
   const [tab, setTab] = useState("overview");
   const [overview, setOverview] = useState<any[]>([]);
@@ -786,6 +947,7 @@ export default function Shop() {
       {tab === "auto" && <AutoTab stalls={stalls} cats={cats} />}
       {tab === "profit" && <ProfitTab cats={cats} />}
       {tab === "orders" && <OrdersTab />}
+      {tab === "loans" && <LoansTab />}
     </div>
   );
 }
