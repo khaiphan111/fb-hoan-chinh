@@ -1259,12 +1259,28 @@ async def on_sodu(msg: Message):
     rent_bal = int(user["rent_balance"] or 0) if "rent_balance" in user.keys() else 0
     main_bal = int(user["balance"] or 0)
     points = db.loyalty_get(msg.from_user.id)
+    # Dòng công nợ ứng tiền mua acc
+    _debt_line = ""
+    _debt_kb_rows = []
+    try:
+        if db.loan_enabled():
+            _debt = db.loan_total_debt(msg.from_user.id)
+            if _debt > 0:
+                _debt_line = (
+                    f"\n💰 <b>Đang nợ (ứng tiền):</b> {vnd(_debt)}\n"
+                    f"      <i>→ Xem chi tiết bằng /congno</i>\n")
+            _debt_kb_rows = [
+                [InlineKeyboardButton(text="💰 Nợ của tôi", callback_data="loan:my")],
+                [InlineKeyboardButton(text="📝 Xin ứng tiền", callback_data="loan:req")],
+            ]
+    except Exception:
+        pass
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 Nạp ví chính", callback_data="wal_nap:main"),
          InlineKeyboardButton(text="🛒 Nạp ví shop", callback_data="wal_nap:shop")],
         [InlineKeyboardButton(text="🚀 Nạp ví buff", callback_data="wal_nap:buff"),
          InlineKeyboardButton(text="📱 Nạp ví thuê số", callback_data="wal_nap:rent")],
-    ])
+    ] + _debt_kb_rows)
     await msg.answer(
         "👛 <b>SỐ DƯ CỦA BẠN</b>\n"
         "━━━━━━━━━━━━━━\n"
@@ -1280,6 +1296,7 @@ async def on_sodu(msg: Message):
         "      <i>→ Check UID hàng loạt (/checkfile, /muacredit để mua thêm)</i>\n\n"
         f"🎁 <b>Điểm:</b> {points} điểm\n"
         "      <i>→ Nhận sau mỗi đơn mua acc, đổi quà bằng /doiqua</i>\n"
+        + _debt_line +
         "━━━━━━━━━━━━━━",
         parse_mode="HTML", reply_markup=kb,
     )

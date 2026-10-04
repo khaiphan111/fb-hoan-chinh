@@ -198,6 +198,41 @@ def init_db() -> None:
                 created_at BIGINT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS acc_loans (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id       BIGINT NOT NULL,
+                amount      BIGINT NOT NULL,
+                paid_amount BIGINT NOT NULL DEFAULT 0,
+                status      TEXT NOT NULL DEFAULT 'pending',
+                due_date    BIGINT DEFAULT 0,
+                note        TEXT DEFAULT '',
+                created_by  BIGINT DEFAULT 0,
+                approved_by BIGINT DEFAULT 0,
+                created_at  BIGINT NOT NULL,
+                updated_at  BIGINT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_acc_loans_tg ON acc_loans(tg_id);
+            CREATE INDEX IF NOT EXISTS idx_acc_loans_status ON acc_loans(status);
+
+            CREATE TABLE IF NOT EXISTS acc_loan_payments (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id    INTEGER NOT NULL,
+                amount     BIGINT NOT NULL,
+                kind       TEXT NOT NULL DEFAULT 'repay_manual',
+                note       TEXT DEFAULT '',
+                created_by BIGINT DEFAULT 0,
+                created_at BIGINT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_loan_pay_loan ON acc_loan_payments(loan_id);
+
+            CREATE TABLE IF NOT EXISTS loan_custom_limits (
+                tg_id      BIGINT PRIMARY KEY,
+                max_total  BIGINT NOT NULL,
+                note       TEXT DEFAULT '',
+                updated_by BIGINT DEFAULT 0,
+                updated_at BIGINT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS extra_admins (
                 tg_id    BIGINT PRIMARY KEY,
                 name     TEXT DEFAULT '',
@@ -7176,3 +7211,257 @@ def viotp_stats() -> dict:
         "profit": r.get("profit", 0),
         "waiting": (dict(w).get("n", 0) if w else 0),
     }
+
+
+# ==================== ỨNG TIỀN MUA ACC (LOANS) ====================
+
+LOAN_DEFAULTS = {
+    "loan_enabled": "1",
+    "loan_min_acc": "5",
+    "loan_max_per_request": "50000",
+    "loan_max_total": "100000",
+    "loan_due_days": "7",
+    "loan_auto_deduct": "1",
+    "loan_remind": "1",
+}
+
+
+def loan_setting(key: str) -> str:
+    return get_setting(key, LOAN_DEFAULTS.get(key, ""))
+
+
+def loan_setting_int(key: str) -> int:
+    try:
+        return int(loan_setting(key) or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def loan_enabled() -> bool:
+    return loan_setting("loan_enabled") == "1"
+
+
+def loan_create(tg_id: int, amount: int, note: str = "", created_by: int = 0) -> int:
+    """Tạo đơn xin ứng (pending). Trả về loan id."""
+    import time
+    now = int(time.time())
+    c = get_conn()
+    cur = c.execute(
+        "INSERT INTO acc_loans (tg_id, amount, status, note, created_by, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (tg_id, amount, "pending", note, created_by, now, now))
+    lid = cur.lastrowid
+    c.commit()
+    return lid
+
+
+def loan_get(loan_id: int) -> dict | None:
+    c = get_conn()
+    r = c.execute("SELECT * FROM acc_loans WHERE id=?", (loan_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def loan_list_pending() -> list:
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM acc_loans WHERE status='pending' ORDER BY id ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def loan_list_active() -> list:
+    """Tất cả khoản đang nợ (active + overdue)."""
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM acc_loans WHERE status IN ('active','overdue')"
+        " ORDER BY due_date ASC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def loan_list_by_customer(tg_id: int, limit: int = 20) -> list:
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM acc_loans WHERE tg_id=? ORDER BY id DESC LIMIT ?",
+        (tg_id, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def loan_list_done(limit: int = 50) -> list:
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM acc_loans WHERE status IN ('paid','rejected')"
+        " ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def loan_total_debt(tg_id: int) -> int:
+    """Tổng còn nợ của khách (active + overdue)."""
+    c = get_conn()
+    r = c.execute(
+        "SELECT COALESCE(SUM(amount - paid_amount),0) d FROM acc_loans"
+        " WHERE tg_id=? AND status IN ('active','overdue')", (tg_id,)).fetchone()
+    return int(dict(r)["d"]) if r else 0
+
+
+def loan_has_pending(tg_id: int) -> bool:
+    c = get_conn()
+    r = c.execute(
+        "SELECT COUNT(*) n FROM acc_loans WHERE tg_id=? AND status='pending'",
+        (tg_id,)).fetchone()
+    return (dict(r)["n"] if r else 0) > 0
+
+
+def loan_has_overdue(tg_id: int) -> bool:
+    c = get_conn()
+    r = c.execute(
+        "SELECT COUNT(*) n FROM acc_loans WHERE tg_id=? AND status='overdue'",
+        (tg_id,)).fetchone()
+    return (dict(r)["n"] if r else 0) > 0
+
+
+def loan_accs_bought(tg_id: int) -> int:
+    """Số acc khách đã mua thành công (đếm đơn acc_orders)."""
+    c = get_conn()
+    r = c.execute(
+        "SELECT COUNT(*) n FROM acc_orders WHERE tg_id=?", (tg_id,)).fetchone()
+    return int(dict(r)["n"]) if r else 0
+
+
+def loan_max_total_for(tg_id: int) -> int:
+    """Hạn mức tổng nợ của khách (ưu tiên hạn mức riêng)."""
+    c = get_conn()
+    r = c.execute(
+        "SELECT max_total FROM loan_custom_limits WHERE tg_id=?", (tg_id,)).fetchone()
+    if r:
+        return int(dict(r)["max_total"])
+    return loan_setting_int("loan_max_total")
+
+
+def loan_custom_limit_set(tg_id: int, max_total: int, note: str, updated_by: int):
+    import time
+    c = get_conn()
+    c.execute(
+        "INSERT INTO loan_custom_limits (tg_id, max_total, note, updated_by, updated_at)"
+        " VALUES (?,?,?,?,?)"
+        " ON CONFLICT (tg_id) DO UPDATE SET max_total=excluded.max_total,"
+        " note=excluded.note, updated_by=excluded.updated_by, updated_at=excluded.updated_at",
+        (tg_id, max_total, note, updated_by, int(time.time())))
+    c.commit()
+
+
+def loan_approve(loan_id: int, admin_id: int) -> dict | None:
+    """Duyệt đơn: chuyển pending -> active, tính hạn trả. Trả về loan dict."""
+    import time
+    loan = loan_get(loan_id)
+    if not loan or loan["status"] != "pending":
+        return None
+    due_days = loan_setting_int("loan_due_days") or 7
+    now = int(time.time())
+    due = now + due_days * 86400
+    c = get_conn()
+    c.execute(
+        "UPDATE acc_loans SET status='active', due_date=?, approved_by=?,"
+        " updated_at=? WHERE id=? AND status='pending'",
+        (due, admin_id, now, loan_id))
+    c.commit()
+    return loan_get(loan_id)
+
+
+def loan_reject(loan_id: int, admin_id: int, reason: str = "") -> bool:
+    import time
+    c = get_conn()
+    cur = c.execute(
+        "UPDATE acc_loans SET status='rejected', note=?, updated_at=?"
+        " WHERE id=? AND status='pending'",
+        (reason, int(time.time()), loan_id))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def loan_add_payment(loan_id: int, amount: int, kind: str, note: str = "",
+                     created_by: int = 0) -> dict | None:
+    """Ghi nhận trả nợ / điều chỉnh. kind: repay_auto/repay_manual/adjust_up/adjust_down."""
+    import time
+    loan = loan_get(loan_id)
+    if not loan or loan["status"] not in ("active", "overdue"):
+        return None
+    now = int(time.time())
+    c = get_conn()
+    if kind in ("repay_auto", "repay_manual"):
+        new_paid = loan["paid_amount"] + amount
+        if new_paid > loan["amount"]:
+            amount = loan["amount"] - loan["paid_amount"]
+            new_paid = loan["amount"]
+        c.execute(
+            "INSERT INTO acc_loan_payments (loan_id, amount, kind, note, created_by, created_at)"
+            " VALUES (?,?,?,?,?,?)", (loan_id, amount, kind, note, created_by, now))
+        status = "paid" if new_paid >= loan["amount"] else loan["status"]
+        c.execute(
+            "UPDATE acc_loans SET paid_amount=?, status=?, updated_at=? WHERE id=?",
+            (new_paid, status, now, loan_id))
+    elif kind == "adjust_down":
+        # Giảm nợ: giảm amount (không vượt quá còn nợ)
+        remaining = loan["amount"] - loan["paid_amount"]
+        amount = min(amount, remaining)
+        new_amount = loan["amount"] - amount
+        c.execute(
+            "INSERT INTO acc_loan_payments (loan_id, amount, kind, note, created_by, created_at)"
+            " VALUES (?,?,?,?,?,?)", (loan_id, -amount, kind, note, created_by, now))
+        status = "paid" if new_amount <= loan["paid_amount"] else loan["status"]
+        c.execute(
+            "UPDATE acc_loans SET amount=?, status=?, updated_at=? WHERE id=?",
+            (new_amount, status, now, loan_id))
+    elif kind == "adjust_up":
+        new_amount = loan["amount"] + amount
+        c.execute(
+            "INSERT INTO acc_loan_payments (loan_id, amount, kind, note, created_by, created_at)"
+            " VALUES (?,?,?,?,?,?)", (loan_id, amount, kind, note, created_by, now))
+        c.execute(
+            "UPDATE acc_loans SET amount=?, updated_at=? WHERE id=?",
+            (new_amount, now, loan_id))
+    else:
+        return None
+    c.commit()
+    return loan_get(loan_id)
+
+
+def loan_payments(loan_id: int) -> list:
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM acc_loan_payments WHERE loan_id=? ORDER BY id ASC",
+        (loan_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def loan_stats() -> dict:
+    """Tổng quan công nợ cho admin."""
+    c = get_conn()
+    r = c.execute(
+        "SELECT COUNT(*) n, COALESCE(SUM(amount - paid_amount),0) d"
+        " FROM acc_loans WHERE status IN ('active','overdue')").fetchone()
+    r = dict(r) if r else {}
+    p = c.execute(
+        "SELECT COUNT(*) n FROM acc_loans WHERE status='pending'").fetchone()
+    o = c.execute(
+        "SELECT COUNT(*) n, COALESCE(SUM(amount - paid_amount),0) d"
+        " FROM acc_loans WHERE status='overdue'").fetchone()
+    o = dict(o) if o else {}
+    return {
+        "active_count": r.get("n", 0),
+        "active_debt": r.get("d", 0),
+        "pending_count": (dict(p).get("n", 0) if p else 0),
+        "overdue_count": o.get("n", 0),
+        "overdue_debt": o.get("d", 0),
+    }
+
+
+def loan_mark_overdue() -> int:
+    """Chuyển các khoản quá hạn sang overdue. Trả về số khoản bị chuyển."""
+    import time
+    now = int(time.time())
+    c = get_conn()
+    cur = c.execute(
+        "UPDATE acc_loans SET status='overdue', updated_at=?"
+        " WHERE status='active' AND due_date > 0 AND due_date < ?",
+        (now, now))
+    c.commit()
+    return cur.rowcount

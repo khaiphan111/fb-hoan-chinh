@@ -4,6 +4,15 @@ Dùng để sắp lại router sau khi các module import xong, giữ nguyên
 độ ưu tiên handler của aiogram (đăng ký trước được xét trước).
 """
 MESSAGE_ORDER = [
+    "on_congno",
+    "on_loanadm",
+    "on_loan_amount",
+    "on_loan_reject_reason",
+    "on_loanadm_repay_amount",
+    "on_loanadm_repay_note",
+    "on_loanadm_manual_tgid",
+    "on_loanadm_manual_amount",
+    "on_loanadm_manual_note",
     "_admm_topup_uid",
     "_admm_topup_amount",
     "_admm_setbal_uid",
@@ -267,6 +276,17 @@ MESSAGE_ORDER = [
     "on_tsadm_markup_input",
 ]
 CALLBACK_ORDER = [
+    "on_loan_approve",
+    "on_loan_reject",
+    "on_loan_req",
+    "on_loan_my",
+    "on_loanadm_menu",
+    "on_loanadm_pending",
+    "on_loanadm_active",
+    "on_loanadm_done",
+    "on_loanadm_view",
+    "on_loanadm_repay",
+    "on_loanadm_manual",
     "_on_admm_cb",
     "_on_pause_cb",
     "_admm_bcast_confirm",

@@ -404,6 +404,22 @@ async def on_acc_confirm(cb: CallbackQuery):
             disc_txt.append(f"giảm {upsell_pct}% mua thêm trong {wmin} phút")
         if promo_code:
             disc_txt.append(f"mã {promo_code}")
+        # Nút xin ứng tiền (chỉ hiện khi đủ điều kiện)
+        _kb_rows = None
+        _extra_hint = ""
+        try:
+            from .loan import _can_request as _loan_can
+            _ok, _ = _loan_can(tg_id)
+            if _ok:
+                _kb_rows = [[InlineKeyboardButton(text="📝 Xin ứng tiền mua acc",
+                                                   callback_data="loan:req")]]
+            else:
+                _bought = db.loan_accs_bought(tg_id)
+                _min = db.loan_setting_int("loan_min_acc")
+                if _bought < _min and db.loan_enabled():
+                    _extra_hint = (f"\n<i>💡 Mua đủ {_min} acc để được ứng tiền (bạn đã mua {_bought} acc).</i>")
+        except Exception:
+            pass
         await cb.message.answer(
             f"😢 <b>VÍ SHOP KHÔNG ĐỦ</b>\n"
             f"━━━━━━━━━━━━━━\n"
@@ -412,8 +428,10 @@ async def on_acc_confirm(cb: CallbackQuery):
             f"👛 Ví shop của bạn: <b>{vnd(balance)}</b>\n"
             f"💸 Còn thiếu: <b>{vnd(final - balance)}</b>\n"
             f"━━━━━━━━━━━━━━\n"
-            f"Nạp thêm bằng /napshop (tự động, quét QR) rồi mua lại nhé.",
+            f"Nạp thêm bằng /napshop (tự động, quét QR) rồi mua lại nhé."
+            + _extra_hint,
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=_kb_rows) if _kb_rows else None,
         )
         return
     # Trừ tiền ví shop trước, giao acc sau (nguyên tử ở acc_sell_many)
