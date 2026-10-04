@@ -354,6 +354,23 @@ async def on_loanadm_menu(cb: CallbackQuery):
     await cb.answer()
 
 
+def _loan_customer_label(tg_id: int) -> str:
+    """Tên hiển thị của khách nợ (tên + username, fallback về ID)."""
+    try:
+        u = db.get_user(tg_id) or {}
+        name = (u.get("name") or "").strip()
+        username = (u.get("username") or "").strip()
+        if name and username:
+            return f"{name} (@{username})"
+        if name:
+            return name
+        if username:
+            return f"@{username}"
+    except Exception:
+        pass
+    return str(tg_id)
+
+
 @router.callback_query(F.data == "loanadm:pending")
 async def on_loanadm_pending(cb: CallbackQuery):
     if not _is_loan_admin(cb.from_user.id):
@@ -366,7 +383,7 @@ async def on_loanadm_pending(cb: CallbackQuery):
     rows = []
     for ln in loans[:15]:
         rows.append([InlineKeyboardButton(
-            text=f"#{ln['id']} — {vnd(ln['amount'])}đ — {ln['tg_id']}",
+            text=f"#{ln['id']} — {vnd(ln['amount'])}đ — {_loan_customer_label(ln['tg_id'])}",
             callback_data=f"loanadm:view:{ln['id']}")])
     rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="loanadm:menu")])
     await cb.message.edit_text("⏳ <b>ĐƠN CHỜ DUYỆT</b>\nBấm vào từng đơn để duyệt/từ chối:",
@@ -389,7 +406,7 @@ async def on_loanadm_active(cb: CallbackQuery):
         rest = ln["amount"] - ln["paid_amount"]
         flag = "🔴" if ln["status"] == "overdue" else ""
         rows.append([InlineKeyboardButton(
-            text=f"{flag}#{ln['id']} — còn {vnd(rest)}đ — {ln['tg_id']}",
+            text=f"{flag}#{ln['id']} — còn {vnd(rest)}đ — {_loan_customer_label(ln['tg_id'])}",
             callback_data=f"loanadm:view:{ln['id']}")])
     rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="loanadm:menu")])
     await cb.message.edit_text("📋 <b>KHOẢN ĐANG NỢ</b> (🔴 = quá hạn):",
@@ -409,7 +426,7 @@ async def on_loanadm_done(cb: CallbackQuery):
         return
     lines = ["✅ <b>ĐÃ TRẢ XONG / TỪ CHỐI</b>", ""]
     for ln in loans:
-        lines.append(f"#{ln['id']} {_loan_status_label(ln['status'])} — {vnd(ln['amount'])}đ — {ln['tg_id']}")
+        lines.append(f"#{ln['id']} {_loan_status_label(ln['status'])} — {vnd(ln['amount'])}đ — {_loan_customer_label(ln['tg_id'])}")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Quay lại", callback_data="loanadm:menu")]])
     await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
@@ -434,7 +451,7 @@ async def on_loanadm_view(cb: CallbackQuery):
     pays = db.loan_payments(lid)
     lines = [
         f"💰 <b>Khoản ứng #{lid}</b> — {_loan_status_label(ln['status'])}",
-        f"👤 Khách: <code>{ln['tg_id']}</code>",
+        f"👤 Khách: {html.escape(_loan_customer_label(ln['tg_id']))} (<code>{ln['tg_id']}</code>)",
         f"Ứng: <b>{vnd(ln['amount'])}đ</b> | Đã trả: <b>{vnd(ln['paid_amount'])}đ</b> | Còn nợ: <b>{vnd(rest)}đ</b>",
         f"Hạn trả: {_fmt_date(ln['due_date'])}",
     ]
