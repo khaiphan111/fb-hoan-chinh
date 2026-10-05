@@ -374,6 +374,16 @@ class AdminBotManager:
         self.bot = Bot(token=token, default=DefaultBotProperties(parse_mode="HTML"), session=session)
         self.running = True
         log.info("Admin Bot starting...")
+        # Nút Duyệt/Từ chối của các kênh định tuyến về bot admin:
+        # đăng ký các handler duyệt mà bot admin chưa có (tránh trùng
+        # với tg_admin_confirm_ đã có sẵn trên router chính).
+        if not getattr(self, "_action_router_ok", False):
+            try:
+                from .notify_router import get_action_router_for_admin_bot
+                self.dp.include_router(get_action_router_for_admin_bot())
+                self._action_router_ok = True
+            except Exception as e:
+                log.warning("Admin bot: include action router failed: %s", e)
         
         try:
             # Giữ tin nhắn đang chờ: restart giữa chừng không được nuốt tin user
@@ -940,6 +950,8 @@ def _admm_main_kb(tg_id=None):
                                           callback_data="admx:list"),
                      InlineKeyboardButton(text="📜 Nhật ký hoạt động",
                                           callback_data="admx:audit")])
+        rows.append([InlineKeyboardButton(text="⚙️ Cài đặt bot",
+                                          callback_data="admm:settings")])
         # Nút tạm dừng / mở lại bot (chỉ chủ shop)
         from . import pause as _pause_mod
         if _pause_mod.is_paused():
@@ -984,7 +996,8 @@ def _admm_text_main() -> str:
         "👤 <b>Quản lý user</b> — xem info, tìm, khoá/mở khoá, set VIP\n"
         "📊 <b>Báo cáo</b> — tổng quan, doanh thu, đơn rút chờ duyệt\n"
         "🎟️ <b>Mã giảm giá</b> — tạo/xem/xoá mã, flash sale\n"
-        "📣 <b>Broadcast</b> — gửi tin toàn bộ user, webhook reseller\n\n"
+        "📣 <b>Broadcast</b> — gửi tin toàn bộ user, webhook reseller\n"
+        "⚙️ <b>Cài đặt bot</b> — mọi cấu hình (chỉ chủ shop)\n\n"
         "<i>Vẫn gõ tay được: /adm &lt;lệnh&gt; &lt;tham số&gt; — vd /adm topup 123 50k</i>"
     )
 
@@ -1412,6 +1425,15 @@ async def _cb_answer(cb, *args, **kwargs):
 def register_adm_menu(target_router):
     """Gắn toàn bộ menu nút /adm (callback + nhập liệu FSM) vào router cho trước."""
 
+    # Panel ⚙️ Cài đặt bot (chỉ chủ shop) — đăng ký 1 lần duy nhất ở đây,
+    # dùng chung cho cả bot chính lẫn bot admin.
+    from . import admin_settings as _aset
+    _aset.register_settings(target_router)
+
+    # Panel 🔔 Bot báo tin (chỉ chủ shop) — nhánh riêng của Cài đặt.
+    from . import admin_notify_panel as _npanel
+    _npanel.register_notify_panel(target_router)
+
     @target_router.callback_query(F.data.startswith("admm:"))
     async def _on_admm_cb(cb: CallbackQuery, state: FSMContext):
         if not is_admin(cb.message.chat.id, cb.from_user.id):
@@ -1429,6 +1451,19 @@ def register_adm_menu(target_router):
 
         if action == "noop":
             await _cb_answer(cb, )
+            return
+
+        # ── Panel cài đặt bot (chỉ chủ shop) ──
+        if action == "settings":
+            if not _perms.is_super(cb.from_user.id):
+                await _cb_answer(cb, "🚫 Chỉ chủ shop mới dùng được.",
+                                show_alert=True)
+                return
+            await _cb_answer(cb, )
+            from . import admin_settings as _aset
+            await cb.message.edit_text(
+                _aset.main_text(), parse_mode="HTML",
+                reply_markup=_aset.main_kb())
             return
 
         # ── Hub: mở menu quản lý từng shop (gộp lệnh adm) ──

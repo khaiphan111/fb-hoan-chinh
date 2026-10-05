@@ -108,13 +108,20 @@ export default function App() {
   }
 
   async function refreshStatus() {
+    // Lấy /api/me ĐỘC LẬP với /api/status: một endpoint hỏng không được
+    // làm mất thông tin quyền -> che mất cả menu phân quyền của admin.
     try {
-      setStatus(await api("/api/status"));
       if (authed && !isUser) {
         setAdminMe(await api("/api/me"));
       }
     } catch (e: any) {
+      if (String(e.message).includes("đăng nhập")) { setAuthed(false); return; }
+    }
+    try {
+      setStatus(await api("/api/status"));
+    } catch (e: any) {
       if (String(e.message).includes("đăng nhập")) setAuthed(false);
+      // /api/status hỏng thì dashboard thiếu số liệu, nhưng menu phân quyền vẫn đủ.
     }
   }
 

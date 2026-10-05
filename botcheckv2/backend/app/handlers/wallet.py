@@ -221,25 +221,34 @@ async def notify_admin_withdrawal_request(req_id: int, tg_id: int, amount: int, 
         "👉 Bấm nút bên dưới để Duyệt hoặc Từ chối:"
     )
     
-    if admin_tg_token and admin_tg_token.strip() != (db.get_setting("bot_token") or "").strip():
-        from ..admin_bot import manager as admin_manager
-        admin_sender_bot = admin_manager.bot or manager.bot
-    else:
-        admin_sender_bot = manager.bot
-
-    if admin_sender_bot:
-        admins = _withdraw_admin_ids()
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Duyệt & Đã Chuyển", callback_data=f"tg_admin_withdraw_approve_{req_id}_{tg_id}_{amount}"),
-                InlineKeyboardButton(text="❌ Từ Chối", callback_data=f"tg_admin_withdraw_reject_{req_id}_{tg_id}_{amount}")
-            ]
-        ])
-        for admin_id in admins:
-            try:
-                await admin_sender_bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=kb)
-            except Exception as e:
-                log.error("Failed to notify TG admin %s for withdrawal: %s", admin_id, e)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Duyệt & Đã Chuyển", callback_data=f"tg_admin_withdraw_approve_{req_id}_{tg_id}_{amount}"),
+            InlineKeyboardButton(text="❌ Từ Chối", callback_data=f"tg_admin_withdraw_reject_{req_id}_{tg_id}_{amount}")
+        ]
+    ])
+    # Báo qua định tuyến kênh "Nạp/rút chờ duyệt" (kèm nút Duyệt/Từ chối)
+    from .. import notify_router as _nr
+    await _nr.send("topup_pending", admin_msg, reply_markup=kb)
+    # Admin phụ có quyền Tiền tệ mà chưa nhận qua kênh privileged cũng nhận 1 bản
+    try:
+        priv = set(_nr._privileged_ids())
+    except Exception:
+        priv = set()
+    try:
+        from .core import manager as _main_manager
+        _mb = _main_manager.bot if getattr(_main_manager, "running", False) else None
+        if _mb:
+            for tid in _perms.notify_extra_ids("tien"):
+                if tid in priv:
+                    continue
+                try:
+                    await _mb.send_message(tid, admin_msg, parse_mode="HTML",
+                                           reply_markup=kb)
+                except Exception:
+                    pass
+    except Exception:
+        pass
                 
     if admin_zalo and zalo_manager.running:
         zalo_kb = {
@@ -630,29 +639,13 @@ async def process_bank_amount(msg: Message, user, amount: int, target: str = "ma
     )
     
     notified = False
-    if admin_tg_token:
-        from ..admin_bot import manager as admin_manager
-        admin_sender_bot = admin_manager.bot
-    else:
-        from ..bot import manager as main_manager
-        admin_sender_bot = main_manager.bot
-
-    if admin_sender_bot:
-        admins = []
-        try:
-            if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
-        except: pass
-        try:
-            if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
-        except: pass
-        
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Xác nhận + Cộng tiền", callback_data=f"tg_admin_confirm_{user.id}_{amount}_{target}")]])
-        for admin_id in admins:
-            try:
-                await admin_sender_bot.send_message(admin_id, admin_msg, parse_mode="HTML", reply_markup=kb)
-                notified = True
-            except Exception as e:
-                log.error("Failed to notify TG admin %s: %s", admin_id, e)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="\u2705 X\u00e1c nh\u1eadn + C\u1ed9ng ti\u1ec1n", callback_data=f"tg_admin_confirm_{user.id}_{amount}_{target}")]])
+    # Bao qua dinh tuyen kenh "Nap/rut cho duyet" (kem nut xac nhan)
+    from .. import notify_router as _nr
+    try:
+        notified = await _nr.send("topup_pending", admin_msg, reply_markup=kb)
+    except Exception as e:
+        log.error("Failed to notify TG admin bank pending: %s", e)
                     
     if admin_zalo and zalo_manager.running:
         zalo_kb = {

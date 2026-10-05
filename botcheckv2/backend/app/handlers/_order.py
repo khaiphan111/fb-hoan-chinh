@@ -311,6 +311,7 @@ CALLBACK_ORDER = [
     "on_sheet_go",
     "on_guide_firstbuy",
     "on_guide_hd",
+    "on_goshop",
     "on_admin_withdraw_approve",
     "on_admin_withdraw_reject",
     "on_use_code",

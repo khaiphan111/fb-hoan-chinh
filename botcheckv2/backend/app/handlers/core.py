@@ -534,13 +534,13 @@ _spam_cleanup_ts = 0
 
 MENU = ReplyKeyboardMarkup(
     keyboard=[
+        [KeyboardButton(text="/shop"), KeyboardButton(text="/buff"), KeyboardButton(text="/thueso")],
         [KeyboardButton(text="/muagoi"), KeyboardButton(text="/checkfile"), KeyboardButton(text="/checkcookie")],
         [KeyboardButton(text="/theodoi"), KeyboardButton(text="/tiktok"), KeyboardButton(text="/ig")],
         [KeyboardButton(text="/list"), KeyboardButton(text="/balance"), KeyboardButton(text="/sub")],
         [KeyboardButton(text="/vip"), KeyboardButton(text="/ref"), KeyboardButton(text="/bank")],
-        [KeyboardButton(text="/tienich"), KeyboardButton(text="/shop"), KeyboardButton(text="/help")],
-        [KeyboardButton(text="/web"), KeyboardButton(text="/huongdan"), KeyboardButton(text="/buff")],
-        [KeyboardButton(text="/thueso")],
+        [KeyboardButton(text="/tienich"), KeyboardButton(text="/help"), KeyboardButton(text="/huongdan")],
+        [KeyboardButton(text="/web"), KeyboardButton(text="/sodu")],
     ],
     resize_keyboard=True,
 )
@@ -573,6 +573,9 @@ ADMIN_COMMANDS_EXTRA = [
 
 COMMANDS = [
     BotCommand(command="start",       description="Bắt đầu sử dụng bot"),
+    BotCommand(command="shop",        description="🛒 Shop acc Facebook"),
+    BotCommand(command="buff",        description="🚀 Shop buff tương tác MXH"),
+    BotCommand(command="thueso",      description="📱 Thuê số OTP"),
     BotCommand(command="muagoi",      description="Mua gói theo ngày (1, 3, 5, 7 ngày)"),
     BotCommand(command="sub",         description="Xem gói tháng & mua gói"),
     BotCommand(command="bank",        description="Nạp tiền / Lấy thông tin chuyển khoản"),
@@ -580,7 +583,6 @@ COMMANDS = [
     BotCommand(command="napshop",     description="Nạp tiền vào ví shop mua acc"),
     BotCommand(command="napbuff",     description="Nạp tiền vào ví buff (buff tương tác MXH)"),
     BotCommand(command="napthueso",   description="Nạp tiền vào ví thuê số OTP"),
-    BotCommand(command="buff",        description="🛍️ Shop buff tương tác MXH"),
     BotCommand(command="shopbuff",    description="🛍️ Shop buff tương tác MXH"),
     BotCommand(command="buffadm",     description="🛠️ Quản lý shop buff (admin)"),
     BotCommand(command="balance",     description="Xem số dư hiện tại"),
@@ -601,7 +603,6 @@ COMMANDS = [
     BotCommand(command="tiktok",      description="Check info TikTok: /tiktok <username>"),
     BotCommand(command="ig",          description="Check info Instagram: /ig <username>"),
     BotCommand(command="fb",          description="Check Facebook Live/Die: /fb <uid>"),
-    BotCommand(command="shop",        description="Shop tài khoản Facebook"),
     BotCommand(command="damua",       description="Acc FB đã mua + yêu cầu bảo hành"),
     BotCommand(command="quay",        description="Vòng quay may mắn (vé từ mua acc)"),
     BotCommand(command="hang",        description="Hạng thành viên shop acc"),
@@ -616,10 +617,13 @@ COMMANDS = [
 _WELCOME_NEW = (
     "🎉 <b>Chào mừng bạn đến với shop!</b>\n"
     "━━━━━━━━━━━━━━━\n"
-    "🛒 <b>Mua acc FB:</b> gõ /shop — chọn loại acc, thanh toán là nhận acc ngay\n"
-    "💳 <b>Nạp tiền:</b> gõ /nap &lt;số tiền&gt; — quét mã QR là tiền vào ví\n"
+    "🛒 <b>/shop</b> — Shop acc Facebook (mua là nhận acc ngay)\n"
+    "🚀 <b>/buff</b> — Shop buff tương tác MXH (like, follow, view...)\n"
+    "📱 <b>/thueso</b> — Thuê số OTP nhận mã xác minh\n"
+    "━━━━━━━━━━━━━━━\n"
+    "💳 <b>Nạp tiền:</b> /nap (ví chính) • /napshop (ví shop) • /napthueso (ví thuê số)\n"
     "🎁 <b>Tân thủ</b> được tặng ngày dùng thử miễn phí (nếu đang bật)\n"
-    "❓ Cần hỗ trợ? Gõ /huongdan để xem hướng dẫn theo từng mục\n"
+    "❓ Gõ /huongdan để xem hướng dẫn theo từng mục\n"
     "━━━━━━━━━━━━━━━\n\n"
 )
 
@@ -676,11 +680,13 @@ _HUONGDAN_TEXTS = {
         "• <b>/nap &lt;số tiền&gt;</b> — nạp tự động (quét QR), chọn ví chính/shop/buff\n"
         "• <b>/napshop &lt;số tiền&gt;</b> — nạp thẳng vào ví shop để mua acc\n"
         "• <b>/napbuff &lt;số tiền&gt;</b> — nạp thẳng vào ví buff để buff tương tác\n"
+        "• <b>/napthueso &lt;số tiền&gt;</b> — nạp thẳng vào ví thuê số OTP\n"
         "• <b>/bank &lt;số tiền&gt;</b> — lấy thông tin chuyển khoản tay\n"
-        "• <b>/sodu</b> — xem tất cả số dư: ví chính, ví shop, ví buff, credits, điểm\n\n"
+        "• <b>/sodu</b> — xem tất cả số dư: ví chính, ví shop, ví buff, ví thuê số, credits, điểm\n\n"
         "💡 <b>Ví chính</b>: check UID, mua gói/VIP.\n"
         "💡 <b>Ví shop</b>: mua acc, đặt cọc, hộp mù.\n"
-        "💡 <b>Ví buff</b>: buff like/follow/view MXH."
+        "💡 <b>Ví buff</b>: buff like/follow/view MXH.\n"
+        "💡 <b>Ví thuê số</b>: thuê số nhận OTP."
     ),
     "bh": (
         "🛡️ <b>BẢO HÀNH ACC</b>\n"
@@ -722,6 +728,56 @@ _HUONGDAN_TEXTS = {
         "💡 Trừ <b>ví thuê số</b> — nạp bằng /napthueso.\n"
         "⏳ Số dùng trong 15 phút."
     ),
+    "quay": (
+        "🎡 <b>VÒNG QUAY MAY MẮN</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• Mua acc xong được tặng <b>vé quay</b>\n"
+        "• Gõ <b>/quay</b> → bấm Quay → trúng thưởng ngay\n"
+        "• Giải: tiền cộng ví, credits, điểm thưởng...\n\n"
+        "💡 Càng mua nhiều, càng nhiều vé quay."
+    ),
+    "loyalty": (
+        "🎁 <b>ĐIỂM THƯỞNG & ĐỔI QUÀ</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• Mua acc được tặng <b>điểm thưởng</b>\n"
+        "• Gõ <b>/quadoi</b> → xem điểm và đổi quà\n"
+        "• Đủ điểm đổi acc miễn phí hoặc tiền ví\n\n"
+        "💡 Khách mua càng nhiều, điểm càng cao."
+    ),
+    "vip": (
+        "💎 <b>VIP & GÓI THÁNG</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• <b>/vip</b> — xem cấp độ VIP và đặc quyền\n"
+        "• <b>/muagoi</b> — mua gói check theo ngày\n"
+        "• <b>/sub</b> — mua gói tháng (tặng thêm credits)\n\n"
+        "💡 Nạp càng nhiều, VIP càng cao, ưu đãi càng lớn."
+    ),
+    "ref": (
+        "🤝 <b>GIỚI THIỆU KIẾM TIỀN</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "1️⃣ Gõ <b>/ref</b> → lấy link giới thiệu riêng\n"
+        "2️⃣ Gửi cho bạn bè, họ bấm vào link để dùng bot\n"
+        "3️⃣ Họ nạp tiền → bạn nhận <b>10% hoa hồng</b>\n\n"
+        "💡 Hoa hồng cộng thẳng vào ví chính, rút được."
+    ),
+    "loan": (
+        "💰 <b>ỨNG TIỀN MUA ACC</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• Đã mua ≥5 acc? Được <b>xin ứng tiền</b> để mua tiếp\n"
+        "• Gõ <b>/congno</b> → bấm xin ứng → chờ admin duyệt\n"
+        "• Trả trong 7 ngày, không lãi\n\n"
+        "💡 Ứng tối đa 50k/lần, tổng nợ tối đa 100k."
+    ),
+    "tienich": (
+        "🧰 <b>TIỆN ÍCH KHÁC</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• <b>/tienich</b> — giftcode, mã giảm giá, quà sinh nhật\n"
+        "• <b>/damua</b> — acc đã mua + bảo hành\n"
+        "• <b>/sodu</b> — xem tất cả số dư\n"
+        "• <b>/theodoi</b> — theo dõi UID tự động\n"
+        "• <b>/quay</b> — vòng quay may mắn\n\n"
+        "💡 Gõ <b>/help</b> để xem toàn bộ lệnh."
+    ),
 }
 
 _HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
@@ -729,8 +785,14 @@ _HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
      InlineKeyboardButton(text="💳 Nạp tiền", callback_data="hd:nap")],
     [InlineKeyboardButton(text="🛡️ Bảo hành", callback_data="hd:bh"),
      InlineKeyboardButton(text="🔍 Kiểm tra acc", callback_data="hd:check")],
-    [InlineKeyboardButton(text="🛍️ Buff tương tác", callback_data="hd:buff")],
-    [InlineKeyboardButton(text="📱 Thuê số OTP", callback_data="hd:thueso")],
+    [InlineKeyboardButton(text="🛍️ Buff tương tác", callback_data="hd:buff"),
+     InlineKeyboardButton(text="📱 Thuê số OTP", callback_data="hd:thueso")],
+    [InlineKeyboardButton(text="🎡 Vòng quay", callback_data="hd:quay"),
+     InlineKeyboardButton(text="🎁 Điểm thưởng", callback_data="hd:loyalty")],
+    [InlineKeyboardButton(text="💎 VIP & gói", callback_data="hd:vip"),
+     InlineKeyboardButton(text="🤝 Giới thiệu", callback_data="hd:ref")],
+    [InlineKeyboardButton(text="💰 Ứng tiền", callback_data="hd:loan"),
+     InlineKeyboardButton(text="🧰 Tiện ích", callback_data="hd:tienich")],
 ])
 
 manager = BotManager()
@@ -943,29 +1005,13 @@ async def on_start(msg: Message):
                 await msg.bot.send_message(ref_id, f"🎉 <b>Tin vui!</b>\nNgười dùng <b>{html.escape(u.full_name or '')}</b> vừa tham gia Bot qua link giới thiệu của bạn!\nKhi họ nạp tiền bạn sẽ nhận được 10% hoa hồng.", parse_mode="HTML")
             except: pass
             
-        # Send to admin tg
-        admins = []
+        # Send to admin tg (qua dinh tuyen kenh "Khach moi")
         try:
-            if db.get_setting("admin_tg_id"): admins.append(int(db.get_setting("admin_tg_id")))
-        except: pass
-        try:
-            if db.get_setting("admin_tg_group_id"): admins.append(int(db.get_setting("admin_tg_group_id")))
-        except: pass
-        
-        admin_tg_token = db.get_setting("admin_bot_token", "")
-        if admin_tg_token:
-            from ..admin_bot import manager as admin_manager
-            admin_sender_bot = admin_manager.bot
-        else:
-            admin_sender_bot = msg.bot
-            
-        if admin_sender_bot:
-            for admin_id in admins:
-                try:
-                    await admin_sender_bot.send_message(admin_id, admin_msg, parse_mode="HTML")
-                except Exception as e:
-                    log.error("Failed to notify TG admin %s of new user: %s", admin_id, e)
-                
+            from .. import notify_router as _nr
+            await _nr.send("new_user", admin_msg)
+        except Exception as e:
+            log.error("Failed to notify TG admin of new user: %s", e)
+
         # Send to admin zalo
         admin_zalo = db.get_setting("admin_zalo_id", "")
         if admin_zalo:
@@ -1004,6 +1050,12 @@ async def on_start(msg: Message):
     if is_new:
         try:
             kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛒 Shop acc",
+                                      callback_data="goshop:shop"),
+                 InlineKeyboardButton(text="🚀 Shop buff",
+                                      callback_data="goshop:buff"),
+                 InlineKeyboardButton(text="📱 Thuê số",
+                                      callback_data="goshop:thueso")],
                 [InlineKeyboardButton(text="🛒 Mua acc đầu tiên (3 bước)",
                                       callback_data="guide_firstbuy:1")],
                 [InlineKeyboardButton(text="📖 Hướng dẫn nhanh",
@@ -1011,7 +1063,7 @@ async def on_start(msg: Message):
             ])
             await msg.answer(
                 "🆕 <b>Bạn là khách mới?</b>\n"
-                "Bấm nút bên dưới để được dẫn từng bước mua acc đầu tiên nhé 👇",
+                "Bấm nút bên dưới để vào shop ngay, hoặc xem hướng dẫn từng bước 👇",
                 parse_mode="HTML", reply_markup=kb,
             )
         except Exception:
@@ -1042,6 +1094,27 @@ async def on_guide_firstbuy(cb: CallbackQuery):
 async def on_guide_hd(cb: CallbackQuery):
     await cb.answer()
     await _send_huongdan(cb.message, edit=True)
+
+@router.callback_query(F.data.startswith("goshop:"))
+async def on_goshop(cb: CallbackQuery, state: FSMContext):
+    """Nút shop nhanh trong tin chào khách mới: mở thẳng shop tương ứng."""
+    await cb.answer()
+    which = (cb.data or "").split(":", 1)[1] if ":" in (cb.data or "") else ""
+    try:
+        if which == "shop":
+            from .shop import on_shop
+            await on_shop(cb.message)
+        elif which == "buff":
+            from .buff import on_buff
+            await on_buff(cb.message, state)
+        elif which == "thueso":
+            from .thueso import on_thueso_cmd
+            await on_thueso_cmd(cb.message, state)
+        else:
+            await cb.message.answer("Bấm nút /shop, /buff, /thueso ở bàn phím bên dưới nhé 👇")
+    except Exception as e:
+        log.warning("on_goshop %s failed: %s", which, e)
+        await cb.message.answer("Bấm nút /shop, /buff, /thueso ở bàn phím bên dưới nhé 👇")
 
 @router.message(Command("ping2"))
 async def on_ping2(msg: Message):

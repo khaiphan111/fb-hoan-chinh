@@ -36,13 +36,10 @@ async def _notify_admin_watch_change(uid: str, old: str, new: str, tg_id: int):
         f"👤 User: <code>{tg_id}</code>\n"
         f"📊 {old} ➡️ <b>{new.upper()}</b>"
     )
-    # 1. Admin Telegram bot
+    # 1. Báo qua định tuyến kênh "Hệ thống"
     try:
-        from .admin_bot import manager as admin_manager
-        admin_bot = admin_manager.bot
-        admin_id = db.get_setting("admin_tg_id")
-        if admin_bot and admin_id:
-            await admin_bot.send_message(int(admin_id), msg, parse_mode="HTML")
+        from . import notify_router as _nr
+        await _nr.send("system", msg)
     except Exception as e:
         log.warning("Admin TG notify failed: %s", e)
     # 2. Zalo admin
@@ -79,11 +76,12 @@ class FollowerPoller:
 
     def set_zalo_bot(self, bot): self._zalo_bot = bot
 
-    async def _alert_admin(self, msg: str):
-        admin_tg_id = db.get_setting("admin_tg_id", "")
-        if admin_tg_id and self._bot:
-            try: await self._bot.send_message(int(admin_tg_id), f"⚠️ <b>SYSTEM ALERT</b>\n{msg}", parse_mode="HTML")
-            except: pass
+    async def _alert_admin(self, msg: str, channel: str = "system"):
+        try:
+            from . import notify_router as _nr
+            await _nr.send(channel, f"⚠️ <b>SYSTEM ALERT</b>\n{msg}")
+        except Exception:
+            pass
 
     def start(self):
         if not (self._account_task and not self._account_task.done()):
@@ -213,27 +211,13 @@ class FollowerPoller:
         db.acc_claim_mark_reminded([int(w["id"]) for w in claims])
         await self._send_admin_report("\n\n".join(lines))
 
-    async def _send_admin_report(self, text: str) -> None:
-        import app.bot as botmod  # lazy: tranh circular import voi handlers
-        """Gửi báo cáo cho admin: ưu tiên admin bot, fallback bot chính."""
-        sent = False
+    async def _send_admin_report(self, text: str, channel: str = "stock") -> None:
+        """Gửi báo cáo cho admin qua định tuyến kênh (mặc định: Kho)."""
         try:
-            from .admin_bot import manager as admin_manager
-            admin_bot = admin_manager.bot
-            admin_id = db.get_setting("admin_tg_id")
-            if admin_bot and admin_id:
-                await admin_bot.send_message(int(admin_id), text, parse_mode="HTML")
-                sent = True
+            from . import notify_router as _nr
+            await _nr.send(channel, text)
         except Exception as e:
-            log.warning("Admin report via admin_bot failed: %s", e)
-        if not sent:
-            try:
-                bot_inst = self._bot or getattr(botmod.manager, "bot", None)
-                admin_id = db.get_setting("admin_tg_id")
-                if bot_inst and admin_id:
-                    await bot_inst.send_message(int(admin_id), text, parse_mode="HTML")
-            except Exception as e:
-                log.warning("Admin report via main bot failed: %s", e)
+            log.warning("Admin report channel %s failed: %s", channel, e)
 
     async def _ops_loop(self):
         """Viec van hanh tu dong: bao cao sang 7h, qua sinh nhat 8h, quet gian lan moi gio."""
@@ -811,7 +795,7 @@ class FollowerPoller:
                 lines.append(f"📦 <b>{html.escape(name)}</b>: {show}{more}")
             if die_ids:
                 lines.append("\n<i>Dọn hẳn: /xoadie [id_loại]</i>")
-            await self._alert_admin("\n".join(lines))
+            await self._alert_admin("\n".join(lines), channel="stock")
         except Exception as e:
             log.warning("stock recheck: báo admin lỗi: %s", e)
         # Đẩy tình trạng acc lên cột K Google Sheet (🟢 LIVE / ☠️ DIE)
@@ -1514,8 +1498,9 @@ class FollowerPoller:
                 # Báo bot riêng cho admin
                 try:
                     from . import viotp_notify as _vn
+                    from . import notify_router as _nr
                     rr = db.viotp_rental_get(rid)
-                    await _vn.manager.send_to_privileged(_vn.otp_notify_text(rr))
+                    await _nr.send("rent", _vn.otp_notify_text(rr))
                 except Exception as e:
                     log.warning("bao admin OTP #%s lỗi: %s", rid, e)
             elif sess["status"] == 2:
@@ -1656,7 +1641,7 @@ class FollowerPoller:
                 try:
                     await self._alert_admin(
                         f"🛍️ Đơn buff <code>{order['code']}</code> thất bại: "
-                        f"{err[:200]} (đã hoàn ví buff)")
+                        f"{err[:200]} (đã hoàn ví buff)", channel="order_buff")
                 except Exception:
                     pass
 

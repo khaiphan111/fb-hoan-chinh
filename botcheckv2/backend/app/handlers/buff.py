@@ -293,7 +293,8 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
                 cb.bot,
                 f"🛍️ <b>ĐƠN BUFF MỚI</b> <code>{order['code']}</code>\n"
                 f"👤 {uid} • 📦 {html.escape(svc['platform_name'])} — {html.escape(svc['name'])}\n"
-                f"🔢 {vnd(qty)} • 💵 {vnd(total)} (vốn {vnd(order['total_cost'])})")
+                f"🔢 {vnd(qty)} • 💵 {vnd(total)} (vốn {vnd(order['total_cost'])})",
+                channel="order_buff")
         except Exception:
             pass
         await cb.message.edit_text(

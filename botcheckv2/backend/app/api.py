@@ -422,30 +422,64 @@ def user_analytics(tg_id: int = Depends(user_auth)):
 
 @router.get("/status")
 def status(_=Depends(auth)):
-    from .bot import manager, zalo_manager  # lazy (muc 5: tranh import aiogram nang luc boot)
-    watches = db.all_watches()
+    # Web admin chạy độc lập (Render) có thể không load được bot managers;
+    # bọc từng phần để 1 lỗi không làm sập cả endpoint (500) -> frontend
+    # mất menu phân quyền.
+    try:
+        from .bot import manager, zalo_manager  # lazy (muc 5: tranh import aiogram nang luc boot)
+        bot_running = bool(manager.running)
+        zalo_running = bool(zalo_manager.running)
+    except Exception as e:
+        print(f"[!] /api/status: bot managers unavailable: {e}")
+        bot_running = False
+        zalo_running = False
+    try:
+        watches = db.all_watches()
+    except Exception as e:
+        print(f"[!] /api/status: all_watches failed: {e}")
+        watches = []
     live = sum(1 for w in watches if w["last_status"] == "live")
     die = sum(1 for w in watches if w["last_status"] == "die")
-    
-    logs_today = [l for l in db.recent_logs(500)
-                  if dict(l).get("kind") in ("follower_change","video_new","video_stats")
-                  and dict(l).get("ts", 0) > int(time.time()) - 86400]
+
+    try:
+        logs_today = [l for l in db.recent_logs(500)
+                      if dict(l).get("kind") in ("follower_change","video_new","video_stats")
+                      and dict(l).get("ts", 0) > int(time.time()) - 86400]
+    except Exception as e:
+        print(f"[!] /api/status: recent_logs failed: {e}")
+        logs_today = []
+
+    try:
+        n_users = len(db.list_users())
+    except Exception as e:
+        print(f"[!] /api/status: list_users failed: {e}")
+        n_users = 0
+    try:
+        tracks_total = len(db.all_active_tracks())
+    except Exception as e:
+        print(f"[!] /api/status: all_active_tracks failed: {e}")
+        tracks_total = 0
+    try:
+        video_tracks_total = len(db.all_active_video_tracks())
+    except Exception as e:
+        print(f"[!] /api/status: all_active_video_tracks failed: {e}")
+        video_tracks_total = 0
 
     return {
         "app": config.APP_NAME,
         "version": config.APP_VERSION,
         "author": config.AUTHOR,
         "setup_done": db.get_setting("setup_done") == "1",
-        "bot_running": manager.running,
-        "zalo_running": zalo_manager.running,
+        "bot_running": bot_running,
+        "zalo_running": zalo_running,
         "poller_running": poller.running,
         "poller_last_run": poller.last_run,
-        "users": len(db.list_users()),
+        "users": n_users,
         "watches_total": len(watches),
         "watches_live": live,
         "watches_die": die,
-        "tracks_total": len(db.all_active_tracks()),
-        "video_tracks_total": len(db.all_active_video_tracks()),
+        "tracks_total": tracks_total,
+        "video_tracks_total": video_tracks_total,
         "notifs_today": len(logs_today),
     }
 

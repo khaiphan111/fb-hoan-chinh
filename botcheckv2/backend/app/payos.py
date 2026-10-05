@@ -232,73 +232,39 @@ async def _notify_paid(tg_id: int, amount: int, order_code: int, target: str = "
                           tg_id, _attempt + 1, e)
                 if _attempt < 2:
                     await _aio2.sleep(2)
-    # Báo admin qua bot admin
+    # Báo admin qua định tuyến kênh "Nạp tiền thành công"
     try:
-        from .admin_bot import manager as admin_manager
-        sender = admin_manager.bot if getattr(admin_manager, "running", False) else None
-        if not sender and manager.running:
-            sender = manager.bot
-        if sender:
-            try:
-                u = db.get_user(tg_id)
-                keys = u.keys() if u else []
-                uname = (u["username"] if u and "username" in keys and u["username"] else "").strip()
-                name = (u["name"] if u and "name" in keys and u["name"] else "").strip()
-            except Exception:
-                uname, name = "", ""
-            who = html.escape(name or (f"@{uname}" if uname else "—"))
-            if uname and name:
-                who = html.escape(f"{name} (@{uname})")
-            admins = []
-            for key in ("admin_tg_id", "admin_tg_group_id"):
-                try:
-                    v = db.get_setting(key, "")
-                    if v:
-                        admins.append(int(v))
-                except Exception:
-                    pass
-            # Gửi thông báo cho admin: thử lại 3 lần, mỗi lần cách 2s.
-            # Nếu bot admin gửi thất bại, thử qua bot chính.
-            import asyncio as _aio
-            admin_msg = (
-                "💳 <b>PAYOS: KHÁCH NẠP TIỀN TỰ ĐỘNG</b>\n\n"
-                f"👤 Khách: <b>{who}</b>\n"
-                f"🆔 ID: <code>{tg_id}</code>\n"
-                f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
-                f"🧾 Mã đơn: <code>{order_code}</code>"
-            )
-            senders = []
-            if sender:
-                senders.append(sender)
-            try:
-                if manager.running and manager.bot and manager.bot is not sender:
-                    senders.append(manager.bot)
-            except Exception:
-                pass
-            for admin_id in admins:
-                ok = False
-                last_err = None
-                for attempt in range(3):
-                    for s in senders:
-                        try:
-                            await s.send_message(admin_id, admin_msg,
-                                                 parse_mode="HTML")
-                            ok = True
-                            break
-                        except Exception as e:
-                            last_err = e
-                            continue
-                    if ok:
-                        break
-                    if attempt < 2:
-                        await _aio.sleep(2)
-                if ok:
-                    log.info("Đã báo admin %s về đơn nạp %s (%sđ)",
-                             admin_id, order_code, amount)
-                else:
-                    log.error("MẤT thông báo nạp cho admin %s (đơn %s %sđ) "
-                              "sau 3 lần thử: %s",
-                              admin_id, order_code, amount, last_err)
+        try:
+            u = db.get_user(tg_id)
+            keys = u.keys() if u else []
+            uname = (u["username"] if u and "username" in keys and u["username"] else "").strip()
+            name = (u["name"] if u and "name" in keys and u["name"] else "").strip()
+        except Exception:
+            uname, name = "", ""
+        who = html.escape(name or (f"@{uname}" if uname else "—"))
+        if uname and name:
+            who = html.escape(f"{name} (@{uname})")
+        admin_msg = (
+            "💳 <b>PAYOS: KHÁCH NẠP TIỀN TỰ ĐỘNG</b>\n\n"
+            f"👤 Khách: <b>{who}</b>\n"
+            f"🆔 ID: <code>{tg_id}</code>\n"
+            f"💰 Số tiền: <b>{vnd(amount)}</b>\n"
+            f"🧾 Mã đơn: <code>{order_code}</code>"
+        )
+        from . import notify_router as _nr
+        last_err = None
+        try:
+            ok = await _nr.send("topup_done", admin_msg)
+        except Exception as e:
+            ok = False
+            last_err = e
+        if ok:
+            log.info("Đã báo admin về đơn nạp %s (%sđ)",
+                     order_code, amount)
+        else:
+            log.error("MẤT thông báo nạp cho admin (đơn %s %sđ) "
+                      "sau khi thử định tuyến: %s",
+                      order_code, amount, last_err)
     except Exception as e:
         log.error("Không báo admin được: %s", e)
 

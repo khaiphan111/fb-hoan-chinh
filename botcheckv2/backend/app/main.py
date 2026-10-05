@@ -186,6 +186,12 @@ async def on_startup():
         await notify_manager.start()
         print("DEBUG: Start viotp_notify_manager.start()", flush=True)
         await _viotp_notify_manager.start()
+        print("DEBUG: Start custom notify bots", flush=True)
+        try:
+            from . import notify_router as _nr
+            await _nr.start_custom_bots()
+        except Exception as e:
+            print(f"DEBUG: start_custom_bots failed: {e}", flush=True)
                 
         if started_any:
             print("DEBUG: Start poller.start()", flush=True)

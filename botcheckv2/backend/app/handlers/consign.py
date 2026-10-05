@@ -1456,12 +1456,11 @@ async def _kg_disp_agree(cb: CallbackQuery):
         await cb.message.answer(f"✅ Đã ghi nhận. {amt:,}đ (đủ giá khách đã trả) sẽ trừ khỏi ví của bạn để hoàn cho khách.")
         # Báo admin
         try:
-            admin_id = int(db.get_setting("admin_tg_id", "0") or 0)
-            if admin_id:
-                await cb.bot.send_message(admin_id,
-                    f"✅ <b>Đối tác tự đồng ý đền</b>\nTranh chấp #{did} — {html.escape(c['name'])}\n"
-                    f"Hoàn khách: <b>{amt:,}đ</b> (đối tác chịu 100%)",
-                    parse_mode="HTML")
+            from .. import notify_router as _nr
+            await _nr.send(
+                "consign",
+                f"✅ <b>Đối tác tự đồng ý đền</b>\nTranh chấp #{did} — {html.escape(c['name'])}\n"
+                f"Hoàn khách: <b>{amt:,}đ</b> (đối tác chịu 100%)")
         except Exception as e:
             log.warning("dispute agree notify admin #%s: %s", did, e)
     else:
@@ -1620,13 +1619,14 @@ async def _kg_wdok(cb: CallbackQuery, state: FSMContext):
         db.consignor_update(c["id"], payout_info=d["account"])
     await cb.message.answer(f"✅ {msg_t} (mã #{pid}). Chủ shop sẽ duyệt.")
     try:
-        admin_id = int(db.get_setting("admin_tg_id", "0") or 0)
-        if admin_id:
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="👁 Duyệt rút tiền", callback_data=f"kga:payout:{pid}")]])
-            await cb.bot.send_message(admin_id, f"💸 <b>Rút tiền ký gửi #{pid}</b>\n"
-                                      f"👤 {html.escape(c['name'])} — {d['amount']:,}đ → {d['channel']}",
-                                      parse_mode="HTML", reply_markup=kb)
+        from .. import notify_router as _nr
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👁 Duyệt rút tiền", callback_data=f"kga:payout:{pid}")]])
+        await _nr.send(
+            "consign",
+            f"💸 <b>Rút tiền ký gửi #{pid}</b>\n"
+            f"👤 {html.escape(c['name'])} — {d['amount']:,}đ → {d['channel']}",
+            reply_markup=kb)
     except Exception:
         pass
     C.audit(cb.from_user.id, c["name"], "withdraw_req", f"pid={pid} amount={d['amount']}")

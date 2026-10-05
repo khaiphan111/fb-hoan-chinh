@@ -594,9 +594,6 @@ async def _notify_purchase_admin(bot, buyer, orders: list):
         return
     try:
         text = _purchase_alert_text(buyer, orders)
-        sent = await _notify_bot.manager.send_to_privileged(text)
-        if not sent:
-            await _notify_shop_admin(bot, text)
         try:
             priv = set(_notify_bot.privileged_ids())
         except Exception:
@@ -616,6 +613,8 @@ async def _notify_purchase_admin(bot, buyer, orders: list):
                 ])
         except Exception:
             kg_kb = None
+        from .. import notify_router as _nr
+        await _nr.send("order_acc", text, reply_markup=kg_kb)
         for tid in _perms.notify_extra_ids("orders"):
             if tid in priv:
                 continue
@@ -675,9 +674,8 @@ async def _notify_die_quarantine(bot, die_rows):
             lines.append(f"📦 <b>{html.escape(name)}</b>: {show}{more}")
         lines.append("\n<i>Dọn hẳn: /xoadie [id_loại]</i>")
         text = "\n".join(lines)
-        sent = await _notify_bot.manager.send_to_privileged(text)
-        if not sent:
-            await _notify_shop_admin(bot, text)
+        from .. import notify_router as _nr
+        await _nr.send("stock", text)
     except Exception as e:
         log.warning("Báo admin cách ly acc die lỗi: %s", e)
 
@@ -804,21 +802,31 @@ async def _notify_admin_photo(bot, file_id: str, caption: str):
         except Exception:
             pass
 
-async def _notify_admin_smart(bot, text: str, perm: str = None):
+async def _notify_admin_smart(bot, text: str, perm: str = None,
+                            channel: str = None):
     """Báo admin: ưu tiên bot thông báo riêng, fallback về bot chính.
     perm: nếu có, gửi thêm cho các admin phụ đang giữ quyền đó
-    (tránh trùng người đã nhận qua kênh privileged)."""
-    try:
-        sent = await _notify_bot.manager.send_to_privileged(text)
-        if sent:
-            pass
-        else:
-            await _notify_shop_admin(bot, text)
-    except Exception:
+    (tránh trùng người đã nhận qua kênh privileged).
+    channel: nếu có, gửi qua định tuyến kênh (notify_router) thay vì
+    đường cũ — có hiệu lực ngay theo cấu hình trong panel."""
+    if channel:
         try:
-            await _notify_shop_admin(bot, text)
+            from .. import notify_router as _nr
+            await _nr.send(channel, text)
         except Exception:
-            pass
+            log.warning("_notify_admin_smart channel %s failed", channel)
+    else:
+        try:
+            sent = await _notify_bot.manager.send_to_privileged(text)
+            if sent:
+                pass
+            else:
+                await _notify_shop_admin(bot, text)
+        except Exception:
+            try:
+                await _notify_shop_admin(bot, text)
+            except Exception:
+                pass
     if perm:
         try:
             priv = set(_notify_bot.privileged_ids())
@@ -1204,7 +1212,7 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
             f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn <b>{left}</b> acc. "
             f"Nhập thêm bằng /themacc {cat_id}",
             perm="kho",
-        )
+            channel="stock")
     # Mua nhiều acc 1 lúc: tự động gửi 1 file gộp
     await _send_merged_acc_file(msg, delivered)
 
@@ -2099,7 +2107,7 @@ async def _fulfill_restock_subs(cat_id: int, bot, cat: dict):
             await _notify_admin_smart(
                 bot,
                 f"⚡ <b>Tự giao hàng đặt trước:</b> {html.escape(cat['name'])} — "
-                f"đã giao <b>{done_auto}</b> đơn đặt trước.")
+                f"đã giao <b>{done_auto}</b> đơn đặt trước.", channel="order_acc")
         except Exception:
             pass
 
@@ -2172,7 +2180,7 @@ async def _fulfill_deposits(cat_id: int, bot, cat: dict):
         await _notify_admin_smart(
             bot,
             f"💰 <b>Tự giao hàng đặt cọc:</b> {html.escape(cat['name'])} — "
-            f"đã giao <b>{done}</b> acc cho khách đặt cọc.")
+            f"đã giao <b>{done}</b> acc cho khách đặt cọc.", channel="order_acc")
 
 async def _do_deposit(tg_id: int, cat_id: int, msg, bot):
     c = db.acc_category_get(cat_id)

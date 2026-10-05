@@ -201,7 +201,8 @@ async def on_warranty_evidence(msg: Message, state: FSMContext):
         f"📸 Ảnh bằng chứng log sai mk đính kèm.\n\n"
         f"Xem: /bhdon | Xong: /bhdone {claim_id}"
     )
-    await _notify_admin_photo(msg.bot, msg.photo[-1].file_id, caption)
+    from .. import notify_router as _nr
+    await _nr.send("warranty", caption, photo=msg.photo[-1].file_id)
     await msg.answer(
         f"✅ <b>Đã ghi nhận yêu cầu bảo hành #{claim_id}</b>\n\n"
         f"🧾 Đơn: <b>#{order_id}</b> — {html.escape(order['cat_name'])}\n"

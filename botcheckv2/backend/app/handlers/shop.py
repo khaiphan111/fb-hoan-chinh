@@ -486,7 +486,7 @@ async def on_acc_confirm(cb: CallbackQuery):
                     f"⚠️ <b>CẦN XỬ LÝ TAY:</b> lỗi giao acc sau khi trừ tiền\n"
                     f"User <code>{tg_id}</code>, loại #{cat_id} x{qty}, {vnd(final)}\n"
                     f"Đơn đã được tạo — kiểm tra và giao lại cho khách.\n"
-                    f"Lỗi: <code>{html.escape(str(e)[:200])}</code>")
+                    f"Lỗi: <code>{html.escape(str(e)[:200])}</code>", channel="order_acc")
             except Exception:
                 pass
             await cb.message.answer(
@@ -1310,7 +1310,7 @@ async def on_cart_confirm(cb: CallbackQuery):
                 f"⚠️ <b>CẦN KIỂM TRA:</b> lỗi thanh toán giỏ hàng sau khi trừ tiền\n"
                 f"User <code>{tg_id}</code>, tổng {vnd(grand)}, "
                 f"đã giao {vnd(paid_total)}, đã hoàn {vnd(refunded_total)}\n"
-                f"Lỗi: <code>{html.escape(str(e)[:200])}</code>")
+                f"Lỗi: <code>{html.escape(str(e)[:200])}</code>", channel="order_acc")
         except Exception:
             pass
         await cb.message.answer(
@@ -1420,7 +1420,7 @@ async def on_cart_confirm(cb: CallbackQuery):
                     cb.bot,
                     f"⚠️ <b>Sắp hết hàng:</b> {html.escape(c['name'])} chỉ còn "
                     f"<b>{left}</b> acc. Nhập thêm bằng /themacc {cid}",
-                    perm="kho")
+                    perm="kho", channel="stock")
 
 @router.callback_query(F.data.startswith("acc2fa:"))
 async def on_acc_2fa(cb: CallbackQuery):

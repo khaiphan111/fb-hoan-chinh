@@ -142,21 +142,9 @@ async def on_loan_amount(msg: Message, state: FSMContext):
             InlineKeyboardButton(text="✅ Duyệt", callback_data=f"loan:ap:{lid}"),
             InlineKeyboardButton(text="❌ Từ chối", callback_data=f"loan:rj:{lid}"),
         ]])
-        # Ưu tiên gửi qua notify bot kèm nút; nếu không được mới fallback text thường
-        sent = False
-        try:
-            from . import notify_bot as _nb
-            if _nb.manager.running and _nb.manager.bot:
-                for pid in _nb.privileged_ids():
-                    try:
-                        await _nb.manager.bot.send_message(
-                            pid, text, parse_mode="HTML", reply_markup=kb)
-                        sent = True
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-        if not sent:
+        # Báo admin qua định tuyến kênh "Công nợ" (kèm nút Duyệt/Từ chối)
+        from .. import notify_router as _nr
+        if not await _nr.send("loan", text, reply_markup=kb):
             await _notify_admin_smart(msg.bot, text, perm=None)
     except Exception as e:
         log.warning("loan notify failed: %s", e)

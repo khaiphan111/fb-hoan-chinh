@@ -117,6 +117,15 @@ class NotifyBotManager:
                        session=session)
         self.running = True
         log.info("Notify Bot starting...")
+        # Nút Duyệt/Từ chối trên tin nhắn của bot này (fix bug: trước đây
+        # tin nhắn có nút gửi qua đây nhưng handler nằm ở bot chính).
+        if not getattr(self, "_action_router_ok", False):
+            try:
+                from .notify_router import get_action_router
+                self.dp.include_router(get_action_router())
+                self._action_router_ok = True
+            except Exception as e:
+                log.warning("Notify bot: include action router failed: %s", e)
         try:
             await self.bot.delete_webhook(drop_pending_updates=False)  # giữ tin nhắn đang chờ qua restart
             self.task = asyncio.create_task(self.dp.start_polling(self.bot))

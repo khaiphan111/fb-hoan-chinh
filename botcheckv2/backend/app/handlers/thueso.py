@@ -405,7 +405,8 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
         from .. import viotp_notify as _vn
         r = db.viotp_rental_get(rid)
         username = (cb.from_user.username or "")
-        await _vn.manager.send_to_privileged(_vn.rental_notify_text(r, username))
+        from .. import notify_router as _nr
+        await _nr.send("rent", _vn.rental_notify_text(r, username))
     except Exception as e:
         log.warning("bao admin thue so that bai: %s", e)
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -461,7 +462,8 @@ async def on_ts_check(cb: CallbackQuery):
         try:
             from . import viotp_notify as _vn
             rr = db.viotp_rental_get(rid)
-            await _vn.manager.send_to_privileged(_vn.otp_notify_text(rr))
+            from .. import notify_router as _nr
+            await _nr.send("rent", _vn.otp_notify_text(rr))
         except Exception:
             pass
     elif sess["status"] == 2:

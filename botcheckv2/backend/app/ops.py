@@ -108,7 +108,8 @@ async def morning_report() -> bool:
         f"☠️ Acc DIE cách ly: <b>{die_n}</b>",
         f"⏳ Rút chờ duyệt: <b>{wd['n']}</b> ({vnd(wd['s'])})",
     ]
-    ok = await _notify().send_to_privileged("\n".join(lines))
+    from . import notify_router as _nr
+    ok = await _nr.send("report", "\n".join(lines))
     log.info("morning_report sent=%s", ok)
     return ok
 
@@ -119,14 +120,14 @@ async def fraud_scan() -> int:
     today = time.strftime("%Y-%m-%d")
     c = db.get_conn()
     sent = 0
-    nm = _notify()
+    from . import notify_router as _nr
 
     # 1. Trial ao: nhieu tai khoan moi kich hoat trial trong 24h
     try:
         n = c.execute("SELECT COUNT(*) n FROM tg_users WHERE trial_activated=1 AND created_at>=?",
                       (now - 86400,)).fetchone()["n"]
         if n >= TRIAL_SPIKE_COUNT and db.ops_alert_dedup("trial_spike", today, 20 * 3600):
-            if await nm.send_to_privileged(
+            if await _nr.send("fraud", 
                     "⚠️ <b>CẢNH BÁO TRIAL ẢO</b>\n"
                     f"24h qua có <b>{n}</b> tài khoản mới kích hoạt trial "
                     f"(ngưỡng {TRIAL_SPIKE_COUNT}). Kiểm tra xem có người tạo nhiều nick không."):
@@ -144,7 +145,7 @@ async def fraud_scan() -> int:
             if not db.ops_alert_dedup("warranty_abuse", str(tg_id), 7 * 86400):
                 continue
             uname = _uname(tg_id)
-            if await nm.send_to_privileged(
+            if await _nr.send("fraud", 
                     "⚠️ <b>CẢNH BÁO LẠM DỤNG BẢO HÀNH</b>\n"
                     f"Khách {uname} đã tạo <b>{r['n']}</b> khiếu nại BH trong 7 ngày qua."):
                 sent += 1
@@ -160,7 +161,7 @@ async def fraud_scan() -> int:
             if not db.ops_alert_dedup("big_withdraw", str(r["id"]), 24 * 3600):
                 continue
             uname = _uname(r["tg_id"])
-            if await nm.send_to_privileged(
+            if await _nr.send("fraud", 
                     "⚠️ <b>RÚT TIỀN LỚN CHỜ DUYỆT</b>\n"
                     f"Khách {uname} yêu cầu rút <b>{vnd(r['amount'])}</b> (đơn #{r['id']}). "
                     "Nhớ kiểm tra kỹ trước khi duyệt."):
@@ -178,7 +179,7 @@ async def fraud_scan() -> int:
             if not db.ops_alert_dedup("topup_withdraw", str(r["id"]), 24 * 3600):
                 continue
             uname = _uname(r["tg_id"])
-            if await nm.send_to_privileged(
+            if await _nr.send("fraud", 
                     "⚠️ <b>NGHI RỬA TIỀN / LỢI DỤNG</b>\n"
                     f"Khách {uname} vừa nạp tiền rồi tạo đơn rút <b>{vnd(r['amount'])}</b> "
                     f"(đơn #{r['id']}) trong vòng 24h. Kiểm tra trước khi duyệt."):
