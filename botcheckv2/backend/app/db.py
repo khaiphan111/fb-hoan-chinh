@@ -991,6 +991,20 @@ def migrate_db():
         ]:
             _migrate_one(c, sql, applied)
         c.commit()
+        # 2026-10-05: viotp_rentals.id INTEGER PRIMARY KEY khong tu tang
+        # tren Postgres (SQLite thi co) -> moi INSERT deu NotNullViolation,
+        # tien tru ma khong tao duoc don thue. Gan sequence idempotent.
+        try:
+            import psycopg2 as _pg
+            if isinstance(get_conn(), PgConnection):
+                c.execute("CREATE SEQUENCE IF NOT EXISTS viotp_rentals_id_seq")
+                c.execute("ALTER TABLE viotp_rentals ALTER COLUMN id "
+                          "SET DEFAULT nextval('viotp_rentals_id_seq')")
+                c.execute("ALTER SEQUENCE viotp_rentals_id_seq "
+                          "OWNED BY viotp_rentals.id")
+                c.commit()
+        except Exception:
+            pass
 
 # --- SETTINGS ---
 # Cache settings trong RAM (xem get_setting): key -> (value, timestamp)

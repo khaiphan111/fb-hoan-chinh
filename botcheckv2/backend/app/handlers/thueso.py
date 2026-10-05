@@ -396,9 +396,28 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
             f"Đã hoàn <b>{vnd(sell)}đ</b> vào ví thuê số.",
             parse_mode="HTML", reply_markup=_back_menu_kb())
         return
-    rid = db.viotp_rental_create(
-        tg_id, rent["request_id"], rent["phone_number"], sid,
-        s["name"], country, cost, sell)
+    # 3. Lưu đơn thuê — lỗi ở đây cũng HOÀN TIỀN (2026-10-05: từng mất tiền
+    # vì viotp_rentals.id không tự tăng trên Postgres, tiền trừ mà đơn không tạo)
+    try:
+        rid = db.viotp_rental_create(
+            tg_id, rent["request_id"], rent["phone_number"], sid,
+            s["name"], country, cost, sell)
+    except Exception as e:
+        db.rent_adjust_balance(tg_id, sell, "hoan_tien_tao_don_loi")
+        log.error("tao don thue so that bai sau khi tru tien tg=%s: %s", tg_id, e)
+        await cb.answer("Lỗi tạo đơn thuê, đã hoàn tiền vào ví thuê số.",
+                        show_alert=True)
+        await cb.message.edit_text(
+            "⚠️ Lỗi tạo đơn thuê số. "
+            f"Đã hoàn <b>{vnd(sell)}đ</b> vào ví thuê số, bạn thử lại nhé.",
+            parse_mode="HTML", reply_markup=_back_menu_kb())
+        return
+    if not rid:
+        db.rent_adjust_balance(tg_id, sell, "hoan_tien_tao_don_loi")
+        log.error("tao don thue so tra ve rid=0 tg=%s", tg_id)
+        await cb.answer("Lỗi tạo đơn thuê, đã hoàn tiền vào ví thuê số.",
+                        show_alert=True)
+        return
     await cb.answer("Thuê số thành công!")
     # Báo bot riêng cho admin
     try:
