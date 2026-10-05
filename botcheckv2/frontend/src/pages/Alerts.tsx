@@ -1,8 +1,12 @@
 import { IconBell, IconTrash, IconPlus } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
-import { api } from "../lib/api";
+import { api, getToken } from "../lib/api";
 import { Card, CardContent, CardHeader, CardTitle, Button, Input, Label } from "../components/ui";
+
+// Admin dùng endpoint /api/admin/alerts, user (magic link) dùng /api/user/alerts.
+// Gọi nhầm endpoint user bằng token admin -> 401 -> frontend xóa token -> văng phiên.
+const ALERTS_BASE = (getToken() || "").startsWith("user-") ? "/api/user/alerts" : "/api/admin/alerts";
 
 export default function Alerts() {
   const [alerts, setAlerts] = useState<any[]>([]);
@@ -17,7 +21,7 @@ export default function Alerts() {
 
   async function loadAlerts() {
     try {
-      const data = await api("/api/user/alerts");
+      const data = await api(ALERTS_BASE);
       setAlerts(data || []);
     } catch (e: any) {
       toast.error(e.message || "Failed to load alerts");
@@ -32,7 +36,7 @@ export default function Alerts() {
     }
     setLoading(true);
     try {
-      await api("/api/user/alerts", {
+      await api(ALERTS_BASE, {
         method: "POST",
         body: JSON.stringify({ platform, target, condition }),
       });
@@ -50,7 +54,7 @@ export default function Alerts() {
   async function handleDelete(id: string) {
     if (!confirm("Bạn có chắc chắn muốn xóa cảnh báo này?")) return;
     try {
-      await api(`/api/user/alerts/${id}`, { method: "DELETE" });
+      await api(`${ALERTS_BASE}/${id}`, { method: "DELETE" });
       toast.success("Xóa thành công!");
       loadAlerts();
     } catch (e: any) {

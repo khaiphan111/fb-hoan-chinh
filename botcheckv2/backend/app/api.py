@@ -1303,6 +1303,21 @@ def api_delete_alert(id: int, token: str = Header(default="")):
     db.delete_alert_rule(id)
     return {"ok": True}
 
+# --- Admin xem/quản lý cảnh báo (web admin dùng, tránh gọi nhầm endpoint user gây 401 -> văng phiên) ---
+@router.get("/admin/alerts")
+def api_admin_get_alerts(_=Depends(auth)):
+    return [_row(a) for a in db.get_alert_rules()]
+
+@router.post("/admin/alerts")
+def api_admin_create_alert(body: AlertRuleIn, _=Depends(auth)):
+    rule_id = db.create_alert_rule("admin", body.platform, body.target, body.condition)
+    return {"ok": True, "id": rule_id}
+
+@router.delete("/admin/alerts/{id}")
+def api_admin_delete_alert(id: int, _=Depends(auth)):
+    db.delete_alert_rule(id)
+    return {"ok": True}
+
 # --- V2 PRO API ---
 
 @router.get("/admin/audit-logs")
