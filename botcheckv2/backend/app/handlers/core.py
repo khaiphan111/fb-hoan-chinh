@@ -620,6 +620,7 @@ _WELCOME_NEW = (
     "🛒 <b>/shop</b> — Shop acc Facebook (mua là nhận acc ngay)\n"
     "🚀 <b>/buff</b> — Shop buff tương tác MXH (like, follow, view...)\n"
     "📱 <b>/thueso</b> — Thuê số OTP nhận mã xác minh\n"
+    "👁️ <b>/theodoi</b> — Theo dõi acc tự động, die báo ngay\n"
     "━━━━━━━━━━━━━━━\n"
     "💳 <b>Nạp tiền:</b> /nap (ví chính) • /napshop (ví shop) • /napthueso (ví thuê số)\n"
     "🎁 <b>Tân thủ</b> được tặng ngày dùng thử miễn phí (nếu đang bật)\n"
@@ -705,6 +706,18 @@ _HUONGDAN_TEXTS = {
         "• <b>/tiktok &lt;username&gt;</b> / <b>/ig &lt;username&gt;</b> — check TikTok/IG\n"
         "• <b>/theodoi</b> — theo dõi UID tự động, die báo ngay\n\n"
         "💡 Check lẻ trừ ví chính, check hàng loạt dùng credits."
+    ),
+    "theodoi": (
+        "👁️ <b>THEO DÕI ACC TỰ ĐỘNG</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "• Gõ <b>/theodoi</b> → mở trung tâm theo dõi (menu nút)\n"
+        "• Theo dõi UID Facebook, TikTok, Instagram, Zalo\n"
+        "• Acc die → bot báo ngay cho bạn\n"
+        "• <b>/alertlist</b> — xem cảnh báo đang bật\n"
+        "• <b>/alertpause</b> &lt;id&gt; — tạm dừng (không xóa)\n"
+        "• <b>/alertresume</b> &lt;id&gt; — bật lại\n"
+        "• <b>/alertsnooze</b> &lt;id&gt; &lt;giờ&gt; — tắt tạm N giờ rồi tự bật\n\n"
+        "💡 Không cần nhớ lệnh con — vào /theodoi bấm nút là xong."
     ),
     "buff": (
         "🛍️ <b>SHOP BUFF TƯƠNG TÁC</b>\n"
@@ -793,6 +806,7 @@ _HUONGDAN_MENU_KB = InlineKeyboardMarkup(inline_keyboard=[
      InlineKeyboardButton(text="🤝 Giới thiệu", callback_data="hd:ref")],
     [InlineKeyboardButton(text="💰 Ứng tiền", callback_data="hd:loan"),
      InlineKeyboardButton(text="🧰 Tiện ích", callback_data="hd:tienich")],
+    [InlineKeyboardButton(text="👁️ Theo dõi acc", callback_data="hd:theodoi")],
 ])
 
 manager = BotManager()
@@ -1053,9 +1067,11 @@ async def on_start(msg: Message):
                 [InlineKeyboardButton(text="🛒 Shop acc",
                                       callback_data="goshop:shop"),
                  InlineKeyboardButton(text="🚀 Shop buff",
-                                      callback_data="goshop:buff"),
-                 InlineKeyboardButton(text="📱 Thuê số",
-                                      callback_data="goshop:thueso")],
+                                      callback_data="goshop:buff")],
+                [InlineKeyboardButton(text="📱 Thuê số",
+                                      callback_data="goshop:thueso"),
+                 InlineKeyboardButton(text="👁️ Theo dõi acc",
+                                      callback_data="goshop:theodoi")],
                 [InlineKeyboardButton(text="🛒 Mua acc đầu tiên (3 bước)",
                                       callback_data="guide_firstbuy:1")],
                 [InlineKeyboardButton(text="📖 Hướng dẫn nhanh",
@@ -1110,6 +1126,12 @@ async def on_goshop(cb: CallbackQuery, state: FSMContext):
         elif which == "thueso":
             from .thueso import on_thueso_cmd
             await on_thueso_cmd(cb.message, state)
+        elif which == "theodoi":
+            from .tracking import _trackmenu_text_main
+            from .common import _trackmenu_main_kb
+            await state.clear()
+            await cb.message.answer(_trackmenu_text_main(), parse_mode="HTML",
+                                    reply_markup=_trackmenu_main_kb())
         else:
             await cb.message.answer("Bấm nút /shop, /buff, /thueso ở bàn phím bên dưới nhé 👇")
     except Exception as e:
@@ -1232,6 +1254,7 @@ async def on_help(msg: Message):
         "• /alertlist — Xem danh sách cảnh báo\n"
         "• /alertoff &lt;id&gt; — Tắt cảnh báo\n"
         "• /alertpause &lt;id&gt; — Tạm dừng (không xóa)\n"
+        "• /alertresume &lt;id&gt; — Bật lại cảnh báo đã tạm dừng\n"
         "• /alertsnooze &lt;id&gt; &lt;giờ&gt; — Tắt tạm N giờ rồi tự bật lại\n\n"
 
         "<b>📘 FACEBOOK</b>\n"

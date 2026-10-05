@@ -714,8 +714,16 @@ async def on_alertlist_cmd(msg: Message):
         await msg.answer("Bạn không có cảnh báo nào.")
         return
     lines = ["🚨 <b>Danh sách Cảnh báo</b>\n"]
+    now_t = int(time.time())
     for r in rules:
-        lines.append(f"• ID {r['id']}: [{r['platform']}] {r['target']} ({r['condition']})")
+        r = dict(r)
+        state = ""
+        if r.get("is_paused"):
+            state = " ⏸️ <i>tạm dừng</i>"
+        elif r.get("snooze_until") and r["snooze_until"] > now_t:
+            state = f" 💤 <i>tắt tới {time.strftime('%H:%M %d/%m', time.localtime(r['snooze_until']))}</i>"
+        lines.append(f"• ID {r['id']}: [{r['platform']}] {r['target']} ({r['condition']}){state}")
+    lines.append("\n⏸️ /alertpause &lt;id&gt; • ▶️ /alertresume &lt;id&gt; • 💤 /alertsnooze &lt;id&gt; &lt;giờ&gt;")
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
 @router.message(Command("alertoff"))
@@ -735,6 +743,65 @@ async def on_alertoff_cmd(msg: Message):
         await msg.answer(f"✅ Đã xoá cảnh báo cho {target}.")
     else:
         await msg.answer("❌ Không tìm thấy cảnh báo phù hợp.")
+
+
+def _find_alert_rules(tg_id: int, key: str):
+    """Tìm rule cảnh báo của user theo ID hoặc target."""
+    key = (key or "").strip()
+    return [r for r in db.get_alert_rules(tg_id=str(tg_id))
+            if str(r["id"]) == key or str(r["target"]) == key]
+
+
+@router.message(Command("alertpause"))
+async def on_alertpause_cmd(msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: /alertpause &lt;id_hoặc_target&gt;\nVD: /alertpause 5\n(Xem ID bằng /alertlist)",
+                         parse_mode="HTML")
+        return
+    rules = _find_alert_rules(msg.chat.id, parts[1])
+    if not rules:
+        await msg.answer("❌ Không tìm thấy cảnh báo phù hợp.")
+        return
+    n = sum(1 for r in rules if db.pause_alert(msg.chat.id, int(r["id"])))
+    await msg.answer(f"⏸️ Đã tạm dừng {n} cảnh báo.\nBật lại bằng /alertresume &lt;id&gt;.")
+
+
+@router.message(Command("alertresume"))
+async def on_alertresume_cmd(msg: Message):
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await msg.answer("⚠️ Cú pháp: /alertresume &lt;id_hoặc_target&gt;\nVD: /alertresume 5",
+                         parse_mode="HTML")
+        return
+    rules = _find_alert_rules(msg.chat.id, parts[1])
+    if not rules:
+        await msg.answer("❌ Không tìm thấy cảnh báo phù hợp.")
+        return
+    n = sum(1 for r in rules if db.resume_alert(msg.chat.id, int(r["id"])))
+    await msg.answer(f"▶️ Đã bật lại {n} cảnh báo.")
+
+
+@router.message(Command("alertsnooze"))
+async def on_alertsnooze_cmd(msg: Message):
+    parts = msg.text.split()
+    if len(parts) < 3:
+        await msg.answer("⚠️ Cú pháp: /alertsnooze &lt;id_hoặc_target&gt; &lt;số_giờ&gt;\nVD: /alertsnooze 5 12 — tắt 12 giờ rồi tự bật lại",
+                         parse_mode="HTML")
+        return
+    try:
+        hours = float(parts[2].replace(",", "."))
+        if not (0 < hours <= 720):
+            raise ValueError
+    except ValueError:
+        await msg.answer("❌ Số giờ không hợp lệ (0–720).")
+        return
+    rules = _find_alert_rules(msg.chat.id, parts[1])
+    if not rules:
+        await msg.answer("❌ Không tìm thấy cảnh báo phù hợp.")
+        return
+    n = sum(1 for r in rules if db.snooze_alert(msg.chat.id, int(r["id"]), hours))
+    await msg.answer(f"💤 Đã tắt tạm {n} cảnh báo trong {hours:g} giờ — hết giờ tự bật lại.")
 
 @router.callback_query(lambda c: c.data and c.data.startswith("camp_giveaway_"))
 async def on_camp_giveaway(cb: CallbackQuery):
@@ -1214,10 +1281,18 @@ async def on_trackmenu_cb(cb: CallbackQuery, state: FSMContext):
                 return
             lines = ["🔔 <b>DANH SÁCH CẢNH BÁO</b>", ""]
             kb_rows = []
+            _now_t = int(time.time())
             for r in rules[:10]:
                 r = dict(r)
-                lines.append(f"• ID {r['id']}: [{html.escape(str(r['platform']))}] {html.escape(str(r['target']))}")
-                kb_rows.append([InlineKeyboardButton(text=f"❌ Xóa #{r['id']}", callback_data=f"trackmenu:alert_del:{r['id']}")])
+                _paused = bool(r.get("is_paused"))
+                _snoozed = bool(r.get("snooze_until") and r["snooze_until"] > _now_t)
+                _icon = "⏸️" if _paused else ("💤" if _snoozed else "🔔")
+                lines.append(f"{_icon} ID {r['id']}: [{html.escape(str(r['platform']))}] {html.escape(str(r['target']))}")
+                kb_rows.append([
+                    InlineKeyboardButton(text=("▶️ Bật lại" if _paused else "⏸️ Tạm dừng"),
+                                         callback_data=f"trackmenu:alert_pause:{r['id']}"),
+                    InlineKeyboardButton(text="❌ Xóa", callback_data=f"trackmenu:alert_del:{r['id']}"),
+                ])
             kb_rows.append([InlineKeyboardButton(text="◀️ Quay lại", callback_data="trackmenu:alerts")])
             await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
                                        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
@@ -1228,6 +1303,24 @@ async def on_trackmenu_cb(cb: CallbackQuery, state: FSMContext):
             try:
                 db.delete_alert_rule(int(sub))
                 await cb.answer("✅ Đã xóa.")
+            except Exception:
+                await cb.answer("❌ Lỗi.")
+            cb2 = cb.model_copy(update={"data": "trackmenu:alert_list"})
+            await on_trackmenu_cb(cb2, state)
+            return
+
+        if action == "alert_pause" and sub:
+            try:
+                _rules = db.get_alert_rules(tg_id=str(tg_id))
+                _r = next((x for x in _rules if str(dict(x).get("id")) == sub), None)
+                if _r is None:
+                    await cb.answer("❌ Không tìm thấy.")
+                elif dict(_r).get("is_paused"):
+                    db.resume_alert(tg_id, int(sub))
+                    await cb.answer("▶️ Đã bật lại.")
+                else:
+                    db.pause_alert(tg_id, int(sub))
+                    await cb.answer("⏸️ Đã tạm dừng.")
             except Exception:
                 await cb.answer("❌ Lỗi.")
             cb2 = cb.model_copy(update={"data": "trackmenu:alert_list"})

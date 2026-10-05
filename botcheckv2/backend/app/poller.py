@@ -17,8 +17,14 @@ def _job_on(name: str) -> bool:
 
 async def _handle_alerts(platform: str, target: str, condition: str, message: str, bot=None):
     rules = db.get_alert_rules(target=target)
+    now_t = int(time.time())
     for rule in rules:
+        rule = dict(rule)
         if rule["platform"] == platform and (rule["condition"] == "status_change" or rule["condition"] == condition):
+            if rule.get("is_paused"):
+                continue
+            if rule.get("snooze_until") and rule["snooze_until"] > now_t:
+                continue
             tg_id = rule["tg_id"]
             db.log_alert_history(tg_id, rule["id"], message)
             if bot:

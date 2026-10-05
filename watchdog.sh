@@ -70,15 +70,19 @@ sleep 20
 
 if alive; then
     if [ "$just_rebooted" = "yes" ]; then
-        msg="⚠️ <b>Máy chủ vừa khởi động lại.</b>%0AMik đã tự bật lại bot, mọi thứ chạy bình thường rồi."
+        msg="⚠️ <b>Máy chủ vừa khởi động lại.</b>
+Mik đã tự bật lại bot, mọi thứ chạy bình thường rồi."
     else
-        msg="⚠️ <b>Bot bị tắt bất thường.</b>%0AMik đã tự khởi động lại, bot chạy bình thường rồi."
+        msg="⚠️ <b>Bot bị tắt bất thường.</b>
+Mik đã tự khởi động lại, bot chạy bình thường rồi."
     fi
     # luu y: cache file xlsx trong RAM mat khi restart
-    msg="$msg%0A<i>Lưu ý: file Excel đang check dở (nếu có) cần gửi lại.</i>"
+    msg="$msg
+<i>Lưu ý: file Excel đang check dở (nếu có) cần gửi lại.</i>"
     log "khoi dong lai THANH CONG, da bao admin"
     tg_notify "$msg"
 else
     log "khoi dong lai THAT BAI, can can thiep tay"
-    tg_notify "🚨 <b>Bot bị tắt và mik khởi động lại KHÔNG được.</b>%0AMik kiểm tra giúp mik nhé."
+    tg_notify "🚨 <b>Bot bị tắt và mik khởi động lại KHÔNG được.</b>
+Mik kiểm tra giúp mik nhé."
 fi
