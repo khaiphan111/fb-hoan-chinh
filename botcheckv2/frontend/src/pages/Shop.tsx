@@ -844,7 +844,9 @@ function LoansTab() {
                 <tr key={l.id} className="border-b cursor-pointer hover:bg-muted/50"
                   onClick={() => openDetail(l.id)}>
                   <td className="p-2">#{l.id}</td>
-                  <td className="p-2 font-mono">{l.tg_id}</td>
+                  <td className="p-2">{l.customer_name || l.tg_id}
+                    {l.customer_name && String(l.customer_name) !== String(l.tg_id) &&
+                      <div className="text-xs text-muted-foreground font-mono">{l.tg_id}</div>}</td>
                   <td className="p-2">{vnd(l.amount)}</td>
                   <td className="p-2">{vnd(l.paid_amount)}</td>
                   <td className="p-2 font-bold">{vnd(l.rest)}</td>
@@ -864,7 +866,7 @@ function LoansTab() {
       {detail && (
         <Modal title={`Khoản ứng #${detail.id}`} onClose={() => setDetail(null)}>
           <div className="flex flex-col gap-3 text-sm">
-            <div>Khách: <span className="font-mono">{detail.tg_id}</span></div>
+            <div>Khách: {detail.customer_name || detail.tg_id} <span className="font-mono text-muted-foreground">({detail.tg_id})</span></div>
             <div>Ứng: <b>{vnd(detail.amount)}</b> | Đã trả: <b>{vnd(detail.paid_amount)}</b> | Còn nợ: <b>{vnd(detail.rest)}</b></div>
             <div>Trạng thái: {STATUS_LABEL[detail.status]}</div>
             {detail.note && <div>Ghi chú: {detail.note}</div>}

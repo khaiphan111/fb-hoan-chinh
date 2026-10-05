@@ -1067,6 +1067,30 @@ def loans_overview(_=Depends(auth)):
     return {"ok": True, "data": db.loan_stats()}
 
 
+def _loan_customer_label(tg_id: int) -> str:
+    """Tên hiển thị của khách nợ (tên + username, fallback về ID) —
+    đồng bộ với bot Telegram (handlers/loan.py)."""
+    try:
+        u = db.get_user(tg_id) or {}
+        name = (u.get("name") or "").strip()
+        username = (u.get("username") or "").strip()
+        if name and username:
+            return f"{name} (@{username})"
+        if name:
+            return name
+        if username:
+            return f"@{username}"
+    except Exception:
+        pass
+    return str(tg_id)
+
+
+def _loan_enrich(loans: list) -> list:
+    for l in loans:
+        l["customer_name"] = _loan_customer_label(l.get("tg_id", 0))
+    return loans
+
+
 @router.get("/loans")
 def loans_list(status: str = Query("active"), q: str = Query(""),
                limit: int = Query(50, le=200), _=Depends(auth)):
@@ -1085,7 +1109,7 @@ def loans_list(status: str = Query("active"), q: str = Query(""),
         data = [l for l in data if q in str(l["tg_id"]) or q in str(l["id"])]
     for l in data:
         l["rest"] = l["amount"] - l["paid_amount"]
-    return {"ok": True, "data": data[:limit]}
+    return {"ok": True, "data": _loan_enrich(data[:limit])}
 
 
 @router.get("/loans/{loan_id}")
@@ -1096,7 +1120,7 @@ def loan_detail(loan_id: int, _=Depends(auth)):
         return {"ok": False, "error": "not_found"}
     ln["rest"] = ln["amount"] - ln["paid_amount"]
     ln["payments"] = db.loan_payments(loan_id)
-    return {"ok": True, "data": ln}
+    return {"ok": True, "data": _loan_enrich([ln])[0]}
 
 
 class LoanApproveIn(BaseModel):

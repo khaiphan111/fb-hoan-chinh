@@ -29,6 +29,11 @@ log = logging.getLogger("admin_settings")
 
 class AdmSetState(StatesGroup):
     value = State()
+    banks_add = State()       # nhập "Tên | STK | Chủ TK"
+    prize_label = State()     # nhập tên giải
+    prize_kind = State()      # chờ bấm nút chọn loại giải
+    prize_value = State()     # nhập giá trị giải (sau khi chọn loại)
+    prize_weight = State()    # nhập trọng số giải
 
 
 # ─────────────────────────────────────────────────────────────
@@ -55,6 +60,9 @@ SETTING_GROUPS = [
                "Số tài khoản nhận tiền nạp tay.", "", ph="VD: 0123456789"),
             _S("bank_owner", "Chủ tài khoản", "text",
                "Tên chủ tài khoản hiện kèm STK.", "", ph="VD: NGUYEN VAN A"),
+            _S("banks_list", "Danh sách ngân hàng", "banks",
+               "Nhiều TK ngân hàng cho khách chọn khi nạp tay. "
+               "Để trống = dùng 1 TK ở 3 ô trên.", ""),
             _S("price_warn_pct", "Cảnh báo chênh giá (%)", "pct",
                "Sửa giá chênh quá X% so với giá cũ → bot hỏi xác nhận.",
                "50", min=0, max=100),
@@ -87,6 +95,19 @@ SETTING_GROUPS = [
             _S("happy_hour_range", "Khung giờ vàng", "text",
                "Dạng GIỜ-GIỜ (giờ VN). Để trống = tắt.",
                "", ph="VD: 18-20"),
+            _S("happy_hour_cat", "Giờ vàng áp cho loại", "int",
+               "ID loại acc được giảm giờ vàng. 0 = toàn shop. "
+               "Xem ID loại ở /kho.",
+               "0", min=0, ph="VD: 0"),
+            _S("warranty_max_week", "BH tối đa", "int",
+               "Số tuần bảo hành tối đa cho phép khi nhập kho.",
+               "3", min=1, max=52, unit="tuần"),
+            _S("warranty_remind_hours", "Nhắc hết BH trước", "int",
+               "Nhắc khách trước khi hết bảo hành từng này giờ.",
+               "12", min=1, max=168, unit="giờ"),
+            _S("review_bonus", "Thưởng đánh giá", "int",
+               "Tặng credit khi khách đánh giá sao đơn mua acc.",
+               "20", min=0, unit="credit"),
             _S("upsell_pct", "Upsell giảm", "pct",
                "Giảm giá khi gợi ý mua acc sau check bulk ra nhiều DIE.",
                "0", min=0, max=100),
@@ -133,6 +154,9 @@ SETTING_GROUPS = [
                "Khi quà = acc: khách chọn trong phạm vi nào.", "cat",
                choices=[("cat", "📦 Theo loại acc"),
                         ("stall", "🏪 Theo gian hàng")]),
+            _S("spin_prizes", "Giải thưởng vòng quay", "prizes",
+               "Các giải của vòng quay may mắn. "
+               "Để trống = dùng 6 giải mặc định.", ""),
         ],
     },
     {
@@ -149,6 +173,9 @@ SETTING_GROUPS = [
                "Giá thuê bot 7 ngày.", "20000"),
             _S("price_1m", "Giá gói 1 tháng", "money",
                "Giá thuê bot 1 tháng.", "50000"),
+            _S("price_per_month", "Giá tự gia hạn tháng", "money",
+               "Trừ ví chính khi khách bật tự gia hạn gói tháng.",
+               "50000"),
             _S("bulk_credit_cost", "Credit / UID check bulk", "int",
                "Mỗi UID khi check bulk trừ X credit.", "1",
                min=1, unit="credit"),
@@ -273,6 +300,18 @@ SETTING_GROUPS = [
             _S("poll_interval", "Chu kỳ job nền (giây)", "int",
                "Bot quét việc nền mỗi X giây.", "60",
                min=10, max=3600, unit="giây"),
+            _S("review_nudge_minutes", "Nhắc đánh giá sau", "int",
+               "Sau mua acc từng này phút mà khách chưa đánh giá thì bot nhắc.",
+               "90", min=10, max=10080, unit="phút"),
+            _S("stale_days", "Báo tồn kho lâu", "int",
+               "Acc nằm kho quá X ngày thì báo tồn lâu cho admin.",
+               "30", min=1, max=365, unit="ngày"),
+            _S("clean_stock_days", "Tự dọn kho cũ", "int",
+               "Tự dọn acc tồn kho quá X ngày (0 = tắt).",
+               "60", min=0, max=365, unit="ngày"),
+            _S("spike_threshold", "Ngưỡng báo video hot", "int",
+               "Video TikTok đang theo dõi tăng X view/ngày thì báo lên xu hướng.",
+               "10000", min=100),
         ],
         "jobs": [
             ("morning_report", "Báo cáo sáng 7h"),
@@ -356,6 +395,24 @@ def _fmt(spec: dict, raw: str) -> str:
         except Exception:
             pass
         return "mặc định (500/50k, 900/200k, 2000/350k)"
+    if t == "banks":
+        try:
+            banks = json.loads(r) if r else []
+            if banks:
+                return f"{len(banks)} ngân hàng: " + ", ".join(
+                    str(b.get("name", "?")) for b in banks)
+        except Exception:
+            pass
+        return "<i>dùng 1 TK ở 3 ô trên</i>"
+    if t == "prizes":
+        try:
+            prizes = json.loads(r) if r else []
+            if prizes:
+                return f"{len(prizes)} giải: " + ", ".join(
+                    str(p.get("label", "?")) for p in prizes)
+        except Exception:
+            pass
+        return "<i>6 giải mặc định</i>"
     if t == "select":
         for v, label in spec.get("choices", []):
             if v == r:
@@ -543,6 +600,26 @@ def detail_kb(key: str) -> InlineKeyboardMarkup:
             rows.append([InlineKeyboardButton(
                 text=f"{mark}{label}",
                 callback_data=f"admset:ch:{key}:{v}")])
+    elif t == "banks":
+        rows.append([InlineKeyboardButton(
+            text="➕ Thêm ngân hàng",
+            callback_data="admset:banks:add")])
+        rows.append([InlineKeyboardButton(
+            text="🗑️ Xóa ngân hàng",
+            callback_data="admset:banks:dellist")])
+        rows.append([InlineKeyboardButton(
+            text="↺ Về 1 TK mặc định (xóa hết)",
+            callback_data="admset:banks:clear")])
+    elif t == "prizes":
+        rows.append([InlineKeyboardButton(
+            text="➕ Thêm giải",
+            callback_data="admset:prizes:add")])
+        rows.append([InlineKeyboardButton(
+            text="🗑️ Xóa giải",
+            callback_data="admset:prizes:dellist")])
+        rows.append([InlineKeyboardButton(
+            text="↺ Về 6 giải mặc định",
+            callback_data="admset:prizes:reset")])
     else:
         rows.append([InlineKeyboardButton(
             text="✏️ Nhập giá trị mới",
@@ -572,6 +649,124 @@ def job_kb(name: str) -> InlineKeyboardMarkup:
                              callback_data=f"admset:jt:{name}:0"),
     ], [InlineKeyboardButton(text="◀️ Quay lại",
                              callback_data="admset:g:system")]]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ─────────────────────────────────────────────────────────────
+# Danh sách ngân hàng (banks_list) — UI riêng, không nhập JSON
+# ─────────────────────────────────────────────────────────────
+
+def _banks() -> list:
+    try:
+        raw = _raw("banks_list", "")
+        banks = json.loads(raw) if raw else []
+        return banks if isinstance(banks, list) else []
+    except Exception:
+        return []
+
+
+def _save_banks(tg_id: int, name: str, banks: list):
+    db.set_setting("banks_list", json.dumps(banks, ensure_ascii=False))
+    try:
+        db.admin_audit_add(tg_id, name or "", "doi_cai_dat",
+                           f"Danh sách ngân hàng: {len(banks)} TK")
+    except Exception:
+        pass
+
+
+def banks_text() -> str:
+    banks = _banks()
+    lines = ["🏦 <b>DANH SÁCH NGÂN HÀNG</b>", "━━━━━━━━━━━━", ""]
+    if banks:
+        for i, b in enumerate(banks, 1):
+            lines.append(
+                f"<b>{i}.</b> {html.escape(str(b.get('name', '?')))}\n"
+                f"    STK: <code>{html.escape(str(b.get('account', '')))}</code>\n"
+                f"    Chủ TK: {html.escape(str(b.get('owner', '')))}")
+    else:
+        lines.append("<i>Chưa có — đang dùng 1 TK ở 3 ô "
+                     "Tên ngân hàng / Số tài khoản / Chủ tài khoản.</i>")
+    lines += ["",
+              "📝 <i>Cách dùng:</i> khách nạp tay sẽ thấy đủ các TK này "
+              "để chọn chuyển khoản."]
+    return "\n".join(lines)
+
+
+def banks_dellist_kb() -> InlineKeyboardMarkup:
+    rows = []
+    for i, b in enumerate(_banks()):
+        rows.append([InlineKeyboardButton(
+            text=f"❌ {i + 1}. {b.get('name', '?')}",
+            callback_data=f"admset:banks:del:{i}")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại",
+                                      callback_data="admset:s:banks_list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ─────────────────────────────────────────────────────────────
+# Giải thưởng vòng quay (spin_prizes) — UI riêng, không nhập JSON
+# ─────────────────────────────────────────────────────────────
+
+_PRIZE_KINDS = {"credits": "🎁 Credit", "balance": "💵 Tiền ví",
+                "none": "😅 Trượt"}
+
+def _prizes() -> list:
+    try:
+        raw = _raw("spin_prizes", "")
+        prizes = json.loads(raw) if raw else []
+        return prizes if isinstance(prizes, list) else []
+    except Exception:
+        return []
+
+
+def _save_prizes(tg_id: int, name: str, prizes: list):
+    db.set_setting("spin_prizes", json.dumps(prizes, ensure_ascii=False))
+    try:
+        db.admin_audit_add(tg_id, name or "", "doi_cai_dat",
+                           f"Giải vòng quay: {len(prizes)} giải")
+    except Exception:
+        pass
+
+
+def prizes_text() -> str:
+    prizes = _prizes()
+    lines = ["🎡 <b>GIẢI THƯỞNG VÒNG QUAY</b>", "━━━━━━━━━━━━", ""]
+    if prizes:
+        total = sum(max(0, int(p.get("weight", 0) or 0)) for p in prizes) or 1
+        for i, p in enumerate(prizes, 1):
+            w = max(0, int(p.get("weight", 0) or 0))
+            kind = _PRIZE_KINDS.get(p.get("kind"), str(p.get("kind", "")))
+            lines.append(
+                f"<b>{i}.</b> {html.escape(str(p.get('label', '?')))}\n"
+                f"    {kind} — tỉ lệ ~{w * 100 // total}%")
+    else:
+        lines.append("<i>Chưa tự đặt — đang dùng 6 giải mặc định của bot.</i>")
+    lines += ["",
+              "📝 <i>Cách dùng:</i> trọng số càng cao càng dễ trúng. "
+              "Tổng tỉ lệ tự chia theo trọng số."]
+    return "\n".join(lines)
+
+
+def prizes_dellist_kb() -> InlineKeyboardMarkup:
+    rows = []
+    for i, p in enumerate(_prizes()):
+        label = str(p.get("label", "?"))
+        if len(label) > 24:
+            label = label[:23] + "…"
+        rows.append([InlineKeyboardButton(
+            text=f"❌ {i + 1}. {label}",
+            callback_data=f"admset:prizes:del:{i}")])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại",
+                                      callback_data="admset:s:spin_prizes")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def prizes_kind_kb() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(
+        text=label, callback_data=f"admset:prizes:kind:{kind}")]
+        for kind, label in _PRIZE_KINDS.items()]
+    rows.append([InlineKeyboardButton(text="🚫 Hủy",
+                                      callback_data="admset:s:spin_prizes")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -650,8 +845,169 @@ def register_settings(target_router):
                 return
             await state.clear()
             await _ans()
+            # 2 danh sách đặc biệt có màn hình riêng (không nhập JSON)
+            if key == "banks_list":
+                await cb.message.edit_text(
+                    banks_text(), parse_mode="HTML",
+                    reply_markup=detail_kb(key))
+                return
+            if key == "spin_prizes":
+                await cb.message.edit_text(
+                    prizes_text(), parse_mode="HTML",
+                    reply_markup=detail_kb(key))
+                return
             await cb.message.edit_text(detail_text(key), parse_mode="HTML",
                                        reply_markup=detail_kb(key))
+            return
+
+        # ── Danh sách ngân hàng: thêm ──
+        if action == "banks:add":
+            await state.set_state(AdmSetState.banks_add)
+            await _ans()
+            await cb.message.edit_text(
+                "🏦 <b>THÊM NGÂN HÀNG</b>\n"
+                "━━━━━━━━━━━━\n\n"
+                "Gửi 1 tin theo mẫu:\n"
+                "<code>Tên ngân hàng | Số tài khoản | Chủ tài khoản</code>\n\n"
+                "VD: <code>Vietcombank | 0123456789 | NGUYEN VAN A</code>\n\n"
+                "Gõ /huy để huỷ.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="◀️ Quay lại",
+                                         callback_data="admset:s:banks_list")]]))
+            return
+
+        # ── Danh sách ngân hàng: chọn xóa ──
+        if action == "banks:dellist":
+            if not _banks():
+                await _ans("Chưa có ngân hàng nào để xóa.",
+                           show_alert=True)
+                return
+            await _ans()
+            await cb.message.edit_text(
+                "🗑️ <b>XÓA NGÂN HÀNG</b>\n━━━━━━━━━━━━\n\n"
+                "Bấm vào ngân hàng muốn xóa:",
+                parse_mode="HTML", reply_markup=banks_dellist_kb())
+            return
+
+        # ── Danh sách ngân hàng: xóa 1 ──
+        if action.startswith("banks:del:"):
+            try:
+                idx = int(action.split(":")[2])
+            except Exception:
+                await _ans("❌ Không hợp lệ.")
+                return
+            banks = _banks()
+            if not (0 <= idx < len(banks)):
+                await _ans("❌ Không tìm thấy.")
+                return
+            gone = banks.pop(idx)
+            _save_banks(cb.from_user.id, cb.from_user.full_name or "", banks)
+            await _ans(f"✅ Đã xóa {gone.get('name', '?')}")
+            await cb.message.edit_text(banks_text(), parse_mode="HTML",
+                                       reply_markup=detail_kb("banks_list"))
+            return
+
+        # ── Danh sách ngân hàng: xóa hết (về 1 TK mặc định) ──
+        if action == "banks:clear":
+            _save_banks(cb.from_user.id, cb.from_user.full_name or "", [])
+            await _ans("✅ Đã về 1 TK mặc định.")
+            await cb.message.edit_text(banks_text(), parse_mode="HTML",
+                                       reply_markup=detail_kb("banks_list"))
+            return
+
+        # ── Vòng quay: thêm giải (bước 1: tên) ──
+        if action == "prizes:add":
+            await state.set_state(AdmSetState.prize_label)
+            await _ans()
+            await cb.message.edit_text(
+                "🎡 <b>THÊM GIẢI THƯỞNG</b> — bước 1/4\n"
+                "━━━━━━━━━━━━\n\n"
+                "Gửi <b>tên giải</b> (khách sẽ nhìn thấy):\n"
+                "VD: <code>🎁 +10 credits</code>\n\n"
+                "Gõ /huy để huỷ.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="◀️ Quay lại",
+                                         callback_data="admset:s:spin_prizes")]]))
+            return
+
+        # ── Vòng quay: chọn loại giải (bước 2) ──
+        if action.startswith("prizes:kind:"):
+            kind = action.split(":")[2]
+            if kind not in _PRIZE_KINDS:
+                await _ans("❌ Loại không hợp lệ.")
+                return
+            data = await state.get_data()
+            if not data.get("prize_label"):
+                await _ans("❌ Phiên đã hết hạn, làm lại nhé.")
+                await state.clear()
+                return
+            await state.update_data(prize_kind=kind)
+            await _ans()
+            if kind == "none":
+                # giải trượt: giá trị = 0, hỏi thẳng trọng số
+                await state.update_data(prize_value=0)
+                await state.set_state(AdmSetState.prize_weight)
+                await cb.message.edit_text(
+                    f"🎡 <b>THÊM GIẢI</b> — bước 4/4\n"
+                    f"━━━━━━━━━━━━\n\n"
+                    f"Giải: {html.escape(data['prize_label'])}\n"
+                    f"Loại: {_PRIZE_KINDS[kind]} (không có giá trị)\n\n"
+                    f"Gửi <b>trọng số</b> (số càng cao càng dễ trúng):\n"
+                    f"VD: <code>20</code>\n\nGõ /huy để huỷ.",
+                    parse_mode="HTML")
+            else:
+                await state.set_state(AdmSetState.prize_value)
+                unit = "credit" if kind == "credits" else "đồng"
+                await cb.message.edit_text(
+                    f"🎡 <b>THÊM GIẢI</b> — bước 3/4\n"
+                    f"━━━━━━━━━━━━\n\n"
+                    f"Giải: {html.escape(data['prize_label'])}\n"
+                    f"Loại: {_PRIZE_KINDS[kind]}\n\n"
+                    f"Gửi <b>giá trị</b> ({unit}, VD: <code>10</code>):\n\n"
+                    f"Gõ /huy để huỷ.",
+                    parse_mode="HTML")
+            return
+
+        # ── Vòng quay: chọn xóa ──
+        if action == "prizes:dellist":
+            if not _prizes():
+                await _ans("Chưa có giải nào để xóa.",
+                           show_alert=True)
+                return
+            await _ans()
+            await cb.message.edit_text(
+                "🗑️ <b>XÓA GIẢI THƯỞNG</b>\n━━━━━━━━━━━━\n\n"
+                "Bấm vào giải muốn xóa:",
+                parse_mode="HTML", reply_markup=prizes_dellist_kb())
+            return
+
+        # ── Vòng quay: xóa 1 ──
+        if action.startswith("prizes:del:"):
+            try:
+                idx = int(action.split(":")[2])
+            except Exception:
+                await _ans("❌ Không hợp lệ.")
+                return
+            prizes = _prizes()
+            if not (0 <= idx < len(prizes)):
+                await _ans("❌ Không tìm thấy.")
+                return
+            gone = prizes.pop(idx)
+            _save_prizes(cb.from_user.id, cb.from_user.full_name or "",
+                         prizes)
+            await _ans(f"✅ Đã xóa {gone.get('label', '?')}")
+            await cb.message.edit_text(prizes_text(), parse_mode="HTML",
+                                       reply_markup=detail_kb("spin_prizes"))
+            return
+
+        # ── Vòng quay: về mặc định ──
+        if action == "prizes:reset":
+            _save_prizes(cb.from_user.id, cb.from_user.full_name or "", [])
+            await _ans("✅ Đã về 6 giải mặc định.")
+            await cb.message.edit_text(prizes_text(), parse_mode="HTML",
+                                       reply_markup=detail_kb("spin_prizes"))
             return
 
         # ── Bật/tắt nhanh ──
@@ -790,3 +1146,127 @@ def register_settings(target_router):
             f"<i>Có hiệu lực ngay.</i>",
             parse_mode="HTML",
             reply_markup=_back_to_group_kb(gid))
+
+    async def _cancel_flow(msg: Message, state: FSMContext,
+                           back_cb: str) -> bool:
+        """Trả True nếu user gõ /huy (đã xử lý xong)."""
+        if (msg.text or "").strip().lower() in ("/huy", "/cancel"):
+            await state.clear()
+            await msg.answer(
+                "🚫 Đã huỷ, không đổi gì.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="◀️ Quay lại",
+                                         callback_data=back_cb)]]))
+            return True
+        return False
+
+    @target_router.message(AdmSetState.banks_add)
+    async def _on_banks_add(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if await _cancel_flow(msg, state, "admset:s:banks_list"):
+            return
+        parts = [(p or "").strip() for p in (msg.text or "").split("|")]
+        if len(parts) != 3 or not all(parts):
+            await msg.answer(
+                "❌ Sai mẫu. Nhập đúng dạng:\n"
+                "<code>Tên ngân hàng | Số tài khoản | Chủ tài khoản</code>\n\n"
+                "VD: <code>Vietcombank | 0123456789 | NGUYEN VAN A</code>\n\n"
+                "Gõ /huy để huỷ.", parse_mode="HTML")
+            return
+        banks = _banks()
+        banks.append({"name": parts[0], "account": parts[1],
+                      "owner": parts[2]})
+        _save_banks(msg.from_user.id, msg.from_user.full_name or "", banks)
+        await state.clear()
+        await msg.answer(
+            f"✅ <b>Đã thêm {html.escape(parts[0])}</b> "
+            f"({len(banks)} ngân hàng).",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="◀️ Danh sách ngân hàng",
+                                     callback_data="admset:s:banks_list")]]))
+
+    @target_router.message(AdmSetState.prize_label)
+    async def _on_prize_label(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if await _cancel_flow(msg, state, "admset:s:spin_prizes"):
+            return
+        label = (msg.text or "").strip()
+        if not label or len(label) > 60:
+            await msg.answer("❌ Tên giải từ 1–60 ký tự, gửi lại nhé.\n"
+                             "Gõ /huy để huỷ.")
+            return
+        await state.update_data(prize_label=label)
+        await state.set_state(AdmSetState.prize_kind)
+        await msg.answer(
+            f"🎡 <b>THÊM GIẢI</b> — bước 2/4\n━━━━━━━━━━━━\n\n"
+            f"Giải: {html.escape(label)}\n\n"
+            f"Chọn <b>loại giải</b>:",
+            parse_mode="HTML", reply_markup=prizes_kind_kb())
+
+    @target_router.message(AdmSetState.prize_kind)
+    async def _on_prize_kind_msg(msg: Message, state: FSMContext):
+        # user gửi chữ thay vì bấm nút chọn loại -> nhắc bấm nút
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if await _cancel_flow(msg, state, "admset:s:spin_prizes"):
+            return
+        data = await state.get_data()
+        await msg.answer(
+            f"👆 Bấm nút chọn <b>loại giải</b> cho "
+            f"“{html.escape(data.get('prize_label', '?'))}” nhé.\n"
+            f"Gõ /huy để huỷ.",
+            parse_mode="HTML", reply_markup=prizes_kind_kb())
+
+    @target_router.message(AdmSetState.prize_value)
+    async def _on_prize_value(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if await _cancel_flow(msg, state, "admset:s:spin_prizes"):
+            return
+        v = _parse_money((msg.text or "").strip())
+        if v is None or v <= 0:
+            await msg.answer("❌ Nhập số > 0 (VD: 10).\nGõ /huy để huỷ.")
+            return
+        await state.update_data(prize_value=v)
+        await state.set_state(AdmSetState.prize_weight)
+        await msg.answer(
+            "🎡 <b>THÊM GIẢI</b> — bước 4/4\n━━━━━━━━━━━━\n\n"
+            "Gửi <b>trọng số</b> (số càng cao càng dễ trúng):\n"
+            "VD: <code>20</code>\n\nGõ /huy để huỷ.",
+            parse_mode="HTML")
+
+    @target_router.message(AdmSetState.prize_weight)
+    async def _on_prize_weight(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if await _cancel_flow(msg, state, "admset:s:spin_prizes"):
+            return
+        w = _parse_money((msg.text or "").strip())
+        if w is None or w <= 0 or w > 1000000:
+            await msg.answer("❌ Nhập số > 0 (VD: 20).\nGõ /huy để huỷ.")
+            return
+        data = await state.get_data()
+        label = data.get("prize_label") or "?"
+        kind = data.get("prize_kind") or "none"
+        value = int(data.get("prize_value") or 0)
+        prizes = _prizes()
+        prizes.append({"label": label, "kind": kind, "value": value,
+                       "weight": int(w)})
+        _save_prizes(msg.from_user.id, msg.from_user.full_name or "",
+                     prizes)
+        await state.clear()
+        await msg.answer(
+            f"✅ <b>Đã thêm giải {html.escape(label)}</b> "
+            f"({_PRIZE_KINDS.get(kind, kind)}, trọng số {int(w)}).",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="◀️ Giải thưởng vòng quay",
+                                     callback_data="admset:s:spin_prizes")]]))
