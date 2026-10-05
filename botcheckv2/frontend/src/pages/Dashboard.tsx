@@ -8,7 +8,6 @@ import {
   IconUsers,
   IconCoins,
   IconUserPlus,
-  IconTrendingUp
 } from "@tabler/icons-react";
 import { useState, useEffect } from "react";
 import toast from "react-hot-toast";
@@ -164,7 +163,6 @@ export default function Dashboard({ status, onRefresh }: any) {
         {displayAnalytics && (
           <>
             <Stat icon={IconCoins} label="Doanh thu Hôm nay" value={vnd(displayAnalytics.revenue_today)} />
-            <Stat icon={IconTrendingUp} label="Doanh thu Tháng" value={vnd(displayAnalytics.revenue_month)} />
             <Stat icon={IconUsers} label="Tổng Người dùng" value={displayAnalytics.total_users} />
             <Stat icon={IconUserPlus} label="Khách Mới Hôm Nay" value={displayAnalytics.new_users_today} />
           </>
