@@ -109,11 +109,20 @@ def _check_prev_shutdown():
 
 
 async def _heartbeat_loop():
-    """Ghi heartbeat mỗi 30s để lần khởi động sau biết lần tắt trước có clean không."""
+    """Ghi heartbeat mỗi 30s:
+    - file local: để lần khởi động sau biết lần tắt trước có clean không.
+    - DB (setting bot_last_heartbeat): để web admin trên Render biết bot
+      trên VM có đang sống không (web và bot không cùng máy nên
+      manager.running trên Render luôn False).
+    Chỉ chạy khi KHÔNG ở chế độ WEB_ONLY (Render không ghi)."""
     while True:
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(int(time.time())))
+        except Exception:
+            pass
+        try:
+            db.set_setting("bot_last_heartbeat", str(int(time.time())))
         except Exception:
             pass
         await asyncio.sleep(30)

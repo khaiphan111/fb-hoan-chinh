@@ -1461,9 +1461,9 @@ class FollowerPoller:
     async def _viotp_loop(self):
         """Quét đơn thuê số 'waiting' mỗi 30s, poll OTP từ ViOTP.
 
-        Có mã -> 'done' + báo khách ngay. Hết hạn -> 'expired' + báo khách.
-        Quá 15 phút chưa có mã -> 'expired' (không hoàn tiền: số đã thuê là
-        chi phí nhà cung cấp, giống chính sách các shop thuê số).
+        Có mã -> 'done' + báo khách ngay. ViOTP hết hạn -> hoàn full tiền
+        vào ví thuê số (status 'refunded'). Quá 15 phút ViOTP vẫn chờ ->
+        check tiếp tới khi bên họ hết hạn; quá 30p bất thường -> báo admin.
         """
         await asyncio.sleep(45)
         while True:

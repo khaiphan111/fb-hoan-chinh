@@ -433,6 +433,15 @@ def status(_=Depends(auth)):
         print(f"[!] /api/status: bot managers unavailable: {e}")
         bot_running = False
         zalo_running = False
+    # Web chạy trên Render (WEB_ONLY) không thấy bot trên VM nên
+    # manager.running luôn False ở đó -> dùng heartbeat DB do backend VM
+    # ghi mỗi 30s. Tươi (< 3 phút) nghĩa là bot đang sống thật.
+    try:
+        hb = int(db.get_setting("bot_last_heartbeat", "0") or 0)
+        if hb and time.time() - hb < 180:
+            bot_running = True
+    except Exception:
+        pass
     try:
         watches = db.all_watches()
     except Exception as e:
