@@ -457,19 +457,34 @@ async def on_bank(msg: Message):
     if not banks:
         bank_name = db.get_setting("bank_name", "")
         if bank_name:
-            banks = [{"name": bank_name, "account": db.get_setting("bank_account", ""), "owner": db.get_setting("bank_owner", "")}]
+            banks = [{"name": bank_name, "account": db.get_setting("bank_account", ""), "owner": db.get_setting("bank_owner", ""), "qr": db.get_setting("bank_qr", "")}]
             
     if not banks:
         await msg.answer("⚠️ Admin chưa thiết lập thông tin ngân hàng.")
         return
         
     transfer_content = msg.from_user.username if msg.from_user.username else msg.chat.id
-    
+
+    # Ngân hàng có QR riêng -> gửi ảnh kèm caption; còn lại gom vào tin chữ
+    qr_sent_idx = set()
+    for i, b in enumerate(banks, 1):
+        if b.get("qr"):
+            cap = (f"<b>{i}. {b.get('name', '')}</b>\n"
+                   f"• Số tài khoản: <code>{b.get('account', '')}</code>\n"
+                   f"• Chủ tài khoản: <b>{b.get('owner', '')}</b>")
+            try:
+                await msg.answer_photo(photo=b["qr"], caption=cap,
+                                       parse_mode="HTML")
+                qr_sent_idx.add(i - 1)
+            except Exception:
+                pass
+
     lines = ["🏦 <b>THÔNG TIN CHUYỂN KHOẢN</b>\n"]
     for i, b in enumerate(banks, 1):
-        lines.append(f"<b>{i}. {b.get('name', '')}</b>")
-        lines.append(f"• Số tài khoản: <code>{b.get('account', '')}</code>")
-        lines.append(f"• Chủ tài khoản: <b>{b.get('owner', '')}</b>\n")
+        if (i - 1) not in qr_sent_idx:
+            lines.append(f"<b>{i}. {b.get('name', '')}</b>")
+            lines.append(f"• Số tài khoản: <code>{b.get('account', '')}</code>")
+            lines.append(f"• Chủ tài khoản: <b>{b.get('owner', '')}</b>\n")
         
     lines.append(f"📝 <b>Nội dung CK bắt buộc:</b> <code>{transfer_content}</code>\n")
     lines.append("<i>Sau khi chuyển khoản thành công, hãy bấm nút bên dưới để xác nhận!</i>")
@@ -496,7 +511,9 @@ async def on_bank(msg: Message):
     
     import os
     img_dir = os.path.join(os.path.dirname(__file__), "..", "data", "images")
-    if os.path.exists(img_dir):
+    # QR cũ (file qr_*.jpg): chỉ gửi khi chưa ngân hàng nào có QR riêng
+    # để tránh trùng ảnh
+    if os.path.exists(img_dir) and not any(b.get("qr") for b in banks):
         for f in os.listdir(img_dir):
             if f.startswith("qr_"):
                 try:

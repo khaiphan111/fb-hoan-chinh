@@ -30,6 +30,8 @@ log = logging.getLogger("admin_settings")
 class AdmSetState(StatesGroup):
     value = State()
     banks_add = State()       # nhập "Tên | STK | Chủ TK"
+    bank_qr = State()         # chờ gửi ảnh QR cho 1 ngân hàng
+    photo = State()           # chờ gửi ảnh cho setting kiểu "photo"
     prize_label = State()     # nhập tên giải
     prize_kind = State()      # chờ bấm nút chọn loại giải
     prize_value = State()     # nhập giá trị giải (sau khi chọn loại)
@@ -60,6 +62,9 @@ SETTING_GROUPS = [
                "Số tài khoản nhận tiền nạp tay.", "", ph="VD: 0123456789"),
             _S("bank_owner", "Chủ tài khoản", "text",
                "Tên chủ tài khoản hiện kèm STK.", "", ph="VD: NGUYEN VAN A"),
+            _S("bank_qr", "Ảnh QR (1 TK)", "photo",
+               "Ảnh QR cho TK ở 3 ô trên (khi không dùng danh sách nhiều TK).",
+               ""),
             _S("banks_list", "Danh sách ngân hàng", "banks",
                "Nhiều TK ngân hàng cho khách chọn khi nạp tay. "
                "Để trống = dùng 1 TK ở 3 ô trên.", ""),
@@ -413,6 +418,8 @@ def _fmt(spec: dict, raw: str) -> str:
         except Exception:
             pass
         return "<i>6 giải mặc định</i>"
+    if t == "photo":
+        return "🖼️ <i>đã có ảnh</i>" if r else "<i>chưa có ảnh</i>"
     if t == "select":
         for v, label in spec.get("choices", []):
             if v == r:
@@ -605,6 +612,9 @@ def detail_kb(key: str) -> InlineKeyboardMarkup:
             text="➕ Thêm ngân hàng",
             callback_data="admset:banks:add")])
         rows.append([InlineKeyboardButton(
+            text="🖼️ Ảnh QR từng ngân hàng",
+            callback_data="admset:banks:qrlist")])
+        rows.append([InlineKeyboardButton(
             text="🗑️ Xóa ngân hàng",
             callback_data="admset:banks:dellist")])
         rows.append([InlineKeyboardButton(
@@ -620,6 +630,14 @@ def detail_kb(key: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(
             text="↺ Về 6 giải mặc định",
             callback_data="admset:prizes:reset")])
+    elif t == "photo":
+        rows.append([InlineKeyboardButton(
+            text="📤 Gửi ảnh mới",
+            callback_data=f"admset:photo:{key}")])
+        if _raw(key, spec["default"]):
+            rows.append([InlineKeyboardButton(
+                text="❌ Xóa ảnh",
+                callback_data=f"admset:photodel:{key}")])
     else:
         rows.append([InlineKeyboardButton(
             text="✏️ Nhập giá trị mới",
@@ -679,8 +697,9 @@ def banks_text() -> str:
     lines = ["🏦 <b>DANH SÁCH NGÂN HÀNG</b>", "━━━━━━━━━━━━", ""]
     if banks:
         for i, b in enumerate(banks, 1):
+            qr = " 🖼️ <i>có QR</i>" if b.get("qr") else ""
             lines.append(
-                f"<b>{i}.</b> {html.escape(str(b.get('name', '?')))}\n"
+                f"<b>{i}.</b> {html.escape(str(b.get('name', '?')))}{qr}\n"
                 f"    STK: <code>{html.escape(str(b.get('account', '')))}</code>\n"
                 f"    Chủ TK: {html.escape(str(b.get('owner', '')))}")
     else:
@@ -701,6 +720,34 @@ def banks_dellist_kb() -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="◀️ Quay lại",
                                       callback_data="admset:s:banks_list")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def banks_qrlist_kb() -> InlineKeyboardMarkup:
+    rows = []
+    for i, b in enumerate(_banks()):
+        mark = "🖼️" if b.get("qr") else "◻️"
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{mark} {i + 1}. {b.get('name', '?')}",
+                callback_data=f"admset:banks:qrset:{i}"),
+            InlineKeyboardButton(
+                text="❌ Xóa QR",
+                callback_data=f"admset:banks:qrdel:{i}"),
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ Quay lại",
+                                      callback_data="admset:s:banks_list")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def banks_qrlist_text() -> str:
+    banks = _banks()
+    lines = ["🖼️ <b>ẢNH QR TỪNG NGÂN HÀNG</b>", "━━━━━━━━━━━━", "",
+             "Bấm vào ngân hàng để <b>gửi ảnh QR</b> mới (chụp/gửi ảnh).",
+             "Ảnh QR sẽ hiện kèm STK khi khách nạp tay.", ""]
+    for i, b in enumerate(banks, 1):
+        st = "✅ đã có" if b.get("qr") else "◻️ chưa có"
+        lines.append(f"<b>{i}.</b> {html.escape(str(b.get('name', '?')))} — {st}")
+    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -916,6 +963,60 @@ def register_settings(target_router):
                                        reply_markup=detail_kb("banks_list"))
             return
 
+        # ── Ảnh QR: danh sách ──
+        if action == "banks:qrlist":
+            if not _banks():
+                await _ans("Chưa có ngân hàng nào.", show_alert=True)
+                return
+            await state.clear()
+            await _ans()
+            await cb.message.edit_text(banks_qrlist_text(), parse_mode="HTML",
+                                       reply_markup=banks_qrlist_kb())
+            return
+
+        # ── Ảnh QR: đặt cho 1 ngân hàng (chờ gửi ảnh) ──
+        if action.startswith("banks:qrset:"):
+            try:
+                idx = int(action.split(":")[2])
+            except Exception:
+                await _ans("❌ Không hợp lệ.")
+                return
+            banks = _banks()
+            if not (0 <= idx < len(banks)):
+                await _ans("❌ Không tìm thấy.")
+                return
+            await state.update_data(bank_qr_idx=idx)
+            await state.set_state(AdmSetState.bank_qr)
+            await _ans()
+            await cb.message.edit_text(
+                f"🖼️ <b>ĐẶT ẢNH QR</b>\n━━━━━━━━━━━━\n\n"
+                f"Ngân hàng: <b>{html.escape(str(banks[idx].get('name', '?')))}</b>\n\n"
+                f"Gửi <b>ảnh QR</b> vào đây (chụp màn hình hoặc gửi file ảnh).\n\n"
+                f"Gõ /huy để huỷ.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="◀️ Quay lại",
+                                         callback_data="admset:banks:qrlist")]]))
+            return
+
+        # ── Ảnh QR: xóa của 1 ngân hàng ──
+        if action.startswith("banks:qrdel:"):
+            try:
+                idx = int(action.split(":")[2])
+            except Exception:
+                await _ans("❌ Không hợp lệ.")
+                return
+            banks = _banks()
+            if not (0 <= idx < len(banks)):
+                await _ans("❌ Không tìm thấy.")
+                return
+            banks[idx].pop("qr", None)
+            _save_banks(cb.from_user.id, cb.from_user.full_name or "", banks)
+            await _ans("✅ Đã xóa ảnh QR.")
+            await cb.message.edit_text(banks_qrlist_text(), parse_mode="HTML",
+                                       reply_markup=banks_qrlist_kb())
+            return
+
         # ── Vòng quay: thêm giải (bước 1: tên) ──
         if action == "prizes:add":
             await state.set_state(AdmSetState.prize_label)
@@ -1008,6 +1109,42 @@ def register_settings(target_router):
             await _ans("✅ Đã về 6 giải mặc định.")
             await cb.message.edit_text(prizes_text(), parse_mode="HTML",
                                        reply_markup=detail_kb("spin_prizes"))
+            return
+
+        # ── Ảnh (kiểu photo): chờ gửi ảnh ──
+        if action.startswith("photo:"):
+            key = action[6:]
+            if key not in _SPEC_BY_KEY or _SPEC_BY_KEY[key][1]["type"] != "photo":
+                await _ans("❌ Mục không tồn tại.")
+                return
+            gid, spec = _SPEC_BY_KEY[key]
+            await state.update_data(photo_key=key)
+            await state.set_state(AdmSetState.photo)
+            await _ans()
+            await cb.message.edit_text(
+                f"🖼️ <b>{html.escape(spec['label'])}</b>\n"
+                f"━━━━━━━━━━━━\n\n"
+                f"Gửi <b>ảnh</b> vào đây.\n\n"
+                f"Gõ /huy để huỷ.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="◀️ Quay lại",
+                                         callback_data=f"admset:s:{key}")]]))
+            return
+
+        # ── Ảnh (kiểu photo): xóa ──
+        if action.startswith("photodel:"):
+            key = action[9:]
+            if key not in _SPEC_BY_KEY or _SPEC_BY_KEY[key][1]["type"] != "photo":
+                await _ans("❌ Mục không tồn tại.")
+                return
+            gid, spec = _SPEC_BY_KEY[key]
+            _save(cb.from_user.id, cb.from_user.full_name or "", key, "",
+                  spec["label"], fmt_new="đã xóa",
+                  fmt_old=_fmt(spec, _raw(key, spec["default"])))
+            await _ans("✅ Đã xóa ảnh.")
+            await cb.message.edit_text(detail_text(key), parse_mode="HTML",
+                                       reply_markup=detail_kb(key))
             return
 
         # ── Bật/tắt nhanh ──
@@ -1187,6 +1324,77 @@ def register_settings(target_router):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="◀️ Danh sách ngân hàng",
                                      callback_data="admset:s:banks_list")]]))
+
+    @target_router.message(AdmSetState.bank_qr)
+    async def _on_bank_qr(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if await _cancel_flow(msg, state, "admset:banks:qrlist"):
+            return
+        file_id = None
+        if msg.photo:
+            file_id = msg.photo[-1].file_id  # ảnh nét nhất
+        elif msg.document and (msg.document.mime_type or "").startswith("image/"):
+            file_id = msg.document.file_id
+        if not file_id:
+            await msg.answer("❌ Gửi 1 <b>ảnh</b> nhé (chụp màn hình QR hoặc file ảnh).\n"
+                             "Gõ /huy để huỷ.", parse_mode="HTML")
+            return
+        data = await state.get_data()
+        idx = data.get("bank_qr_idx")
+        banks = _banks()
+        if idx is None or not (0 <= idx < len(banks)):
+            await state.clear()
+            await msg.answer("❌ Phiên đã hết hạn, làm lại nhé.")
+            return
+        banks[idx]["qr"] = file_id
+        _save_banks(msg.from_user.id, msg.from_user.full_name or "", banks)
+        await state.clear()
+        await msg.answer(
+            f"✅ <b>Đã đặt ảnh QR</b> cho "
+            f"{html.escape(str(banks[idx].get('name', '?')))}.\n"
+            f"Khách nạp tay sẽ thấy ảnh này kèm STK.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="◀️ Ảnh QR từng ngân hàng",
+                                     callback_data="admset:banks:qrlist")]]))
+
+    @target_router.message(AdmSetState.photo)
+    async def _on_photo_msg(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        data = await state.get_data()
+        key = data.get("photo_key")
+        if not key or key not in _SPEC_BY_KEY:
+            await state.clear()
+            await msg.answer("❌ Phiên đã hết hạn, vào lại ⚙️ Cài đặt nhé.")
+            return
+        gid, spec = _SPEC_BY_KEY[key]
+        if await _cancel_flow(msg, state, f"admset:s:{key}"):
+            return
+        file_id = None
+        if msg.photo:
+            file_id = msg.photo[-1].file_id
+        elif msg.document and (msg.document.mime_type or "").startswith("image/"):
+            file_id = msg.document.file_id
+        if not file_id:
+            await msg.answer("❌ Gửi 1 <b>ảnh</b> nhé.\nGõ /huy để huỷ.",
+                             parse_mode="HTML")
+            return
+        _save(msg.from_user.id, msg.from_user.full_name or "", key,
+              file_id, spec["label"],
+              fmt_new="🖼️ đã có ảnh",
+              fmt_old=_fmt(spec, _raw(key, spec["default"])))
+        await state.clear()
+        await msg.answer(
+            f"✅ <b>Đã lưu ảnh {html.escape(spec['label'])}</b>.\n"
+            f"<i>Có hiệu lực ngay.</i>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="◀️ Quay lại",
+                                     callback_data=f"admset:s:{key}")]]))
 
     @target_router.message(AdmSetState.prize_label)
     async def _on_prize_label(msg: Message, state: FSMContext):
