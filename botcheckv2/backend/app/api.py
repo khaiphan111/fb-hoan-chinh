@@ -506,7 +506,16 @@ async def save_settings(body: SettingsIn, _=Depends(auth)):
     restart_zalo = False
     restart_admin_bot = False
     data = body.model_dump(exclude_none=True)
+    # 2026-10-05: các field secret/token: BỎ QUA giá trị rỗng, giữ nguyên giá trị cũ.
+    # Lý do: trang web Settings gửi toàn bộ form khi lưu; nếu ô token đang trống
+    # (chưa load xong hoặc user không động tới) mà vẫn ghi đè "" thì mất token
+    # mà không hay biết — đã từng làm mất fb_avatar_token đúng kiểu này.
+    _SECRET_KEYS = {"bot_token", "zalo_bot_token", "admin_bot_token",
+                    "fb_avatar_token", "ig_password", "ig_rapidapi_key",
+                    "proxy_api_key", "admin_password"}
     for k, v in data.items():
+        if k in _SECRET_KEYS and not (v or "").strip():
+            continue
         if k == "bot_token" and v != db.get_setting("bot_token"):
             restart_bot = True
         if k == "zalo_bot_token" and v != db.get_setting("zalo_bot_token"):
@@ -888,7 +897,7 @@ async def manual_check(body: UidIn, _=Depends(auth)):
     return {
         "uid": res["uid"],
         "status": "live" if res["alive"] else ("die" if res["ok"] else "error"),
-        "avatar_url": res["avatar_url"] or fb.avatar_url(res["uid"]),
+        "avatar_url": fb.display_avatar(res),
     }
 
 

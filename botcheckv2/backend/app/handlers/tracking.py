@@ -414,7 +414,7 @@ async def on_trackfb(msg: Message):
         return
     wait = await msg.answer("⏳ Đang kiểm tra UID...")
     try:
-        from ..fb import check_uid, avatar_url
+        from ..fb import check_uid, avatar_url, display_avatar
         res = await check_uid(uid)
         _fb_status = (res.get("status") or "").lower()
         if _fb_status == "live":
@@ -423,7 +423,7 @@ async def on_trackfb(msg: Message):
             status = "exists"
         else:
             status = "die"
-        avatar = res.get("avatar_url") or avatar_url(uid)
+        avatar = display_avatar(res)
         wid, is_new = db.add_watch(msg.chat.id, res.get("uid") or uid, "", 0, 0)
         db.update_watch_status(wid, status, avatar)
         if is_new:
@@ -464,7 +464,7 @@ async def on_fb_track_btn(cb: CallbackQuery):
         await cb.answer("❌ Bạn cần có gói còn hạn để dùng tính năng theo dõi.", show_alert=True)
         return
         
-    from ..fb import check_uid, avatar_url
+    from ..fb import check_uid, avatar_url, display_avatar
     res = await check_uid(uid)
     # Fix 2026-10-02: check_uid trả về status="exists" (alive=True) khi chỉ xác định
     # được acc tồn tại mà không đọc được tên (FB chặn IP). Không được map thành "live".
@@ -475,7 +475,7 @@ async def on_fb_track_btn(cb: CallbackQuery):
         status = "exists"
     else:
         status = "die"
-    avatar = res.get("avatar_url") or avatar_url(uid)
+    avatar = display_avatar(res)
     
     wid, is_new = db.add_watch(cb.from_user.id, res["uid"], "", 0, 0)
     db.update_watch_status(wid, status, avatar)
@@ -502,7 +502,7 @@ async def on_trackmenu_fb_input(msg: Message, state: FSMContext):
         return
     wait = await msg.answer("⏳ Đang kiểm tra UID...")
     try:
-        from ..fb import check_uid, avatar_url
+        from ..fb import check_uid, avatar_url, display_avatar
         res = await check_uid(uid)
         # Fix 2026-10-02: map đúng status "exists" thay vì nhầm thành "live"
         _fb_status = (res.get("status") or "").lower()
@@ -512,7 +512,7 @@ async def on_trackmenu_fb_input(msg: Message, state: FSMContext):
             status = "exists"
         else:
             status = "die"
-        avatar = res.get("avatar_url") or avatar_url(uid)
+        avatar = display_avatar(res)
         wid, is_new = db.add_watch(msg.chat.id, res.get("uid") or uid, "", 0, 0)
         db.update_watch_status(wid, status, avatar)
         await state.clear()

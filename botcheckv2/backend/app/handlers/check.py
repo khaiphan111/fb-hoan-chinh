@@ -243,10 +243,10 @@ async def on_fb_note_input(msg: Message, state: FSMContext):
     note = msg.text.strip()
     await state.clear()
     
-    from ..fb import check_uid, avatar_url
+    from ..fb import check_uid, avatar_url, display_avatar
     res = await check_uid(uid)
     status = "live" if res["alive"] else "die"
-    avatar = res.get("avatar_url") or avatar_url(uid)
+    avatar = display_avatar(res)
     
     wid, is_new = db.add_watch(msg.chat.id, res["uid"], note, 0, 0)
     db.update_watch_status(wid, status, avatar)

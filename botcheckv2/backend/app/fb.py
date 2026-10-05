@@ -287,6 +287,24 @@ def avatar_url(uid: str, size: int = 500) -> str:
         base += f"&access_token={token}"
     return base
 
+def display_avatar(res: dict) -> str:
+    """URL avatar CHỈ khi chắc chắn là ảnh thật, ngược lại trả ''.
+
+    Đã kiểm chứng 2026-10-05: khi chưa cấu hình fb_avatar_token,
+    graph.facebook.com/{uid}/picture luôn trả ảnh silhouette mặc định
+    cho MỌI UID (kể cả acc có avatar thật) -> nếu cứ gửi URL đó, khách
+    luôn thấy "ảnh mặc định" và tưởng bot lỗi. Trả '' để phía hiển thị
+    (_send_card) gửi text-only cho sạch.
+    """
+    try:
+        token = db.get_setting("fb_avatar_token", "")
+    except Exception:
+        token = ""
+    if token and (res or {}).get("has_real_avatar"):
+        uid = (res or {}).get("uid") or ""
+        return (res or {}).get("avatar_url") or (avatar_url(uid) if uid else "")
+    return ""
+
 async def _is_real_avatar(uid: str, client: httpx.AsyncClient) -> bool:
     """
     Kiểm tra UID có ảnh avatar thật hay không.

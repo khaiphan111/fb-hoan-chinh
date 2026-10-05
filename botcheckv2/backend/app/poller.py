@@ -2032,7 +2032,7 @@ class FollowerPoller:
             if not res["ok"]:
                 continue
             new_status = "live" if res["alive"] else "die"
-            avatar = res["avatar_url"] or w["avatar_url"] or fb.avatar_url(w["uid"])
+            avatar = fb.display_avatar(res)
             old = w["last_status"]
             db.update_watch_status(w["id"], new_status, avatar)
 
