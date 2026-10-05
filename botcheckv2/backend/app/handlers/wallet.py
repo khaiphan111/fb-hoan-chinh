@@ -458,6 +458,17 @@ async def on_bank(msg: Message):
         bank_name = db.get_setting("bank_name", "")
         if bank_name:
             banks = [{"name": bank_name, "account": db.get_setting("bank_account", ""), "owner": db.get_setting("bank_owner", ""), "qr": db.get_setting("bank_qr", "")}]
+    else:
+        # gộp thêm TK đơn nếu có và chưa trùng STK trong danh sách
+        # (trước đây danh sách đè hẳn TK đơn khiến QR đã đặt không hiện)
+        bank_name = db.get_setting("bank_name", "")
+        bank_account = db.get_setting("bank_account", "")
+        if bank_name and bank_account:
+            seen = {str(b.get("account", "")).strip() for b in banks}
+            if bank_account.strip() not in seen:
+                banks.append({"name": bank_name, "account": bank_account,
+                              "owner": db.get_setting("bank_owner", ""),
+                              "qr": db.get_setting("bank_qr", "")})
             
     if not banks:
         await msg.answer("⚠️ Admin chưa thiết lập thông tin ngân hàng.")

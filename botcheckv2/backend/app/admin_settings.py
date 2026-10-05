@@ -67,7 +67,7 @@ SETTING_GROUPS = [
                ""),
             _S("banks_list", "Danh sách ngân hàng", "banks",
                "Nhiều TK ngân hàng cho khách chọn khi nạp tay. "
-               "Để trống = dùng 1 TK ở 3 ô trên.", ""),
+               "TK đơn ở dưới vẫn hiện kèm (trùng STK thì hiện 1 lần).", ""),
             _S("price_warn_pct", "Cảnh báo chênh giá (%)", "pct",
                "Sửa giá chênh quá X% so với giá cũ → bot hỏi xác nhận.",
                "50", min=0, max=100),
