@@ -965,6 +965,7 @@ def viotp_overview(_=Depends(auth)):
             "stats": db.viotp_stats(),
             "enabled": db.get_setting("viotp_enabled", "1") == "1",
             "markup_pct": db.get_setting("viotp_markup_pct", "50"),
+            "auto_refund": db.get_setting("viotp_auto_refund", "1") == "1",
             "has_notify_bot": _viotp_notify_configured(),
         },
     }
@@ -977,8 +978,8 @@ class ViotpCfgIn(BaseModel):
 
 @router.post("/viotp/config")
 def viotp_config_set(body: ViotpCfgIn, admin=Depends(require_role("super_admin"))):
-    """Đổi cấu hình: viotp_enabled (0/1), viotp_markup_pct."""
-    allowed = {"viotp_enabled", "viotp_markup_pct"}
+    """Đổi cấu hình: viotp_enabled (0/1), viotp_markup_pct, viotp_auto_refund (0/1)."""
+    allowed = {"viotp_enabled", "viotp_markup_pct", "viotp_auto_refund"}
     if body.key not in allowed:
         return {"ok": False, "error": "key không hợp lệ"}
     if body.key == "viotp_markup_pct":

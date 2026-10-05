@@ -7094,8 +7094,10 @@ def consign_batch_do_return(bid: int, approve: bool, by_id: int = 0) -> bool:
 # ---------------------------------------------------------------- ViOTP: shop thuê số
 VIOTP_STATUS_LABEL = {
     "waiting": "⏳ Đang chờ OTP",
+    "expiring": "⏳ Đang xử lý hết hạn",
     "done": "✅ Đã nhận OTP",
     "expired": "⌛ Hết hạn",
+    "refunded": "💸 Đã hoàn tiền",
     "cancelled": "❌ Đã hủy",
     "failed": "⚠️ Lỗi thuê số",
 }
@@ -7172,6 +7174,38 @@ def viotp_rental_waiting(max_age_min: int = 15) -> list:
     c = get_conn()
     rows = c.execute(
         "SELECT * FROM viotp_rentals WHERE status='waiting' AND created_at>=? ORDER BY id",
+        (cutoff,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def viotp_rental_claim_expire(rid: int) -> bool:
+    """Claim nguyên tử waiting -> expiring để xử lý hết hạn/hoàn tiền.
+
+    Trả True nếu claim được (tiến trình này thắng), False nếu đơn đã được
+    tiến trình khác xử lý. Chống hoàn tiền trùng khi poller và user bấm
+    tay cùng lúc.
+    """
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        cur = c.execute(
+            "UPDATE viotp_rentals SET status='expiring', updated_at=? "
+            "WHERE id=? AND status='waiting'",
+            (now, rid))
+        c.commit()
+        return cur.rowcount == 1
+
+
+def viotp_rental_overdue(max_age_min: int = 15) -> list:
+    """Các đơn waiting đã quá TTL nhưng chưa được xử lý (cho luồng hoàn tiền).
+
+    Không tự đánh dấu gì ở đây — poller claim từng đơn rồi check cuối
+    với ViOTP trước khi quyết định hoàn tiền.
+    """
+    cutoff = int(time.time()) - max_age_min * 60
+    c = get_conn()
+    rows = c.execute(
+        "SELECT * FROM viotp_rentals WHERE status='waiting' AND created_at<? ORDER BY id",
         (cutoff,)).fetchall()
     return [dict(r) for r in rows]
 

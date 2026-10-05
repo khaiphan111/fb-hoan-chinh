@@ -1480,7 +1480,7 @@ class FollowerPoller:
         from .util import vnd
         if db.get_setting("viotp_enabled", "1") != "1":
             return
-        # 1. Poll các đơn đang chờ
+        # 1. Poll các đơn đang chờ trong TTL: săn mã OTP
         for r in db.viotp_rental_waiting(15):
             rid = int(r["id"])
             try:
@@ -1490,45 +1490,139 @@ class FollowerPoller:
                 continue
             if sess["status"] == 1 and sess["code"]:
                 db.viotp_rental_set_status(rid, "done", sess["code"])
-                try:
-                    await self._bot.send_message(
-                        int(r["tg_id"]),
-                        f"🎉 <b>Đã nhận mã OTP!</b>\n\n"
-                        f"📱 {r['service_name']}\n"
-                        f"📞 <code>{r['phone_number']}</code>\n"
-                        f"🔑 Mã: <code>{sess['code']}</code>\n\n"
-                        f"Chạm vào mã để copy.",
-                        parse_mode="HTML")
-                except Exception as e:
-                    log.warning("viotp notify #%s lỗi: %s", rid, e)
-                # Báo bot riêng cho admin
-                try:
-                    from . import viotp_notify as _vn
-                    from . import notify_router as _nr
-                    rr = db.viotp_rental_get(rid)
-                    await _nr.send("rent", _vn.otp_notify_text(rr))
-                except Exception as e:
-                    log.warning("bao admin OTP #%s lỗi: %s", rid, e)
+                await self._deliver_viotp_otp(r, sess["code"])
             elif sess["status"] == 2:
-                db.viotp_rental_set_status(rid, "expired")
-                try:
-                    await self._bot.send_message(
-                        int(r["tg_id"]),
-                        f"⌛ Đơn thuê số #{rid} ({r['service_name']}) đã hết hạn, "
-                        f"chưa nhận được OTP.",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
-        # 2. Đánh dấu hết hạn các đơn chờ quá 15 phút
-        for r in db.viotp_rental_expire_old(15):
+                # ViOTP báo hết hạn = tiền vốn đã tự về TK ViOTP -> hoàn cho khách
+                await self._refund_viotp_rental(r)
+        # 2. Đơn chờ quá TTL: check cuối với ViOTP rồi mới quyết định hoàn
+        alerted = getattr(self, "_viotp_manual_alerted", None)
+        if alerted is None:
+            alerted = self._viotp_manual_alerted = set()
+        for r in db.viotp_rental_overdue(15):
+            rid = int(r["id"])
+            if not db.viotp_rental_claim_expire(rid):
+                continue  # tiến trình khác đã xử lý
+            try:
+                sess = await _viotp_mod.get_session(request_id=r["request_id"])
+            except Exception as e:
+                # KHÔNG hoàn khi không check được ViOTP -> trả về waiting, thử lại sau
+                log.warning("viotp final-check #%s lỗi, thử lại chu kỳ sau: %s", rid, e)
+                db.viotp_rental_set_status(rid, "waiting")
+                continue
+            if sess["status"] == 1 and sess["code"]:
+                db.viotp_rental_set_status(rid, "done", sess["code"])
+                await self._deliver_viotp_otp(r, sess["code"])
+            elif sess["status"] == 2:
+                await self._refund_viotp_rental(r, claimed=True)
+            else:
+                # ViOTP vẫn đang chờ -> đợi tiếp tới khi bên họ hết hạn
+                age_min = (time.time() - int(r["created_at"] or 0)) / 60
+                if age_min > 30 and rid not in alerted:
+                    # Bất thường: quá 30p ViOTP vẫn chưa hết hạn -> báo admin duyệt tay
+                    alerted.add(rid)
+                    try:
+                        from . import notify_router as _nr
+                        await _nr.send(
+                            "rent",
+                            f"⚠️ <b>ĐƠN THUÊ SỐ CẦN DUYỆT TAY #{rid}</b>\n"
+                            f"━━━━━━━━━━━━\n"
+                            f"📱 {html.escape(r['service_name'])}\n"
+                            f"📞 <code>{html.escape(r['phone_number'])}</code>\n"
+                            f"👤 <code>{r['tg_id']}</code>\n"
+                            f"💰 {vnd(r['sell_price'])}đ\n"
+                            f"Quá 30 phút ViOTP vẫn chưa báo hết hạn. "
+                            f"Bot KHÔNG tự hoàn. Admin kiểm tra rồi xử lý tay.")
+                    except Exception as e:
+                        log.warning("bao admin duyet tay #%s lỗi: %s", rid, e)
+                db.viotp_rental_set_status(rid, "waiting")
+
+    async def _deliver_viotp_otp(self, r: dict, code: str):
+        """Gửi mã OTP cho khách + báo admin (dùng chung cho poller và check cuối)."""
+        rid = int(r["id"])
+        try:
+            await self._bot.send_message(
+                int(r["tg_id"]),
+                f"🎉 <b>Đã nhận mã OTP!</b>\n\n"
+                f"📱 {r['service_name']}\n"
+                f"📞 <code>{r['phone_number']}</code>\n"
+                f"🔑 Mã: <code>{code}</code>\n\n"
+                f"Chạm vào mã để copy.",
+                parse_mode="HTML")
+        except Exception as e:
+            log.warning("viotp notify #%s lỗi: %s", rid, e)
+        try:
+            from . import viotp_notify as _vn
+            from . import notify_router as _nr
+            rr = db.viotp_rental_get(rid)
+            await _nr.send("rent", _vn.otp_notify_text(rr))
+        except Exception as e:
+            log.warning("bao admin OTP #%s lỗi: %s", rid, e)
+
+    async def _refund_viotp_rental(self, r: dict, claimed: bool = False) -> bool:
+        """Hoàn tiền đơn thuê số hết hạn vào ví thuê số của khách.
+
+        CHỈ gọi sau khi đã xác minh ViOTP hết hạn (status=2) — lúc đó tiền vốn
+        đã tự về TK ViOTP của shop nên hoàn full cho khách mà shop không lỗ.
+        Claim nguyên tử chống hoàn trùng; idempotent theo status.
+        """
+        from .util import vnd
+        rid = int(r["id"])
+        if db.get_setting("viotp_auto_refund", "1") != "1":
+            # Tắt tự động hoàn -> chỉ đánh dấu hết hạn, admin xử lý tay
+            db.viotp_rental_set_status(rid, "expired")
             try:
                 await self._bot.send_message(
                     int(r["tg_id"]),
-                    f"⌛ Đơn thuê số #{r['id']} ({r['service_name']}) đã hết "
-                    f"thời gian chờ OTP ({vnd(r['sell_price'])}đ).",
+                    f"⌛ Đơn thuê số #{rid} ({r['service_name']}) đã hết hạn, "
+                    f"chưa nhận được OTP. Admin sẽ kiểm tra và xử lý hoàn tiền.",
                     parse_mode="HTML")
             except Exception:
                 pass
+            return False
+        if not claimed and not db.viotp_rental_claim_expire(rid):
+            return False  # tiến trình khác đã xử lý
+        sell = int(r["sell_price"] or 0)
+        tg_id = int(r["tg_id"])
+        reason = f"hoan_tien_thue_so_het_han:#{rid}"
+        if not db.rent_adjust_balance(tg_id, sell, reason):
+            # Cộng tiền thất bại (hiếm) -> báo admin, giữ expiring để thử lại
+            log.error("hoan tien thue so #%s that bai (tg %s, %sđ)", rid, tg_id, sell)
+            try:
+                from . import notify_router as _nr
+                await _nr.send(
+                    "rent",
+                    f"🚨 <b>HOÀN TIỀN THUÊ SỐ THẤT BẠI #{rid}</b>\n"
+                    f"━━━━━━━━━━━━\n"
+                    f"👤 <code>{tg_id}</code> • 💰 {vnd(sell)}đ\n"
+                    f"Không cộng được vào ví thuê số. Kiểm tra ngay!")
+            except Exception:
+                pass
+            return False
+        db.viotp_rental_set_status(rid, "refunded")
+        try:
+            await self._bot.send_message(
+                tg_id,
+                f"💸 <b>Đã hoàn tiền thuê số #{rid}</b>\n\n"
+                f"📱 {r['service_name']}\n"
+                f"⌛ Hết 15 phút chờ mà chưa có mã OTP.\n"
+                f"💰 Hoàn <b>{vnd(sell)}đ</b> vào ví thuê số của bạn.\n\n"
+                f"Dùng /thueso để thuê số khác nhé.",
+                parse_mode="HTML")
+        except Exception as e:
+            log.warning("bao user hoan tien #%s lỗi: %s", rid, e)
+        try:
+            from . import notify_router as _nr
+            await _nr.send(
+                "rent",
+                f"💸 <b>ĐÃ HOÀN TIỀN THUÊ SỐ #{rid}</b>\n"
+                f"━━━━━━━━━━━━\n"
+                f"📱 {html.escape(r['service_name'])}\n"
+                f"📞 <code>{html.escape(r['phone_number'])}</code>\n"
+                f"👤 <code>{tg_id}</code> • 💰 {vnd(sell)}đ → ví thuê số\n"
+                f"Lý do: hết hạn không có OTP (ViOTP đã hoàn vốn).")
+        except Exception as e:
+            log.warning("bao admin hoan tien #%s lỗi: %s", rid, e)
+        return True
 
     # ══ BUFF LOOP: đặt đơn buff hộ trên panel mỗi 2 phút ══
     async def _buff_loop(self):

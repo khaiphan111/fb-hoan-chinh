@@ -300,6 +300,7 @@ async def on_ts_svc(cb: CallbackQuery, state: FSMContext):
         f"📱 <b>{html.escape(s['name'])}</b>\n\n"
         f"💰 Giá thuê: <b>{vnd(sell)}đ</b>\n"
         f"⏳ Số dùng trong {RENT_TTL_MIN} phút, bot tự chờ mã OTP.\n"
+        f"💸 Hết {RENT_TTL_MIN} phút không có mã → tự hoàn tiền vào ví thuê số.\n"
         f"💳 Trừ vào <b>ví thuê số</b>.",
         parse_mode="HTML", reply_markup=kb)
 
@@ -358,7 +359,8 @@ async def on_ts_rent(cb: CallbackQuery, state: FSMContext):
         f"📱 Dịch vụ: <b>{html.escape(s['name'])}</b>\n"
         f"💰 Giá: <b>{vnd(sell)}đ</b> (trừ ví thuê số)\n"
         f"👛 Số dư ví thuê số: <b>{vnd(bal)}đ</b>\n\n"
-        f"Sau khi thuê, bạn sẽ nhận số điện thoại và bot tự chờ mã OTP trong {RENT_TTL_MIN} phút.",
+        f"Sau khi thuê, bạn sẽ nhận số điện thoại và bot tự chờ mã OTP trong {RENT_TTL_MIN} phút.\n"
+        f"💸 Hết {RENT_TTL_MIN} phút không có mã → tự hoàn tiền vào ví thuê số.",
         parse_mode="HTML", reply_markup=kb)
 
 
@@ -440,7 +442,8 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
         f"📞 Số: <code>{html.escape(rent['phone_number'])}</code>\n"
         f"💰 Đã trừ: <b>{vnd(sell)}đ</b> (ví thuê số)\n\n"
         f"⏳ Bot đang tự chờ mã OTP trong {RENT_TTL_MIN} phút. "
-        f"Có mã sẽ báo ngay cho bạn.",
+        f"Có mã sẽ báo ngay cho bạn.\n"
+        f"💸 Hết {RENT_TTL_MIN} phút không có mã → tự hoàn tiền vào ví thuê số.",
         parse_mode="HTML", reply_markup=kb)
 
 
@@ -461,7 +464,10 @@ async def on_ts_check(cb: CallbackQuery):
         await cb.answer(f"Mã OTP: {r['otp_code']}", show_alert=True)
         return
     if r["status"] != "waiting":
-        await cb.answer("Đơn này đã kết thúc.", show_alert=True)
+        if r["status"] == "refunded":
+            await cb.answer("Đơn này đã được hoàn tiền vào ví thuê số.", show_alert=True)
+        else:
+            await cb.answer("Đơn này đã kết thúc.", show_alert=True)
         return
     await cb.answer("Đang kiểm tra...")
     try:
@@ -554,12 +560,16 @@ class ThueSoAdmState(StatesGroup):
 def _thueoadm_kb() -> InlineKeyboardMarkup:
     enabled = db.get_setting("viotp_enabled", "1") == "1"
     markup = db.get_setting("viotp_markup_pct", "50")
+    auto_refund = db.get_setting("viotp_auto_refund", "1") == "1"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"{'🟢 Đang BẬT' if enabled else '🔴 Đang TẮT'} — bấm để đổi",
             callback_data="tsadm:toggle")],
         [InlineKeyboardButton(text=f"💰 Lãi thêm: {markup}% — bấm để đổi",
                               callback_data="tsadm:markup")],
+        [InlineKeyboardButton(
+            text=f"💸 Tự hoàn hết hạn: {'🟢 BẬT' if auto_refund else '🔴 TẮT'} — bấm để đổi",
+            callback_data="tsadm:refund")],
         [InlineKeyboardButton(text="📋 10 đơn gần nhất", callback_data="tsadm:recent")],
         [InlineKeyboardButton(text="🤖 Bot báo riêng", callback_data="tsadm:bot")],
         [InlineKeyboardButton(text="🔄 Làm mới", callback_data="tsadm:menu")],
@@ -570,6 +580,7 @@ def _thueoadm_text() -> str:
     st = db.viotp_stats()
     enabled = db.get_setting("viotp_enabled", "1") == "1"
     markup = db.get_setting("viotp_markup_pct", "50")
+    auto_refund = db.get_setting("viotp_auto_refund", "1") == "1"
     return (
         "📱 <b>QUẢN LÝ SHOP THUÊ SỐ</b>\n"
         "━━━━━━━━━━━━━━\n"
@@ -578,6 +589,7 @@ def _thueoadm_text() -> str:
         f"💵 Lãi: <b>{vnd(st['profit'])}đ</b> • "
         f"⏳ Đang chờ OTP: <b>{st['waiting']}</b>\n\n"
         f"Trạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'} • Lãi thêm: {markup}%\n"
+        f"💸 Tự hoàn khi hết hạn: {'🟢 BẬT' if auto_refund else '🔴 TẮT'}\n"
         f"🤖 Bot báo riêng: {_viotp_bot_status()}"
     )
 
@@ -628,6 +640,21 @@ async def on_tsadm_cb(cb: CallbackQuery, state: FSMContext):
             return
         cur = db.get_setting("viotp_enabled", "1") == "1"
         db.set_setting("viotp_enabled", "0" if cur else "1")
+        await cb.message.edit_text(_thueoadm_text(), parse_mode="HTML",
+                                   reply_markup=_thueoadm_kb())
+        return
+
+    if action == "refund":
+        if not is_super(cb.from_user.id):
+            await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
+            return
+        cur = db.get_setting("viotp_auto_refund", "1") == "1"
+        db.set_setting("viotp_auto_refund", "0" if cur else "1")
+        await cb.answer(
+            "💸 Đã BẬT tự hoàn: hết hạn không mã → hoàn full vào ví thuê số."
+            if not cur else
+            "💸 Đã TẮT tự hoàn: đơn hết hạn chỉ đánh dấu, admin xử lý tay.",
+            show_alert=True)
         await cb.message.edit_text(_thueoadm_text(), parse_mode="HTML",
                                    reply_markup=_thueoadm_kb())
         return

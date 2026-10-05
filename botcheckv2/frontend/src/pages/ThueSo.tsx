@@ -8,8 +8,10 @@ import { vnd } from "../lib/utils";
 
 const STATUS_LABEL: Record<string, string> = {
   waiting: "⏳ Đang chờ OTP",
+  expiring: "⏳ Đang xử lý hết hạn",
   done: "✅ Đã nhận OTP",
   expired: "⌛ Hết hạn",
+  refunded: "💸 Đã hoàn tiền",
   cancelled: "❌ Đã hủy",
   failed: "⚠️ Lỗi",
 };
@@ -19,6 +21,7 @@ export default function ThueSo() {
   const [stats, setStats] = useState<any>({});
   const [enabled, setEnabled] = useState(true);
   const [markup, setMarkup] = useState("50");
+  const [autoRefund, setAutoRefund] = useState(true);
   const [hasNotifyBot, setHasNotifyBot] = useState(false);
   const [rentals, setRentals] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
@@ -35,6 +38,7 @@ export default function ThueSo() {
       setStats(d.stats || {});
       setEnabled(!!d.enabled);
       setMarkup(String(d.markup_pct ?? "50"));
+      setAutoRefund(!!d.auto_refund);
       setHasNotifyBot(!!d.has_notify_bot);
       await loadRentals();
       await loadServices();
@@ -152,6 +156,19 @@ export default function ThueSo() {
             </Button>
             <span className="text-sm text-muted-foreground">
               Giá bán = giá vốn + {markup}% (làm tròn 100đ)
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <Label className="w-40">Tự hoàn khi hết hạn</Label>
+            <Button
+              size="sm"
+              variant={autoRefund ? "default" : "outline"}
+              onClick={() => saveCfg("viotp_auto_refund", autoRefund ? "0" : "1")}
+            >
+              {autoRefund ? "🟢 Đang bật" : "🔴 Đang tắt"}
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Hết hạn không có mã → hoàn full vào ví thuê số (tắt: admin xử lý tay)
             </span>
           </div>
           <div className="flex items-center gap-3">
