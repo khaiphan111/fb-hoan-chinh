@@ -823,6 +823,28 @@ async def wallet_adjust(tg_id: int, body: WalletAdjustIn, _=Depends(auth)):
     if not ok:
         raise HTTPException(status_code=400, detail="Số dư ví không đủ để trừ")
     db.add_log("wallet_adjust", f"Admin {'cộng' if body.amount > 0 else 'trừ'} {abs(body.amount)} ví {wallet}", tg_id)
+
+    # Báo tin cho user qua Telegram
+    try:
+        from .bot import manager
+        from .util import vnd
+        wallet_names = {"main": "Ví chính", "shop": "Ví shop", "buff": "Ví buff", "rent": "Ví thuê số"}
+        wname = wallet_names.get(wallet, wallet)
+        if manager.running:
+            import asyncio
+            action = "cộng" if body.amount > 0 else "trừ"
+            icon = "💵" if body.amount > 0 else "💸"
+            user = db.get_user(tg_id)
+            new_bal = 0
+            if user:
+                col = {"main": "balance", "shop": "shop_balance", "buff": "buff_balance", "rent": "rent_balance"}[wallet]
+                new_bal = int(user[col] or 0)
+            asyncio.create_task(manager.bot.send_message(
+                tg_id,
+                f"{icon} Admin vừa {action} <b>{vnd(abs(body.amount))}</b> vào {wname} của bạn!\n"
+                f"Số dư {wname} hiện tại: <b>{vnd(new_bal)}</b>",
+                parse_mode="HTML"))
+    except: pass
     return {"ok": True, "user": _row(db.get_user(tg_id))}
 
 
