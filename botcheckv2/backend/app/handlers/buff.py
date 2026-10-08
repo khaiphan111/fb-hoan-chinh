@@ -128,6 +128,29 @@ async def on_buff(msg: Message, state: FSMContext):
         parse_mode="HTML", reply_markup=_plat_kb())
 
 
+@router.message(Command("mybuff"))
+async def on_mybuff(msg: Message):
+    """Xem đơn buff của tôi (kèm tiến độ)."""
+    uid = msg.from_user.id
+    orders = db.buff_orders_by_user(uid, 10)
+    if not orders:
+        await msg.answer(
+            "📋 Bạn chưa có đơn buff nào.\nGõ /buff để đặt đơn đầu tiên nhé!",
+            parse_mode="HTML")
+        return
+    lines = ["📋 <b>ĐƠN BUFF CỦA BẠN</b> (10 gần nhất)\n"]
+    for o in orders:
+        od = dict(o)
+        st = _BUFF_STATUS_LABEL.get(od["status"], od["status"])
+        done = int(od.get("done_quantity") or 0)
+        qty = int(od.get("quantity") or 0)
+        prog = f" • 📊 {done:,}/{qty:,}" if qty and od["status"] in ("running", "pending", "partial") else ""
+        lines.append(
+            f"• <code>{od['code']}</code> — {html.escape(od.get('service_name') or '')}\n"
+            f"  🔢 {vnd(qty)} • 💵 {vnd(od['total_price'])} • {st}{prog}")
+    await msg.answer("\n".join(lines), parse_mode="HTML")
+
+
 @router.callback_query(F.data.startswith("buff:"))
 async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
