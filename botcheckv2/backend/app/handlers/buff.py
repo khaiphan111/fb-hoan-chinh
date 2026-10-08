@@ -239,12 +239,22 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
         return
 
     if action == "confirm":
+        # Chống bấm trùng: khóa ngay khi nhận callback đầu tiên
+        data = await state.get_data()
+        if data.get("buff_processing"):
+            await cb.answer("⏳ Đơn đang được xử lý, vui lòng đợi...", show_alert=False)
+            return
+        await state.update_data(buff_processing=True)
+        # Xóa nút ngay để user không bấm thêm lần nữa trong lúc chờ mạng
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         # Chặn nếu công tắc tổng tắt
         if db.get_setting("buff_enabled", "0") != "1":
             await cb.message.answer("⏸️ Shop đang tạm dừng nhận đơn buff.")
             await state.clear()
             return
-        data = await state.get_data()
         sid, link, qty = data.get("buff_sid"), data.get("buff_link"), data.get("buff_qty")
         svc = db.buff_service_get(sid) if sid else None
         if not svc or not link or not qty:
