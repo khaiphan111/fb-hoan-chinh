@@ -753,6 +753,9 @@ def init_db() -> None:
                 ON buff_orders(status);
             CREATE INDEX IF NOT EXISTS idx_buff_orders_user
                 ON buff_orders(tg_id);
+            -- Theo dõi tiến độ đơn buff (thêm 2026-10-08)
+            ALTER TABLE buff_orders ADD COLUMN IF NOT EXISTS done_quantity BIGINT DEFAULT 0;
+            ALTER TABLE buff_orders ADD COLUMN IF NOT EXISTS last_checked_at BIGINT DEFAULT 0;
             CREATE TABLE IF NOT EXISTS buff_link_warehouse (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 tg_id        BIGINT NOT NULL,

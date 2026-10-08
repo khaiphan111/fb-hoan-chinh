@@ -108,6 +108,8 @@ class FollowerPoller:
             self._ops_task = asyncio.create_task(self._ops_loop())
         if not hasattr(self, '_buff_task') or not (self._buff_task and not self._buff_task.done()):
             self._buff_task = asyncio.create_task(self._buff_loop())
+        if not hasattr(self, '_buff_tracker_task') or not (self._buff_tracker_task and not self._buff_tracker_task.done()):
+            self._buff_tracker_task = asyncio.create_task(self._buff_tracker_loop())
             self._buff_running = False
         if not hasattr(self, '_viotp_task') or not (self._viotp_task and not self._viotp_task.done()):
             self._viotp_task = asyncio.create_task(self._viotp_loop())
@@ -1678,6 +1680,39 @@ class FollowerPoller:
                 log.error("buff_loop lỗi: %s", e)
                 self._buff_running = False
             await asyncio.sleep(120)
+
+    async def _buff_tracker_loop(self):
+        """Theo dõi tiến độ đơn buff đang chạy (mỗi 30 phút).
+
+        Đọc tiến độ từ panel, cập nhật done_quantity, báo user khi
+        có tiến triển / hoàn thành / thất bại. Đơn xong thì dừng theo dõi.
+        """
+        from . import buff_tracker
+        await asyncio.sleep(60)
+        while True:
+            try:
+                if getattr(self, "_buff_tracker_running", False):
+                    await asyncio.sleep(1800)
+                    continue
+                self._buff_tracker_running = True
+                try:
+                    # Lấy bot để gửi tin
+                    bot = None
+                    try:
+                        from .bot import manager
+                        if manager.running:
+                            bot = manager.bot
+                    except Exception:
+                        pass
+                    await buff_tracker.scan_running_orders(bot)
+                finally:
+                    self._buff_tracker_running = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.error("buff_tracker_loop lỗi: %s", e)
+                self._buff_tracker_running = False
+            await asyncio.sleep(1800)  # 30 phút
 
     async def _process_buff_pending(self):
         from . import buff_worker

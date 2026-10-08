@@ -227,9 +227,13 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
         lines = ["📋 <b>ĐƠN BUFF CỦA BẠN</b> (10 gần nhất)\n"]
         for o in orders:
             st = _BUFF_STATUS_LABEL.get(o["status"], o["status"])
+            od = dict(o)
+            done = int(od.get("done_quantity") or 0)
+            qty = int(od.get("quantity") or 0)
+            prog = f" • 📊 {done:,}/{qty:,}" if qty and o["status"] in ("running", "pending", "partial") else ""
             lines.append(
                 f"• <code>{o['code']}</code> — {html.escape(o.get('service_name') or '')}\n"
-                f"  🔢 {vnd(o['quantity'])} • 💵 {vnd(o['total_price'])} • {st}")
+                f"  🔢 {vnd(o['quantity'])} • 💵 {vnd(o['total_price'])} • {st}{prog}")
         await cb.message.edit_text("\n".join(lines), parse_mode="HTML",
                                    reply_markup=InlineKeyboardMarkup(
                                        inline_keyboard=[[
