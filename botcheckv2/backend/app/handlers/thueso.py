@@ -5,6 +5,22 @@ Luồng khách: /thueso → chọn dịch vụ (phổ biến/tìm kiếm) → xe
 """
 import html
 import logging
+import time
+
+# Chống bấm trùng nút khi mạng delay
+_proc_lock: dict = {}
+
+def _acquire_lock(uid: int, key: str) -> bool:
+    now = time.time()
+    k = (uid, key)
+    ts = _proc_lock.get(k)
+    if ts and now - ts < 30:
+        return False
+    _proc_lock[k] = now
+    for kk in list(_proc_lock.keys()):
+        if now - _proc_lock[kk] > 60:
+            del _proc_lock[kk]
+    return True
 
 from aiogram import F
 from aiogram.filters import Command, StateFilter
@@ -372,6 +388,15 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
     tg_id = cb.from_user.id
+    # Chống bấm trùng khi mạng delay
+    if not _acquire_lock(tg_id, f"tsconfirm:{sid}"):
+        await cb.answer("⏳ Đơn đang được xử lý, vui lòng đợi...", show_alert=False)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.answer()
     items = await _services_or_error(cb, state)
     if items is None:
         return

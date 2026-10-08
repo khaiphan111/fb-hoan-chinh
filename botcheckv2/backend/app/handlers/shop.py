@@ -8,6 +8,24 @@ import random
 import time
 from typing import Optional
 
+# Chống bấm trùng nút khi mạng delay: (user_id, key) -> timestamp
+# Giữ 30 giây, đủ để đơn đầu xử lý xong
+_proc_lock: dict = {}
+
+def _acquire_lock(uid: int, key: str) -> bool:
+    """Trả True nếu lấy được lock (chưa ai xử lý), False nếu đang xử lý."""
+    now = time.time()
+    k = (uid, key)
+    ts = _proc_lock.get(k)
+    if ts and now - ts < 30:
+        return False
+    _proc_lock[k] = now
+    # Dọn dẹp lock cũ
+    for kk in list(_proc_lock.keys()):
+        if now - _proc_lock[kk] > 60:
+            del _proc_lock[kk]
+    return True
+
 import httpx
 import re
 from aiogram import Bot, Dispatcher, Router, F
@@ -352,11 +370,20 @@ async def on_acc_confirm(cb: CallbackQuery):
         want_upsell = len(parts) > 3 and parts[3] == "upsell"
     except Exception:
         return
+    tg_id = cb.from_user.id
+    # Chống bấm trùng khi mạng delay
+    lock_key = f"accconfirm:{cat_id}:{qty}"
+    if not _acquire_lock(tg_id, lock_key):
+        await cb.answer("⏳ Đơn đang được xử lý, vui lòng đợi...", show_alert=False)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     if qty < 1:
         qty = 1
     if qty > 1000:
         qty = 1000
-    tg_id = cb.from_user.id
     c = db.acc_category_get(cat_id)
     if not c or not c["active"]:
         await cb.message.answer("❌ Loại acc này không còn bán.")
@@ -1232,6 +1259,14 @@ async def on_cart_checkout(cb: CallbackQuery):
 async def on_cart_confirm(cb: CallbackQuery):
     await cb.answer()
     tg_id = cb.from_user.id
+    # Chống bấm trùng khi mạng delay
+    if not _acquire_lock(tg_id, "cartconfirm"):
+        await cb.answer("⏳ Đơn đang được xử lý, vui lòng đợi...", show_alert=False)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
     lines, _notes = _cart_validated_lines(tg_id)
     uid_items, _uid_notes = _cart_uid_validated(tg_id)
     if not lines and not uid_items:
