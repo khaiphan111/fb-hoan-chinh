@@ -709,6 +709,35 @@ class FollowerPoller:
     async def _run_stock_recheck(self, manual=False):
         """Quét LIVE toàn bộ acc AVAILABLE trong kho (chỉ sạp Acc Facebook).
         Acc DIE → cách ly khỏi kho bán + báo admin. Lỗi hạ tầng → bỏ qua."""
+        # CANARY: check UID chuẩn (mặc định UID 4) trước khi quét — chống cách ly
+        # nhầm hàng loạt khi IP/cookie bị Facebook chặn. Đã xảy ra thật 2026-10-08:
+        # mọi check đều trả "checkpoint" (kể cả UID 4 của Zuckerberg) khiến 70 acc
+        # đang sống bị cách ly oan. Canary fail → HỦY quét, báo admin, không đụng kho.
+        try:
+            canary_uid = str(db.get_setting("stock_recheck_canary_uid", "4") or "4").strip() or "4"
+        except Exception:
+            canary_uid = "4"
+        try:
+            cres = await fb.check_uid(canary_uid)
+            cst = str((cres or {}).get("status") or "").lower()
+        except Exception as e:
+            cst = f"error:{e}"
+        log.info("stock recheck: canary uid=%s status=%s", canary_uid, cst)
+        if cst not in ("live", "exists"):
+            log.warning("stock recheck: CANARY FAIL (uid=%s status=%s) — hủy quét để tránh cách ly nhầm",
+                        canary_uid, cst)
+            try:
+                await self._alert_admin(
+                    "⚠️ <b>RE-CHECK KHO: BỘ CHECK ĐANG LỖI</b>\n"
+                    f"Canary UID <code>{canary_uid}</code> trả về "
+                    f"<code>{cst}</code> (không phải live/exists) — nghi IP/cookie "
+                    "bị Facebook chặn.\n"
+                    "<b>Đã HỦY quét, không cách ly acc nào.</b> Kiểm tra lại "
+                    "cookie (/cookieadd) rồi chạy /recheck tay.",
+                    channel="stock")
+            except Exception:
+                pass
+            return
         # Refresh cột L "Loại / Gian hàng" trên Sheet cho MỌI gian hàng
         # (kể cả sạp tắt live_check — phần quét LIVE bên dưới chỉ chạy sạp FB).
         try:

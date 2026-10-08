@@ -39,7 +39,14 @@ log "Kiem tra deploy moi..."
 LATEST_SHA=$(curl -s -m 15 "https://api.github.com/repos/khaiphan111/fb-hoan-chinh/commits/main" | grep -o '"sha": "[a-f0-9]*"' | head -1 | cut -d'"' -f4)
 
 if [ -z "$LATEST_SHA" ]; then
-    log "WARN: khong lay duoc commit tu GitHub API, bo qua lan nay"
+    # Fallback: GitHub API hay bi rate-limit (unauthenticated, chung egress IP)
+    # -> dung git ls-remote (khong bi rate limit API)
+    LATEST_SHA=$(timeout 30 git ls-remote https://github.com/khaiphan111/fb-hoan-chinh.git main 2>/dev/null | awk '{print $1}')
+    [ -n "$LATEST_SHA" ] && log "Lay commit qua git ls-remote (API bi rate-limit): ${LATEST_SHA:0:7}"
+fi
+
+if [ -z "$LATEST_SHA" ]; then
+    log "WARN: khong lay duoc commit (API lan ls-remote), bo qua lan nay"
     exit 0
 fi
 

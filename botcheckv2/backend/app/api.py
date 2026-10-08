@@ -124,6 +124,11 @@ class AmountIn(BaseModel):
     amount: int
 
 
+class WalletAdjustIn(BaseModel):
+    wallet: str  # main | shop | buff | rent
+    amount: int  # dương = cộng, âm = trừ
+
+
 class MonthsIn(BaseModel):
     days: int
 
@@ -801,6 +806,23 @@ async def topup(tg_id: int, body: AmountIn, _=Depends(auth)):
                 msg += "Cảm ơn bạn đã tin tưởng và sử dụng dịch vụ của chúng tôi! ❤️"
                 asyncio.create_task(manager.bot.send_message(tg_id, msg, parse_mode="HTML"))
     except: pass
+    return {"ok": True, "user": _row(db.get_user(tg_id))}
+
+
+@router.post("/users/{tg_id}/wallet")
+async def wallet_adjust(tg_id: int, body: WalletAdjustIn, _=Depends(auth)):
+    """Cộng/trừ tiền 1 ví của user (main/shop/buff/rent)."""
+    wallet = (body.wallet or "").strip().lower()
+    if wallet not in ("main", "shop", "buff", "rent"):
+        raise HTTPException(status_code=400, detail="Ví không hợp lệ (main/shop/buff/rent)")
+    if not body.amount:
+        raise HTTPException(status_code=400, detail="Số tiền phải khác 0")
+    if not db.get_user(tg_id):
+        raise HTTPException(status_code=404, detail="Không có user này")
+    ok = db.adjust_wallet(tg_id, wallet, body.amount, "Admin điều chỉnh ví")
+    if not ok:
+        raise HTTPException(status_code=400, detail="Số dư ví không đủ để trừ")
+    db.add_log("wallet_adjust", f"Admin {'cộng' if body.amount > 0 else 'trừ'} {abs(body.amount)} ví {wallet}", tg_id)
     return {"ok": True, "user": _row(db.get_user(tg_id))}
 
 

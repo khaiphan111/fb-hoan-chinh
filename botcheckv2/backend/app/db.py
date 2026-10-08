@@ -1260,6 +1260,36 @@ def add_shop_balance_only(tg_id: int, amount: int, reason: str) -> None:
         c.commit()
 
 
+WALLET_COLUMNS = {
+    "main": "balance",
+    "shop": "shop_balance",
+    "buff": "buff_balance",
+    "rent": "rent_balance",
+}
+
+
+def adjust_wallet(tg_id: int, wallet: str, amount: int, reason: str) -> bool:
+    """Cộng/trừ tiền 1 ví bất kỳ (main/shop/buff/rent).
+    Trừ tiền kiểm tra nguyên tử: không đủ -> False, không trừ.
+    Ghi txns để tra soát. Trả True nếu thành công."""
+    col = WALLET_COLUMNS.get(wallet)
+    if not col or not amount:
+        return False
+    with _lock:
+        c = get_conn()
+        if amount < 0:
+            r = c.execute(f"SELECT {col} FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
+            if not r or int(r[col] or 0) + amount < 0:
+                return False
+        c.execute(f"UPDATE tg_users SET {col} = {col} + ? WHERE tg_id=?", (amount, tg_id))
+        c.execute(
+            "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+            (int(time.time()), tg_id, amount, f"{reason} [ví {wallet}]"),
+        )
+        c.commit()
+    return True
+
+
 def credit_topup(tg_id: int, amount: int, reason: str, wallet: str = "main") -> bool:
     """Cộng tiền nạp vào ví chỉ định + total_topup + hoa hồng F1/F2 (như adjust_balance chiều cộng)."""
     with _lock:
