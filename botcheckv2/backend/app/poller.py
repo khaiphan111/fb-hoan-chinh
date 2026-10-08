@@ -1686,7 +1686,12 @@ class FollowerPoller:
 
         Đọc tiến độ từ panel, cập nhật done_quantity, báo user khi
         có tiến triển / hoàn thành / thất bại. Đơn xong thì dừng theo dõi.
+
+        TẠM TẮT (2026-10-08): panel_order_id đang lưu mã dịch vụ thay vì
+        mã đơn thật -> tracker đọc nhầm, báo hoàn thành sai. Chờ fix
+        place_buff_order trích đúng mã đơn panel mới bật lại.
         """
+        return
         from . import buff_tracker
         await asyncio.sleep(60)
         while True:
