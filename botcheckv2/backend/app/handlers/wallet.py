@@ -1301,6 +1301,7 @@ async def on_sodu(msg: Message):
          InlineKeyboardButton(text="🛒 Nạp ví shop", callback_data="wal_nap:shop")],
         [InlineKeyboardButton(text="🚀 Nạp ví buff", callback_data="wal_nap:buff"),
          InlineKeyboardButton(text="📱 Nạp ví thuê số", callback_data="wal_nap:rent")],
+        [InlineKeyboardButton(text="🔄 Chuyển tiền giữa các ví", callback_data="wal_transfer:start")],
     ] + _debt_kb_rows)
     await msg.answer(
         "👛 <b>SỐ DƯ CỦA BẠN</b>\n"
@@ -2386,6 +2387,318 @@ async def on_donhang(msg: Message):
                      f"({vn_time_str(ts=o['created_at'])})")
     await msg.answer("\n".join(lines), parse_mode="HTML")
 
+
+# ================= CHUYỂN TIỀN GIỮA CÁC VÍ =================
+# Luồng: /sodu -> nút "🔄 Chuyển tiền giữa các ví"
+# - 3 ví phụ (shop/buff/rent) chuyển cho nhau ngay lập tức, không cần duyệt
+# - Ví chính muốn chuyển sang ví khác phải gửi yêu cầu, admin duyệt qua bot @web_bao_bot
+
+class WalletTransferState(StatesGroup):
+    src = State()      # đang chọn ví nguồn
+    dst = State()      # đang chọn ví đích
+    amount = State()   # đang nhập số tiền
+
+_WT_WALLETS = {
+    "main": "💰 Ví chính",
+    "shop": "🛒 Ví shop",
+    "buff": "🚀 Ví buff",
+    "rent": "📱 Ví thuê số",
+}
+# 3 ví phụ được chuyển tự do cho nhau
+_WT_FREE_WALLETS = ("shop", "buff", "rent")
+
+
+def _wt_src_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=_WT_WALLETS["main"], callback_data="wal_transfer:src:main"),
+         InlineKeyboardButton(text=_WT_WALLETS["shop"], callback_data="wal_transfer:src:shop")],
+        [InlineKeyboardButton(text=_WT_WALLETS["buff"], callback_data="wal_transfer:src:buff"),
+         InlineKeyboardButton(text=_WT_WALLETS["rent"], callback_data="wal_transfer:src:rent")],
+        [InlineKeyboardButton(text="❌ Hủy", callback_data="wal_transfer:cancel")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _wt_dst_kb(src: str) -> InlineKeyboardMarkup:
+    rows = []
+    cur = []
+    for w in ("main", "shop", "buff", "rent"):
+        if w == src:
+            continue
+        cur.append(InlineKeyboardButton(text=_WT_WALLETS[w], callback_data=f"wal_transfer:dst:{w}"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    rows.append([InlineKeyboardButton(text="❌ Hủy", callback_data="wal_transfer:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "wal_transfer:start")
+async def on_wal_transfer_start(cb: CallbackQuery, state: FSMContext):
+    await state.set_state(WalletTransferState.src)
+    await cb.message.answer(
+        "🔄 <b>CHUYỂN TIỀN GIỮA CÁC VÍ</b>\n\n"
+        "Chọn ví <b>nguồn</b> (ví sẽ trừ tiền):\n"
+        "• 3 ví <b>shop / buff / thuê số</b> chuyển cho nhau <b>ngay lập tức</b>.\n"
+        "• Ví <b>chính</b> muốn chuyển đi cần <b>admin duyệt</b>.",
+        parse_mode="HTML", reply_markup=_wt_src_kb())
+    await cb.answer()
+
+
+@router.callback_query(F.data == "wal_transfer:cancel")
+async def on_wal_transfer_cancel(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.answer("Đã hủy chuyển ví.")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("wal_transfer:src:"))
+async def on_wal_transfer_src(cb: CallbackQuery, state: FSMContext):
+    src = cb.data.split(":")[2]
+    if src not in _WT_WALLETS:
+        await cb.answer("Ví không hợp lệ.", show_alert=True)
+        return
+    await state.update_data(wt_src=src)
+    await state.set_state(WalletTransferState.dst)
+    await cb.message.answer(
+        f"Ví nguồn: <b>{_WT_WALLETS[src]}</b>\n\nChọn ví <b>đích</b> (ví sẽ nhận tiền):",
+        parse_mode="HTML", reply_markup=_wt_dst_kb(src))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("wal_transfer:dst:"))
+async def on_wal_transfer_dst(cb: CallbackQuery, state: FSMContext):
+    dst = cb.data.split(":")[2]
+    data = await state.get_data()
+    src = data.get("wt_src")
+    if not src or dst not in _WT_WALLETS or dst == src:
+        await cb.answer("Ví không hợp lệ.", show_alert=True)
+        return
+    await state.update_data(wt_dst=dst)
+    await state.set_state(WalletTransferState.amount)
+    # Hiện số dư ví nguồn cho dễ nhập
+    user = db.get_user(cb.from_user.id)
+    col = db.WALLET_COLUMNS.get(src, "balance")
+    bal = int((user[col] or 0)) if user and col in user.keys() else 0
+    await cb.message.answer(
+        f"Chuyển: <b>{_WT_WALLETS[src]}</b> → <b>{_WT_WALLETS[dst]}</b>\n"
+        f"Số dư ví nguồn: <b>{vnd(bal)}</b>\n\n"
+        "Nhập <b>số tiền</b> muốn chuyển (số nguyên, đơn vị đồng):",
+        parse_mode="HTML")
+    await cb.answer()
+
+
+@router.message(StateFilter(WalletTransferState.amount))
+async def on_wal_transfer_amount(msg: Message, state: FSMContext):
+    # Bỏ qua lệnh khi đang nhập
+    if (msg.text or "").startswith("/"):
+        return
+    try:
+        amount = int((msg.text or "").strip().replace(".", "").replace(",", "").replace(" ", ""))
+    except ValueError:
+        await msg.answer("❌ Số tiền không hợp lệ. Nhập lại số nguyên (vd: 50000).")
+        return
+    if amount <= 0:
+        await msg.answer("❌ Số tiền phải lớn hơn 0.")
+        return
+    data = await state.get_data()
+    src, dst = data.get("wt_src"), data.get("wt_dst")
+    user = db.get_user(msg.from_user.id)
+    col = db.WALLET_COLUMNS.get(src, "balance")
+    bal = int((user[col] or 0)) if user and col in user.keys() else 0
+    if amount > bal:
+        await msg.answer(f"❌ Số dư ví nguồn không đủ (đang có {vnd(bal)}).")
+        return
+    await state.update_data(wt_amount=amount)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Xác nhận chuyển",
+            # Nhúng thẳng src/dst/amount vào callback để không phụ thuộc FSM
+            # (FSM mất khi backend restart)
+            callback_data=f"wal_transfer:confirm:{src}:{dst}:{amount}")],
+        [InlineKeyboardButton(text="❌ Hủy", callback_data="wal_transfer:cancel")],
+    ])
+    need_approve = src == "main"
+    note = ("⚠️ Ví chính cần <b>admin duyệt</b> mới chuyển được.\n" if need_approve
+            else "✅ Chuyển <b>ngay lập tức</b>, không cần duyệt.\n")
+    await msg.answer(
+        "🔄 <b>XÁC NHẬN CHUYỂN VÍ</b>\n"
+        f"• Từ: <b>{_WT_WALLETS[src]}</b>\n"
+        f"• Đến: <b>{_WT_WALLETS[dst]}</b>\n"
+        f"• Số tiền: <b>{vnd(amount)}</b>\n\n" + note,
+        parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data == "wal_transfer:confirm")
+async def on_wal_transfer_confirm_legacy(cb: CallbackQuery, state: FSMContext):
+    """Nút xác nhận format cũ (trước fix 00:39 09/10) — báo làm lại."""
+    await state.clear()
+    await cb.answer(
+        "Nút này đã cũ, bạn làm lại từ đầu nhé: /sodu → 🔄 Chuyển tiền giữa các ví.",
+        show_alert=True)
+
+
+@router.callback_query(F.data.startswith("wal_transfer:confirm:"))
+async def on_wal_transfer_confirm(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    try:
+        _, _, src, dst, amount_s = cb.data.split(":")
+        amount = int(amount_s)
+    except (ValueError, IndexError):
+        await cb.answer("Dữ liệu không hợp lệ, làm lại nhé.", show_alert=True)
+        return
+    if src not in _WT_WALLETS or dst not in _WT_WALLETS or src == dst or amount <= 0:
+        await cb.answer("Dữ liệu không hợp lệ, làm lại nhé.", show_alert=True)
+        return
+    tg_id = cb.from_user.id
+    # Xóa nút ngay khi bấm để chống bấm trùng ở phía UI
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    if src in _WT_FREE_WALLETS and dst in _WT_FREE_WALLETS:
+        # Chuyển ngay giữa 3 ví phụ: 1 transaction nguyên tử + chống bấm trùng
+        # Key gồm message_id của tin chứa nút -> bấm 2 lần cùng 1 nút = 1 key
+        idem_key = f"wt:{tg_id}:{src}:{dst}:{amount}:{cb.message.message_id}"
+        res = db.wallet_transfer_instant(tg_id, src, dst, amount, idem_key)
+        if res == "duplicate":
+            await cb.message.answer(
+                "⚠️ Yêu cầu này đã được xử lý rồi, không chuyển trùng.")
+        elif res == "insufficient":
+            await cb.message.answer("❌ Số dư không đủ, chuyển thất bại.")
+        elif res != "ok":
+            await cb.message.answer("❌ Dữ liệu không hợp lệ, chuyển thất bại.")
+        else:
+            await cb.message.answer(
+                f"✅ Đã chuyển <b>{vnd(amount)}</b> từ {_WT_WALLETS[src]} "
+                f"sang {_WT_WALLETS[dst]}.",
+                parse_mode="HTML")
+    else:
+        # Cần admin duyệt (ví chính tham gia)
+        # Gửi yêu cầu: bot @web_bao_bot báo tin, bot chính gửi nút Duyệt/Từ chối
+        # (vì callback từ bot ngoài không về được backend)
+        req_id = db.wallet_transfer_request_add(tg_id, src, dst, amount)
+        user = db.get_user(tg_id)
+        uname = (user["username"] if user and "username" in user.keys() else "") or ""
+        admin_id = _perms.super_id()
+        txt = (
+            f"🔄 <b>YÊU CẦU CHUYỂN VÍ</b> #{req_id}\n"
+            f"• Khách: <code>{tg_id}</code>" + (f" (@{uname})" if uname else "") + "\n"
+            f"• Từ: <b>{_WT_WALLETS[src]}</b> → Đến: <b>{_WT_WALLETS[dst]}</b>\n"
+            f"• Số tiền: <b>{vnd(amount)}</b>\n\n"
+            "Admin bấm duyệt / từ chối:")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Đồng ý", callback_data=f"wal_transfer:approve:{req_id}"),
+            InlineKeyboardButton(text="❌ Từ chối", callback_data=f"wal_transfer:reject:{req_id}"),
+        ]])
+        # 1) Báo qua @web_bao_bot cho admin biết
+        await _send_via_web_bao_bot(
+            admin_id,
+            f"🔄 Có yêu cầu chuyển ví #{req_id} cần duyệt "
+            f"({_WT_WALLETS[src]} → {_WT_WALLETS[dst]}, {vnd(amount)}). "
+            f"Mở bot chính để bấm Duyệt/Từ chối nhé.")
+        # 2) Gửi nút duyệt qua bot chính (callback mới hoạt động)
+        sent = False
+        try:
+            from .. import notify_bot as _nb
+            mgr = getattr(_nb, "manager", None)
+            if mgr and getattr(mgr, "bot", None):
+                await mgr.bot.send_message(admin_id, txt, parse_mode="HTML",
+                                           reply_markup=kb)
+                sent = True
+        except Exception:
+            pass
+        if sent:
+            await cb.message.answer(
+                "📨 Đã gửi yêu cầu tới admin. Bạn sẽ nhận tin báo khi admin duyệt xong.")
+        else:
+            await cb.message.answer(
+                "⚠️ Không gửi được yêu cầu tới admin lúc này, thử lại sau nhé.")
+    await cb.answer()
+
+
+async def _send_via_web_bao_bot(chat_id: int, text: str, reply_markup=None) -> bool:
+    """Gửi tin nhắn qua bot @web_bao_bot (custom.web-bao-bot). Trả True nếu gửi được."""
+    import json as _json, subprocess as _sp
+    if not chat_id:
+        return False
+    try:
+        cmd = ["/home/hatch/workspace/skills/web-bao-bot/bin/tg_send.py",
+               str(chat_id), text, "--parse", "HTML"]
+        if reply_markup:
+            cmd += ["--buttons", _json.dumps(
+                {"inline_keyboard": reply_markup.inline_keyboard}, ensure_ascii=False)]
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=25)
+        out = _json.loads(r.stdout or "{}")
+        return bool(out.get("ok"))
+    except Exception:
+        return False
+
+
+@router.callback_query(F.data.startswith("wal_transfer:approve:"))
+async def on_wal_transfer_approve(cb: CallbackQuery):
+    if not _perms.is_super(cb.from_user.id):
+        await cb.answer("Chỉ chủ shop mới duyệt được.", show_alert=True)
+        return
+    req_id = int(cb.data.split(":")[2])
+    req = db.wallet_transfer_request_get(req_id)
+    if not req or req["status"] != "pending":
+        await cb.answer("Yêu cầu không còn chờ duyệt.", show_alert=True)
+        return
+    ok = db.wallet_transfer_request_approve(req_id, cb.from_user.id)
+    if not ok:
+        await cb.message.answer("❌ Duyệt thất bại (số dư không đủ hoặc yêu cầu đã xử lý).")
+        await cb.answer()
+        return
+    await cb.message.edit_text(
+        cb.message.html_text + "\n\n✅ <b>Đã duyệt.</b>", parse_mode="HTML")
+    # Báo cho khách qua BOT CHÍNH (user đang dùng bot này; notify bot có thể
+    # chưa từng được user start nên Telegram chặn gửi tin)
+    try:
+        from .. import bot as _main_bot
+        mgr = getattr(_main_bot, "manager", None)
+        if mgr and getattr(mgr, "bot", None):
+            await mgr.bot.send_message(
+                req["tg_id"],
+                f"✅ Admin đã duyệt yêu cầu chuyển ví #{req_id}:\n"
+                f"<b>{vnd(req['amount'])}</b> từ {_WT_WALLETS[req['src']]} "
+                f"sang {_WT_WALLETS[req['dst']]}.",
+                parse_mode="HTML")
+    except Exception:
+        pass
+    await cb.answer("Đã duyệt.")
+
+
+@router.callback_query(F.data.startswith("wal_transfer:reject:"))
+async def on_wal_transfer_reject(cb: CallbackQuery):
+    if not _perms.is_super(cb.from_user.id):
+        await cb.answer("Chỉ chủ shop mới từ chối được.", show_alert=True)
+        return
+    req_id = int(cb.data.split(":")[2])
+    req = db.wallet_transfer_request_get(req_id)
+    if not req or req["status"] != "pending":
+        await cb.answer("Yêu cầu không còn chờ duyệt.", show_alert=True)
+        return
+    db.wallet_transfer_request_reject(req_id, cb.from_user.id)
+    await cb.message.edit_text(
+        cb.message.html_text + "\n\n❌ <b>Đã từ chối.</b>", parse_mode="HTML")
+    try:
+        from .. import bot as _main_bot
+        mgr = getattr(_main_bot, "manager", None)
+        if mgr and getattr(mgr, "bot", None):
+            await mgr.bot.send_message(
+                req["tg_id"],
+                f"❌ Admin đã từ chối yêu cầu chuyển ví #{req_id} "
+                f"({_WT_WALLETS[req['src']]} → {_WT_WALLETS[req['dst']]}, "
+                f"{vnd(req['amount'])}).",
+                parse_mode="HTML")
+    except Exception:
+        pass
+    await cb.answer("Đã từ chối.")
+
+
 __all__ = [
     "_NAP_QUICK_AMOUNTS",
     "_pending_transfer",
@@ -2433,6 +2746,16 @@ __all__ = [
     "on_wal_nap",
     "on_wal_hist",
     "on_sodu",
+    "WalletTransferState",
+    "on_wal_transfer_start",
+    "on_wal_transfer_cancel",
+    "on_wal_transfer_src",
+    "on_wal_transfer_dst",
+    "on_wal_transfer_amount",
+    "on_wal_transfer_confirm",
+    "on_wal_transfer_confirm_legacy",
+    "on_wal_transfer_approve",
+    "on_wal_transfer_reject",
     "on_sub",
     "on_sub_pick",
     "on_tienich_giftcode",

@@ -6011,20 +6011,22 @@ def buff_order_create(tg_id: int, service_id: int, link: str,
         for _ in range(10):
             code = "B" + str(_rnd.randint(100000, 999999))
             try:
+                # Postgres không có lastrowid -> dùng RETURNING id
                 cur = c.execute(
                     "INSERT INTO buff_orders(code, tg_id, service_id, link, quantity,"
                     " total_price, total_cost, status, created_at, updated_at)"
-                    " VALUES(?,?,?,?,?,?,?,'pending',?,?)",
+                    " VALUES(?,?,?,?,?,?,?,'pending',?,?) RETURNING id",
                     (code, tg_id, service_id, link, quantity,
                      total_price, total_cost, now, now),
                 )
+                row = cur.fetchone()
+                oid = row[0] if row else cur.lastrowid
                 c.commit()
                 break
             except Exception:
                 continue
         else:
             raise RuntimeError("Không tạo được mã đơn buff")
-        oid = cur.lastrowid
     return buff_order_get(oid)
 
 
@@ -7546,3 +7548,230 @@ def loan_mark_overdue() -> int:
         (now, now))
     c.commit()
     return cur.rowcount
+
+
+# ================= YÊU CẦU CHUYỂN VÍ (cần admin duyệt) =================
+# Dùng khi chuyển tiền có ví chính tham gia. 3 ví phụ chuyển nhau thì
+# đi đường adjust_wallet trực tiếp, không qua bảng này.
+
+def _wallet_transfer_ensure_table():
+    c = get_conn()
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS wallet_transfer_requests("
+        "id SERIAL PRIMARY KEY, tg_id BIGINT NOT NULL, src TEXT NOT NULL, "
+        "dst TEXT NOT NULL, amount INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending', "
+        "created_at INTEGER NOT NULL, decided_at INTEGER DEFAULT 0, decided_by BIGINT DEFAULT 0)")
+    # Nếu bảng đã tồn tại từ trước với id INTEGER (không tự tăng) thì gắn sequence
+    try:
+        c.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT 1 FROM pg_sequences WHERE sequencename='wallet_transfer_requests_id_seq') THEN "
+            "CREATE SEQUENCE wallet_transfer_requests_id_seq; "
+            "END IF; END $$")
+        c.execute(
+            "ALTER TABLE wallet_transfer_requests ALTER COLUMN id "
+            "SET DEFAULT nextval('wallet_transfer_requests_id_seq')")
+        c.execute(
+            "SELECT setval('wallet_transfer_requests_id_seq', "
+            "COALESCE((SELECT MAX(id) FROM wallet_transfer_requests), 0) + 1, false)")
+    except Exception:
+        pass
+    c.commit()
+
+
+def wallet_transfer_request_add(tg_id: int, src: str, dst: str, amount: int) -> int:
+    """Tạo yêu cầu chuyển ví chờ duyệt. Trả về id yêu cầu."""
+    _wallet_transfer_ensure_table()
+    import time
+    c = get_conn()
+    cur = c.execute(
+        "INSERT INTO wallet_transfer_requests(tg_id, src, dst, amount, status, created_at) "
+        "VALUES(?,?,?,?, 'pending', ?) RETURNING id",
+        (tg_id, src, dst, amount, int(time.time())))
+    # LƯU Ý: PgCursor.execute đã tự fetchone() dòng RETURNING vào cur.lastrowid,
+    # gọi fetchone() thêm sẽ trả None.
+    new_id = cur.lastrowid
+    c.commit()
+    return int(new_id)
+
+
+def wallet_transfer_request_get(req_id: int) -> dict | None:
+    _wallet_transfer_ensure_table()
+    c = get_conn()
+    r = c.execute(
+        "SELECT * FROM wallet_transfer_requests WHERE id=?", (req_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def wallet_transfer_request_approve(req_id: int, admin_id: int) -> bool:
+    """Admin duyệt: trừ ví nguồn, cộng ví đích trong 1 transaction Postgres
+    thật (tắt autocommit tạm thời). Trả True nếu thành công.
+
+    Idempotent: chỉ xử lý khi status='pending'; UPDATE ... WHERE status='pending'
+    đảm bảo 2 admin bấm cùng lúc chỉ 1 người thành công.
+    """
+    import time
+    _wallet_transfer_ensure_table()
+    with _lock:
+        c = get_conn()
+        raw = getattr(c, "conn", None)
+        if raw is None:
+            return False
+        prev_ac = raw.autocommit
+        raw.autocommit = False
+        try:
+            cur = raw.cursor(cursor_factory=DictCursor)
+
+            def _x(sql, params=()):
+                cur.execute(sql.replace("?", "%s"), params)
+                return cur.rowcount
+
+            # Claim nguyên tử: chỉ pending mới chuyển được sang approved
+            now = int(time.time())
+            rc = _x(
+                "UPDATE wallet_transfer_requests SET status='approved', "
+                "decided_at=?, decided_by=? WHERE id=? AND status='pending'",
+                (now, admin_id, req_id))
+            if rc == 0:
+                raw.rollback()
+                return False
+            cur.execute(
+                "SELECT tg_id, src, dst, amount FROM wallet_transfer_requests "
+                "WHERE id=%s", (req_id,))
+            r = cur.fetchone()
+            src, dst, amount, tg_id = r["src"], r["dst"], int(r["amount"]), int(r["tg_id"])
+            col_src = WALLET_COLUMNS.get(src)
+            col_dst = WALLET_COLUMNS.get(dst)
+            if not col_src or not col_dst or amount <= 0:
+                # Tham số sai: hủy claim, trả request về pending để không kẹt
+                _x("UPDATE wallet_transfer_requests SET status='pending', "
+                   "decided_at=0, decided_by=0 WHERE id=?", (req_id,))
+                raw.commit()
+                return False
+            cur.execute(
+                f"SELECT {col_src} FROM tg_users WHERE tg_id=%s FOR UPDATE",
+                (tg_id,))
+            bal = cur.fetchone()
+            if not bal or int(bal[col_src] or 0) < amount:
+                # Không đủ tiền: hủy claim, trả request về pending
+                _x("UPDATE wallet_transfer_requests SET status='pending', "
+                   "decided_at=0, decided_by=0 WHERE id=?", (req_id,))
+                raw.commit()
+                return False
+            _x(f"UPDATE tg_users SET {col_src} = {col_src} - ? WHERE tg_id=?",
+               (amount, tg_id))
+            _x(f"UPDATE tg_users SET {col_dst} = {col_dst} + ? WHERE tg_id=?",
+               (amount, tg_id))
+            _x("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+               (now, tg_id, -amount,
+                f"chuyen_vi_duyet:{src}->{dst} #{req_id} [ví {src}]"))
+            _x("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+               (now, tg_id, amount,
+                f"chuyen_vi_duyet:{src}->{dst} #{req_id} [ví {dst}]"))
+            raw.commit()
+        except Exception:
+            try:
+                raw.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            raw.autocommit = prev_ac
+    try:
+        admin_audit_add(admin_id, "", "duyet_chuyen_vi", f"#{req_id} {src}->{dst} {amount}")
+    except Exception:
+        pass
+    return True
+
+
+def wallet_transfer_request_reject(req_id: int, admin_id: int) -> bool:
+    import time
+    _wallet_transfer_ensure_table()
+    c = get_conn()
+    cur = c.execute(
+        "UPDATE wallet_transfer_requests SET status='rejected', decided_at=?, "
+        "decided_by=? WHERE id=? AND status='pending'",
+        (int(time.time()), admin_id, req_id))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def _wallet_transfer_idem_ensure_table(c=None):
+    """Bảng chống bấm trùng nút xác nhận chuyển ví."""
+    c = c or get_conn()
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS wallet_transfer_idem("
+        "key TEXT PRIMARY KEY, created_at INTEGER NOT NULL)")
+
+
+def wallet_transfer_instant(tg_id: int, src: str, dst: str, amount: int,
+                            idem_key: str) -> str:
+    """Chuyển NGAY giữa các ví trong 1 transaction Postgres thật + chống bấm trùng.
+
+    LƯU Ý: connection Postgres chạy autocommit=True nên phải tắt tạm thời
+    để có transaction nguyên tử (không dùng c.commit()/c.rollback() vì là no-op).
+
+    Trả về: 'ok' | 'insufficient' (số dư không đủ) | 'duplicate' (đã xử lý
+    rồi — bấm trùng) | 'invalid' (tham số sai).
+    """
+    import time
+    col_src = WALLET_COLUMNS.get(src)
+    col_dst = WALLET_COLUMNS.get(dst)
+    if not col_src or not col_dst or src == dst or amount <= 0 or not idem_key:
+        return "invalid"
+    with _lock:
+        c = get_conn()
+        _wallet_transfer_idem_ensure_table(c)
+        raw = getattr(c, "conn", None)
+        if raw is None:
+            return "invalid"  # không lấy được connection thô
+        prev_ac = raw.autocommit
+        raw.autocommit = False
+        try:
+            cur = raw.cursor(cursor_factory=DictCursor)
+
+            def _x(sql, params=()):
+                cur.execute(sql.replace("?", "%s"), params)
+                return cur.rowcount
+
+            # 1) Chống bấm trùng: key đã tồn tại -> đã xử lý rồi
+            rc = _x(
+                "INSERT INTO wallet_transfer_idem(key, created_at) "
+                "VALUES(?, ?) ON CONFLICT(key) DO NOTHING",
+                (idem_key, int(time.time())))
+            if rc == 0:
+                raw.rollback()
+                return "duplicate"
+            # 2) Kiểm tra số dư ví nguồn, khóa dòng chống race
+            cur.execute(
+                f"SELECT {col_src} FROM tg_users WHERE tg_id=%s FOR UPDATE",
+                (tg_id,))
+            r = cur.fetchone()
+            if not r or int(r[col_src] or 0) < amount:
+                raw.rollback()  # hủy cả INSERT key để nạp thêm rồi bấm lại được
+                return "insufficient"
+            # 3) Trừ nguồn + cộng đích + ghi txns — tất cả trong 1 transaction
+            now = int(time.time())
+            _x(f"UPDATE tg_users SET {col_src} = {col_src} - ? WHERE tg_id=?",
+               (amount, tg_id))
+            _x(f"UPDATE tg_users SET {col_dst} = {col_dst} + ? WHERE tg_id=?",
+               (amount, tg_id))
+            _x("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+               (now, tg_id, -amount, f"chuyen_vi:{src}->{dst} [ví {src}]"))
+            _x("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+               (now, tg_id, amount, f"chuyen_vi:{src}->{dst} [ví {dst}]"))
+            raw.commit()
+        except Exception:
+            try:
+                raw.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            raw.autocommit = prev_ac
+    try:
+        admin_audit_add(tg_id, "", "chuyen_vi",
+                        f"{src}->{dst} {amount} [key {idem_key[:40]}]")
+    except Exception:
+        pass
+    return "ok"

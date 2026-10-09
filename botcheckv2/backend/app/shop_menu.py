@@ -604,6 +604,9 @@ FLOWS = {
 def _parse_step(kind, raw):
     t = (raw or "").strip()
     if kind == "text":
+        # "|" là ký tự phân cách của cú pháp lệnh build (vd /themloai a | b | c)
+        # nên đổi sang "｜" để không làm lệch lệnh — từng gây bug "Giá phải là số" (2026-10-09)
+        t = t.replace("|", "｜")
         return (True, t, "") if t else (False, None, "⚠️ Không được để trống, gửi lại nhé.")
     if kind == "pick_stall":
         # Chọn gian hàng bằng nút; gõ tay tên gian hàng vẫn được (không phân biệt hoa/thường)
@@ -677,7 +680,8 @@ def _parse_step(kind, raw):
         except Exception:
             return False, None, "⚠️ Giá phải là số, gửi lại nhé."
     if kind == "opt_text":
-        return True, t, ""
+        # Đổi "|" sang "｜" như kind "text" (ký tự phân cách lệnh build)
+        return True, t.replace("|", "｜"), ""
     if kind == "opt_int":
         if not t:
             return True, None, ""

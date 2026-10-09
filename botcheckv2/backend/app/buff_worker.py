@@ -390,10 +390,42 @@ async def place_buff_order(order: dict, dry_run: bool = False) -> dict:
         html = await page.content()
         low = html.lower()
         if any(k in low for k in ["thành công", "success", "đặt hàng thành công"]):
-            # Cố trích mã đơn panel (dãy số gần chữ "mã đơn"/"order")
-            import re
-            m = re.search(r"(?:mã đơn|order)[^\d]{0,20}(\d{4,})", html, re.I)
-            panel_oid = m.group(1) if m else "unknown"
+            # Lấy mã đơn THẬT từ trang lịch sử đơn (không regex HTML mơ hồ).
+            panel_oid = ""
+            try:
+                for orders_url in [PANEL_BASE + "/orders",
+                                   PANEL_BASE + "/history",
+                                   PANEL_BASE + "/order-history"]:
+                    try:
+                        await page.goto(orders_url, wait_until="domcontentloaded",
+                                        timeout=20000)
+                        await page.wait_for_timeout(1500)
+                        if await page.locator("table tbody tr").count() > 0:
+                            break
+                    except Exception:
+                        continue
+                rows = page.locator("table tbody tr")
+                n = await rows.count()
+                link_tail = link[-20:] if len(link) > 20 else link
+                for i in range(min(n, 10)):
+                    try:
+                        txt = await rows.nth(i).inner_text()
+                        # Đơn mới nhất khớp link + số lượng vừa đặt
+                        if link_tail in txt and str(qty) in txt:
+                            import re
+                            m2 = re.search(r"\b(\d{4,})\b", txt)
+                            if m2:
+                                panel_oid = m2.group(1)
+                                break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            if not panel_oid:
+                # Không xác định được mã đơn thật -> báo lỗi để hoàn tiền,
+                # tránh lưu mã sai rồi tracker báo bậy.
+                return {"ok": False,
+                        "error": "đặt đơn thành công nhưng không đọc được mã đơn panel"}
             return {"ok": True, "panel_order_id": panel_oid}
         # Tìm thông báo lỗi hiển thị
         err = "panel báo lỗi (không rõ)"

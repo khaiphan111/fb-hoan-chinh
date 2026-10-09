@@ -197,6 +197,8 @@ async def _check_one_order(o: dict, bot=None):
         return
 
     if not bot:
+        log.warning("buff_tracker: đơn %s đổi trạng thái %s->%s nhưng bot=None, không gửi được tin",
+                    code, o["status"], new_status)
         return
 
     # Báo user

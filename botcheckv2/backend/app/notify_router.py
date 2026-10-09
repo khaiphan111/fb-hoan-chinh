@@ -317,6 +317,10 @@ def get_action_router() -> Router:
                               F.data.startswith("tg_admin_withdraw_approve_"))
     r.callback_query.register(wallet_h.on_admin_withdraw_reject,
                               F.data.startswith("tg_admin_withdraw_reject_"))
+    r.callback_query.register(wallet_h.on_wal_transfer_approve,
+                              F.data.startswith("wal_transfer:approve:"))
+    r.callback_query.register(wallet_h.on_wal_transfer_reject,
+                              F.data.startswith("wal_transfer:reject:"))
     r.callback_query.register(consign_h._on_kgreport,
                               F.data.startswith("kgreport:"))
     # tg_admin_confirm_ chỉ có sẵn trên bot admin -> các bot báo tin khác
@@ -345,6 +349,10 @@ def get_action_router_for_admin_bot() -> Router:
                               F.data.startswith("tg_admin_withdraw_approve_"))
     r.callback_query.register(wallet_h.on_admin_withdraw_reject,
                               F.data.startswith("tg_admin_withdraw_reject_"))
+    r.callback_query.register(wallet_h.on_wal_transfer_approve,
+                              F.data.startswith("wal_transfer:approve:"))
+    r.callback_query.register(wallet_h.on_wal_transfer_reject,
+                              F.data.startswith("wal_transfer:reject:"))
     r.callback_query.register(consign_h._on_kgreport,
                               F.data.startswith("kgreport:"))
     r.callback_query.register(consign_h._kga_payout,

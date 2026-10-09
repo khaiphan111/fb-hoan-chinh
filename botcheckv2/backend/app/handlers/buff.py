@@ -306,6 +306,10 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
         # Tạo đơn trước, trừ tiền nguyên tử sau (tránh race).
         order = db.buff_order_create(uid, int(svc["id"]), link, int(qty),
                                      total, _calc_total(int(qty), int(svc["cost_price"])))
+        if not order:
+            await state.clear()
+            await cb.message.answer("❌ Tạo đơn thất bại, thử lại giúp mình nhé.")
+            return
         ok = db.buff_adjust_balance(uid, -total, f"buff:{order['code']}")
         if not ok:
             db.buff_order_update(order["id"], status="failed")
@@ -395,7 +399,7 @@ async def on_buff_cb(cb: CallbackQuery, state: FSMContext):
         return
 
 
-@router.message(BuffState.waiting_for_link)
+@router.message(BuffState.waiting_for_link, ~F.text.startswith("/"))
 async def on_buff_link(msg: Message, state: FSMContext):
     link = (msg.text or "").strip()
     if link.lower().split("@")[0] in ("/huy", "/cancel"):
@@ -422,7 +426,7 @@ async def on_buff_link(msg: Message, state: FSMContext):
         parse_mode="HTML")
 
 
-@router.message(BuffState.waiting_for_qty)
+@router.message(BuffState.waiting_for_qty, ~F.text.startswith("/"))
 async def on_buff_qty(msg: Message, state: FSMContext):
     if (msg.text or "").strip().lower().split("@")[0] in ("/huy", "/cancel"):
         await state.clear()

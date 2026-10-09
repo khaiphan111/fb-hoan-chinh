@@ -275,7 +275,20 @@ async def on_ts_search_input(msg: Message, state: FSMContext):
     items = await _services_or_error(msg, state)
     if items is None:
         return
-    found = [s for s in items if q in s["name"].lower()][:50]
+    # Chuẩn hóa từ viết tắt phổ biến
+    _abbr = {"fb": "facebook", "ig": "instagram", "tele": "telegram",
+             "ytb": "youtube", "yt": "youtube", "gg": "google",
+             "zalo": "zalo", "tiktok": "tiktok"}
+    q_norm = _abbr.get(q, q)
+    # Khớp: chuỗi con chính xác, hoặc tất cả ký tự của q xuất hiện theo thứ tự trong tên
+    # (vd: "fb" khớp "facebook" qua f...b)
+    def _match(name_low: str) -> bool:
+        if q_norm in name_low:
+            return True
+        # fuzzy: các ký tự q xuất hiện theo đúng thứ tự
+        it = iter(name_low)
+        return all(ch in it for ch in q_norm)
+    found = [s for s in items if _match(s["name"].lower())][:50]
     if not found:
         await msg.answer(f"🔍 Không tìm thấy dịch vụ nào khớp \"{html.escape(msg.text.strip())}\".",
                          parse_mode="HTML", reply_markup=_back_menu_kb())

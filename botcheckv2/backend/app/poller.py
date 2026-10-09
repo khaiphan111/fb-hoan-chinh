@@ -1687,11 +1687,9 @@ class FollowerPoller:
         Đọc tiến độ từ panel, cập nhật done_quantity, báo user khi
         có tiến triển / hoàn thành / thất bại. Đơn xong thì dừng theo dõi.
 
-        TẠM TẮT (2026-10-08): panel_order_id đang lưu mã dịch vụ thay vì
-        mã đơn thật -> tracker đọc nhầm, báo hoàn thành sai. Chờ fix
-        place_buff_order trích đúng mã đơn panel mới bật lại.
+        ĐÃ BẬT LẠI (2026-10-08): place_buff_order giờ lấy mã đơn thật từ
+        trang lịch sử panel (khớp link + số lượng), không còn regex mơ hồ.
         """
-        return
         from . import buff_tracker
         await asyncio.sleep(60)
         while True:
@@ -1717,7 +1715,7 @@ class FollowerPoller:
             except Exception as e:
                 log.error("buff_tracker_loop lỗi: %s", e)
                 self._buff_tracker_running = False
-            await asyncio.sleep(1800)  # 30 phút
+            await asyncio.sleep(1200)  # 20 phút
 
     async def _process_buff_pending(self):
         from . import buff_worker

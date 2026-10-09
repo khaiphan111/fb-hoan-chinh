@@ -456,14 +456,20 @@ async def _check_with_cookie(uid: str, cookie: str) -> dict:
             # Chỉ báo LIVE khi đọc được TÊN NGƯỜI DÙNG THẬT từ title.
             # Nếu không có tên -> để fallback Graph API (chỉ kết luận "tồn tại").
             if name:
-                return {"alive": True, "status": "live", "name": name}
+                # Cookie đọc được tên thật => LIVE; kèm check avatar để bot gửi ảnh
+                has_avatar = await _is_real_avatar(uid, client)
+                return {"alive": True, "status": "live", "name": name,
+                        "has_real_avatar": has_avatar,
+                        "avatar_url": avatar_url(uid) if has_avatar else None}
             
             # Fallback: Kiểm tra graph API picture (để phân biệt acc tồn tại hay không)
-            # LƯU Ý: Graph API chỉ biết acc TỒN TẠI hay không, KHÔNG biết acc có bị
-            # khoá/checkpoint/disabled hay không. Nên báo "exists" chứ không phải "live".
+            # LUẬT MỚI (user 2026-10-08): avatar thật + tìm được UID => 🟢 LIVE
             r2 = await client.get(f"https://graph.facebook.com/{uid}/picture?redirect=false")
             if r2.status_code == 200:
-                return {"alive": True, "status": "exists", "name": name}
+                has_avatar = await _is_real_avatar(uid, client)
+                st = "live" if has_avatar else "exists"
+                return {"alive": True, "status": st, "name": name,
+                        "has_real_avatar": has_avatar}
             else:
                 return {"alive": False, "status": "dead", "name": ""}
                 
@@ -538,19 +544,42 @@ async def check_uid_direct(uid: str) -> dict:
                         result["status"] = pool_res["status"]
                         result["name"] = pool_res.get("name", "")
                         result["via"] = "cookie_pool"
+                        if pool_res.get("has_real_avatar"):
+                            result["has_real_avatar"] = True
                     else:
-                        # Không còn cookie nào dùng được => cảnh báo người dùng cập nhật cookie
-                        result["alive"] = False
-                        result["status"] = "cookie_invalid"
+                        # Không còn cookie nào dùng được => fallback sang check avatar:
+                        # LUẬT MỚI (user 2026-10-08): avatar thật + tìm được UID => 🟢 LIVE
+                        try:
+                            if await _is_real_avatar(uid, client):
+                                result["alive"] = True
+                                result["status"] = "live"
+                                result["via"] = "avatar_fallback"
+                                result["has_real_avatar"] = True
+                            else:
+                                result["alive"] = False
+                                result["status"] = "cookie_invalid"
+                        except Exception:
+                            result["alive"] = False
+                            result["status"] = "cookie_invalid"
                 elif ck_result["alive"] is None:
                     # Cookie check thất bại (lỗi mạng / IP bị FB chặn):
-                    # KHÔNG được đoán "live" từ avatar vì acc DIE vẫn có thể giữ
-                    # avatar thật trên CDN của Facebook -> đoán sai là bán nhầm acc DIE
-                    # cho khách, và recheck định kỳ không cách ly được acc DIE.
-                    # Trả "error" để các luồng tự động bỏ qua, chờ lần check sau.
-                    result["alive"] = False
-                    result["status"] = "error"
-                    result["name"] = ck_result.get("name", "")
+                    # Fallback sang check avatar trước khi báo error.
+                    # LUẬT MỚI (user 2026-10-08): avatar thật + tìm được UID => 🟢 LIVE
+                    try:
+                        if await _is_real_avatar(uid, client):
+                            result["alive"] = True
+                            result["status"] = "live"
+                            result["via"] = "avatar_fallback"
+                            result["has_real_avatar"] = True
+                            result["name"] = ck_result.get("name", "")
+                        else:
+                            result["alive"] = False
+                            result["status"] = "error"
+                            result["name"] = ck_result.get("name", "")
+                    except Exception:
+                        result["alive"] = False
+                        result["status"] = "error"
+                        result["name"] = ck_result.get("name", "")
                 else:
                     result["alive"] = ck_result["alive"]
                     result["status"] = ck_result["status"]
@@ -563,9 +592,10 @@ async def check_uid_direct(uid: str) -> dict:
                 
                 if r.status_code == 200:
                     result["alive"] = True
-                    result["status"] = "exists"
                     result["name"] = data.get("name", "")
                     result["has_real_avatar"] = await _is_real_avatar(uid, client)
+                    # LUẬT MỚI (user 2026-10-08): token tìm được UID + avatar thật => 🟢 LIVE
+                    result["status"] = "live" if result["has_real_avatar"] else "exists"
                 else:
                     err = data.get("error", {})
                     err_type = err.get("type", "")
