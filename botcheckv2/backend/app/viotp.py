@@ -12,8 +12,19 @@ import logging
 import time
 import sys
 
-sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
-import dynamic_credentials as _dc
+# FIX (liên kết module): `dynamic_credentials` CHỈ tồn tại trên máy Hatch (xem SETUP.md).
+# Trước đây import ở cấp module nên trên máy khác cả app không import nổi:
+#   main.py -> handlers/__init__ -> thueso -> viotp -> ModuleNotFoundError
+# Lỗi lại xảy ra bên trong asyncio.create_task nên bị nuốt ("Task exception was never
+# retrieved"): web admin vẫn lên nhưng bot Telegram KHÔNG bao giờ chạy — rất khó phát
+# hiện. Nó cũng làm bộ test không chạy được ngoài máy Hatch. Nay import mềm: chỉ báo lỗi
+# rõ ràng khi thực sự cần credential ViOTP.
+_dc = None
+try:
+    sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+    import dynamic_credentials as _dc  # type: ignore
+except Exception:
+    _dc = None
 
 from .fb import _make_http_client
 
@@ -34,6 +45,10 @@ class ViotpError(Exception):
 
 def _vault_token() -> str:
     """Lấy surrogate token từ Secure Vault (authd thay bằng token thật khi gọi ra ngoài)."""
+    if _dc is None:
+        raise ViotpError(
+            "Không có module dynamic_credentials (chỉ tồn tại trên máy Hatch) — "
+            "hãy chạy trên máy Hatch hoặc truyền token ViOTP trực tiếp")
     entry = _dc.dynamic_credential_entry(_VAULT_CRED)
     tok = str(entry.get("surrogate") or "").strip()
     if not tok:

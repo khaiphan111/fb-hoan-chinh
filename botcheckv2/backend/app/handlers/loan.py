@@ -219,7 +219,7 @@ async def on_loan_approve(cb: CallbackQuery):
         await cb.answer("⚠️ Duyệt xong nhưng cộng tiền thất bại, kiểm tra tay!", show_alert=True)
         log.error("loan #%s approved but credit failed for %s", lid, loan["tg_id"])
     try:
-        db.admin_audit_log(admin_id, "loan_approve", f"duyệt ứng #{lid} {vnd(loan['amount'])}đ cho {loan['tg_id']}")
+        db.admin_audit_add(admin_id, "", "loan_approve", f"duyệt ứng #{lid} {vnd(loan['amount'])}đ cho {loan['tg_id']}")
     except Exception:
         pass
     await cb.answer("Đã duyệt!")
@@ -277,7 +277,7 @@ async def on_loan_reject_reason(msg: Message, state: FSMContext):
     await state.clear()
     if db.loan_reject(lid, admin_id, reason):
         try:
-            db.admin_audit_log(admin_id, "loan_reject", f"từ chối ứng #{lid}: {reason}")
+            db.admin_audit_add(admin_id, "", "loan_reject", f"từ chối ứng #{lid}: {reason}")
         except Exception:
             pass
         loan = db.loan_get(lid)
@@ -527,7 +527,7 @@ async def on_loanadm_repay_note(msg: Message, state: FSMContext):
         await msg.answer("Không ghi nhận được (khoản đã đóng).")
         return
     try:
-        db.admin_audit_log(msg.from_user.id, "loan_repay",
+        db.admin_audit_add(msg.from_user.id, "", "loan_repay",
                            f"nhận {vnd(amount)}đ khoản #{lid}: {note}")
     except Exception:
         pass
@@ -603,7 +603,7 @@ async def on_loanadm_manual_note(msg: Message, state: FSMContext):
     except Exception as e:
         log.warning("adjust_shop_balance failed: %s", e)
     try:
-        db.admin_audit_log(msg.from_user.id, "loan_manual",
+        db.admin_audit_add(msg.from_user.id, "", "loan_manual",
                            f"tạo tay ứng #{lid} {vnd(amount)}đ cho {tgid}: {note}")
     except Exception:
         pass
@@ -809,7 +809,7 @@ async def on_loanadj_reason(msg: Message, state: FSMContext):
         await msg.answer("Không điều chỉnh được.")
         return
     try:
-        db.admin_audit_log(msg.from_user.id, "loan_adjust",
+        db.admin_audit_add(msg.from_user.id, "", "loan_adjust",
                            f"{kind} #{lid} {vnd(amount)}đ: {reason}")
     except Exception:
         pass
@@ -886,7 +886,7 @@ async def on_loancfg_edit(cb: CallbackQuery, state: FSMContext):
         new = "0" if cur == "1" else "1"
         db.set_setting(key, new)
         try:
-            db.admin_audit_log(cb.from_user.id, "loan_cfg", f"{key} -> {new}")
+            db.admin_audit_add(cb.from_user.id, "", "loan_cfg", f"{key} -> {new}")
         except Exception:
             pass
         await cb.message.edit_text(_cfg_text(), parse_mode="HTML", reply_markup=_cfg_kb())
@@ -919,7 +919,7 @@ async def on_loancfg_value(msg: Message, state: FSMContext):
     await state.clear()
     db.set_setting(key, str(val))
     try:
-        db.admin_audit_log(msg.from_user.id, "loan_cfg", f"{key} -> {val}")
+        db.admin_audit_add(msg.from_user.id, "", "loan_cfg", f"{key} -> {val}")
     except Exception:
         pass
     await msg.answer(f"✅ Đã đổi <b>{key}</b> = <b>{val}</b>.", parse_mode="HTML",

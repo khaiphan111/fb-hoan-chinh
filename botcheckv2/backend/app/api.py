@@ -1,11 +1,13 @@
 # FB Live/Die Checker & Tiktok Checker
+import logging
+import re
 import secrets
 import time
 from collections import defaultdict
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile, File, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import os
 
 from . import config, db, fb
@@ -51,6 +53,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 router = APIRouter(prefix="/api")
 _tokens = set()
+
+log = logging.getLogger(__name__)
 
 DAY = 86400
 
@@ -121,7 +125,9 @@ class TokenIn(BaseModel):
 
 
 class AmountIn(BaseModel):
-    amount: int
+    # FIX (M11): trước đây nhận cả số âm -> POST /users/{id}/topup {"amount": -100000}
+    # là TRỪ tiền của user mà vẫn trả ok:True (và bỏ qua giá trị trả về của db).
+    amount: int = Field(gt=0)
 
 
 class WalletAdjustIn(BaseModel):
@@ -130,7 +136,7 @@ class WalletAdjustIn(BaseModel):
 
 
 class MonthsIn(BaseModel):
-    days: int
+    days: int = Field(ge=1)
 
 
 class UidIn(BaseModel):
@@ -142,10 +148,31 @@ def _row(r):
 
 
 def get_secret():
-    import hmac
-    import hashlib
-    # Dùng bot_token làm secret key cho việc mã hóa JWT-like token (hoặc một string cố định nếu chưa có)
-    return db.get_setting("bot_token", "default_secret_key_12345").encode()
+    """Khoá ký token admin/user.
+
+    FIX 2026 (bảo mật): TRƯỚC ĐÂY hàm này lấy `bot_token` làm khoá ký, và fallback
+    về chuỗi hard-code "default_secret_key_12345". Hai hệ quả:
+      1. Ai đọc được bot_token (vd moderator qua GET /api/settings) là tự ký được
+         token super-admin -> leo thang đặc quyền.
+      2. DB mới/chưa cấu hình bot -> khoá ký là hằng số nằm trong source, ai biết
+         source cũng tạo được token super-admin.
+    Nay: ưu tiên biến môi trường APP_SECRET; nếu chưa có thì sinh ngẫu nhiên 1 lần
+    và lưu vào settings (app_secret) để token không đổi sau mỗi lần restart.
+    LƯU Ý KHI NÂNG CẤP: token cũ (ký bằng bot_token) sẽ hết hiệu lực -> admin và
+    user phải đăng nhập lại 1 lần."""
+    env_secret = (os.environ.get("APP_SECRET") or "").strip()
+    if env_secret:
+        return env_secret.encode()
+
+    cur = (db.get_setting("app_secret", "") or "").strip()
+    if not cur:
+        cur = secrets.token_hex(32)
+        try:
+            db.set_setting("app_secret", cur)
+        except Exception:
+            log.warning("Không lưu được app_secret vào DB; token sẽ hết hiệu lực "
+                        "sau khi restart backend", exc_info=True)
+    return cur.encode()
 
 def create_admin_token(admin_id: int):
     import hmac
@@ -214,6 +241,12 @@ def login(body: LoginIn, request: Request):
     blocked, wait = _login_blocked(ip)
     if blocked:
         raise HTTPException(status_code=429, detail=f"Quá nhiều lần thử sai. Vui lòng đợi {wait//60} phút {wait%60} giây.")
+    # FIX: chặn mật khẩu rỗng. Trước đây super_admin được seed với sha256("") nên
+    # POST /api/login {"username":"khaiphan111","password":""} là vào được super-admin.
+    if not body.password or not body.password.strip():
+        _login_fail(ip)
+        raise HTTPException(status_code=401, detail="Sai tên đăng nhập hoặc mật khẩu")
+
     admin = db.get_admin_by_username(body.username)
     if not admin:
         _login_fail(ip)
@@ -498,10 +531,28 @@ def status(_=Depends(auth)):
     }
 
 
+# Key nhạy cảm KHÔNG trả về cho admin phụ (chỉ super_admin xem được).
+_SECRET_SETTING_KEYS = {
+    "admin_password", "bot_token", "admin_bot_token", "zalo_bot_token",
+    "fb_avatar_token", "fb_cookie", "zalo_cookie", "ig_password",
+    "ig_rapidapi_key", "ig_session_cookie", "proxy_api_key",
+    "payos_api_key", "payos_checksum_key", "payos_client_id", "viotp_token",
+}
+
+
 @router.get("/settings")
-def get_settings(_=Depends(auth)):
+def get_settings(admin=Depends(require_role("moderator"))):
+    # require_role trả sqlite3.Row khi chạy SQLite và dict khi chạy Postgres -> chuẩn hoá
+    # về dict để dùng .get() an toàn cho cả 2 backend.
+    admin = dict(admin) if not isinstance(admin, dict) else admin
     s = db.all_settings()
-    s.pop("admin_password", None)
+    # FIX bảo mật: bot_token từng được dùng làm khoá ký token admin (xem get_secret),
+    # nên lộ nó cho admin phụ = leo thang đặc quyền. Moderator/admin chỉ thấy cấu
+    # hình thường; super_admin vẫn xem được token để vận hành.
+    if (admin.get("role") or "") != "super_admin":
+        for _k in _SECRET_SETTING_KEYS:
+            s.pop(_k, None)
+    s.pop("app_secret", None)  # khoá ký nội bộ: không bao giờ trả ra API
     
     import os
     img_dir = os.path.join(os.path.dirname(__file__), "..", "data", "images")
@@ -514,7 +565,7 @@ def get_settings(_=Depends(auth)):
 
 
 @router.post("/settings")
-async def save_settings(body: SettingsIn, _=Depends(auth)):
+async def save_settings(body: SettingsIn, admin=Depends(require_role("super_admin"))):
     from .bot import manager, zalo_manager  # lazy (muc 5: tranh import aiogram nang luc boot)
     restart_bot = False
     restart_zalo = False
@@ -526,8 +577,29 @@ async def save_settings(body: SettingsIn, _=Depends(auth)):
     # mà không hay biết — đã từng làm mất fb_avatar_token đúng kiểu này.
     _SECRET_KEYS = {"bot_token", "zalo_bot_token", "admin_bot_token",
                     "fb_avatar_token", "ig_password", "ig_rapidapi_key",
-                    "proxy_api_key", "admin_password"}
+                    "proxy_api_key"}
+    # FIX: chỉ ghi các key nằm trong model (whitelist). Trước đây ghi MỌI key mà
+    # client gửi lên -> ghi đè được cả key nội bộ (setup_done, bot_last_heartbeat,
+    # viotp_disabled_services...) và mỗi lần lưu lại chèn rác "qr_images" vào settings.
+    _allowed = set(SettingsIn.model_fields.keys())
+    _ignored = [k for k in data if k not in _allowed]
+    if _ignored:
+        log.warning("save_settings: bỏ qua %d key ngoài whitelist: %s",
+                    len(_ignored), ",".join(sorted(_ignored)[:10]))
+    data = {k: v for k, v in data.items() if k in _allowed}
+
+    # admin_password: trước đây là field CHẾT (không code nào đọc để xác thực) và còn
+    # bị lưu plaintext xuống bảng settings. Nay đổi thật mật khẩu super_admin (bên dưới).
+    _new_admin_pw = (data.get("admin_password") or "").strip()
+    if _new_admin_pw:
+        _pw_err = _check_password_strength(_new_admin_pw)
+        if _pw_err:
+            raise HTTPException(status_code=400,
+                                detail=f"Mật khẩu admin chưa đạt yêu cầu: {_pw_err}")
+
     for k, v in data.items():
+        if k == "admin_password":
+            continue  # xử lý riêng ở dưới, KHÔNG lưu plaintext
         if k in _SECRET_KEYS and not (v or "").strip():
             continue
         if k == "bot_token" and v != db.get_setting("bot_token"):
@@ -542,7 +614,25 @@ async def save_settings(body: SettingsIn, _=Depends(auth)):
             except:
                 v = "60"
         db.set_setting(k, v)
-        
+
+    _pw_updated = False
+    if _new_admin_pw:
+        import hashlib as _hashlib
+        _ph = _hashlib.sha256(_new_admin_pw.encode()).hexdigest()
+        for _a in db.list_admins():
+            if (_a.get("role") or "") == "super_admin":
+                db.update_admin(_a["id"], password_hash=_ph)
+                _pw_updated = True
+        try:
+            db.set_setting("admin_password", "")  # xoá plaintext cũ nếu có
+        except Exception:
+            pass
+        try:
+            db.admin_audit_add(admin["id"], "", "doi_mat_khau_admin",
+                               "Đổi mật khẩu super_admin qua web")
+        except Exception:
+            pass
+
     started = False
     zalo_started = False
     
@@ -572,13 +662,14 @@ async def save_settings(body: SettingsIn, _=Depends(auth)):
             db.set_setting("setup_done", "1")
             poller.start()
             
-    return {"ok": True, "bot_running": manager.running, "bot_started": started, "zalo_started": zalo_started}
+    return {"ok": True, "bot_running": manager.running, "bot_started": started,
+            "zalo_started": zalo_started, "admin_password_updated": _pw_updated}
 
 class CodeGenerateIn(BaseModel):
-    amount: int
-    max_uses: int
-    expire_days: int
-    expire_hours: int
+    amount: int = Field(gt=0)
+    max_uses: int = Field(ge=1)
+    expire_days: int = Field(ge=0)
+    expire_hours: int = Field(ge=0)
     wallet: str = "main"
 
 @router.post("/codes/generate")
@@ -675,7 +766,7 @@ async def broadcast(text: str = Form(...), photo: UploadFile = File(None), _=Dep
     return {"ok": True, "total_queued": len(users)}
 
 @router.post("/upload-qr")
-async def upload_qr(file: UploadFile = File(...), _=Depends(auth)):
+async def upload_qr(file: UploadFile = File(...), _=Depends(require_role("super_admin"))):
     if not file.filename:
         raise HTTPException(status_code=400, detail="Không có file")
     
@@ -708,15 +799,38 @@ async def upload_qr(file: UploadFile = File(...), _=Depends(auth)):
     return {"ok": True, "filename": target}
 
 @router.delete("/upload-qr/{filename}")
-async def delete_qr(filename: str, _=Depends(auth)):
+async def delete_qr(filename: str, _=Depends(require_role("super_admin"))):
     img_dir = os.path.join(os.path.dirname(__file__), "..", "data", "images")
     filepath = os.path.join(img_dir, filename)
     if os.path.exists(filepath):
         os.remove(filepath)
     return {"ok": True}
 
+
+@router.get("/qr/{filename}")
+def get_qr_image(filename: str, t: str = ""):
+    """Trả ảnh QR ngân hàng cho trang Cấu hình (admin) — có xác thực.
+
+    FIX bảo mật: trước đây cả thư mục `data/images` được mount tĩnh công khai ở
+    `/images` nên ai biết URL đều tải được ảnh QR ngân hàng cá nhân. Khách vẫn nhận
+    ảnh QR qua bot (bot gửi trực tiếp từ file trên đĩa ở handlers/wallet.py) nên
+    luồng nạp tiền KHÔNG bị ảnh hưởng. Thẻ <img> không gửi được header Authorization
+    nên token admin truyền qua query `?t=`.
+    """
+    from fastapi.responses import FileResponse
+    if not re.fullmatch(r"qr_[A-Za-z0-9._-]{1,80}", filename or ""):
+        raise HTTPException(status_code=404, detail="Not found")
+    if not verify_admin_token((t or "").strip()):
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    img_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "images"))
+    path = os.path.abspath(os.path.join(img_dir, filename))
+    if not path.startswith(img_dir + os.sep) or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path)
+
 @router.post("/verify-bot")
 async def verify_bot(body: TokenIn, _=Depends(auth)):
+    from .bot import manager  # FIX: trước đây thiếu import -> NameError -> HTTP 500
     username = await manager.verify_token(body.token)
     if not username:
         raise HTTPException(status_code=400, detail="Token không hợp lệ")
@@ -749,6 +863,7 @@ def user_delete_track(type: str, target: str, token: str = Header(default="")):
 
 @router.get("/prereq")
 async def prereq(_=Depends(auth)):
+    from .bot import manager  # FIX: trước đây thiếu import -> NameError -> HTTP 500
     out = {"telegram": False, "facebook": False, "bot_token": False}
     async with httpx.AsyncClient(timeout=10) as c:
         try:
@@ -777,7 +892,7 @@ def codes_history(_=Depends(auth)):
 
 
 @router.post("/users/{tg_id}/topup")
-async def topup(tg_id: int, body: AmountIn, _=Depends(auth)):
+async def topup(tg_id: int, body: AmountIn, _=Depends(require_role("admin"))):
     if not db.get_user(tg_id):
         raise HTTPException(status_code=404, detail="Không có user này")
     db.adjust_balance(tg_id, body.amount, "Admin nạp")
@@ -810,7 +925,7 @@ async def topup(tg_id: int, body: AmountIn, _=Depends(auth)):
 
 
 @router.post("/users/{tg_id}/wallet")
-async def wallet_adjust(tg_id: int, body: WalletAdjustIn, _=Depends(auth)):
+async def wallet_adjust(tg_id: int, body: WalletAdjustIn, _=Depends(require_role("admin"))):
     """Cộng/trừ tiền 1 ví của user (main/shop/buff/rent)."""
     wallet = (body.wallet or "").strip().lower()
     if wallet not in ("main", "shop", "buff", "rent"):
@@ -849,7 +964,7 @@ async def wallet_adjust(tg_id: int, body: WalletAdjustIn, _=Depends(auth)):
 
 
 @router.post("/users/{tg_id}/trial")
-async def grant_trial(tg_id: int, body: dict = None, _=Depends(auth)):
+async def grant_trial(tg_id: int, body: dict = None, _=Depends(require_role("admin"))):
     user = db.get_user(tg_id)
     if not user:
         raise HTTPException(status_code=404, detail="Không có user này")
@@ -876,7 +991,7 @@ async def grant_trial(tg_id: int, body: dict = None, _=Depends(auth)):
         raise HTTPException(status_code=400, detail="Tài khoản này đã nhận dùng thử rồi")
 
 @router.post("/users/{tg_id}/reset")
-async def reset_user_api(tg_id: int, _=Depends(auth)):
+async def reset_user_api(tg_id: int, _=Depends(require_role("admin"))):
     user = db.get_user(tg_id)
     if not user:
         raise HTTPException(status_code=404, detail="Không có user này")
@@ -891,7 +1006,7 @@ async def reset_user_api(tg_id: int, _=Depends(auth)):
     return {"ok": True, "user": _row(db.get_user(tg_id))}
 
 @router.delete("/users/{tg_id}")
-async def delete_user_api(tg_id: int, _=Depends(auth)):
+async def delete_user_api(tg_id: int, _=Depends(require_role("admin"))):
     user = db.get_user(tg_id)
     if not user:
         raise HTTPException(status_code=404, detail="Không có user này")
@@ -901,7 +1016,7 @@ async def delete_user_api(tg_id: int, _=Depends(auth)):
 
 
 @router.post("/users/{tg_id}/sub")
-async def grant_sub(tg_id: int, body: MonthsIn, _=Depends(auth)):
+async def grant_sub(tg_id: int, body: MonthsIn, _=Depends(require_role("admin"))):
     user = db.get_user(tg_id)
     if not user:
         raise HTTPException(status_code=404, detail="Không có user này")
@@ -1031,7 +1146,8 @@ def update_video_track(video_id: str, body: VideoTrackUpdateIn, _=Depends(auth))
 
 # ─── BOT CONTROL ─────────────────────────────────────────────
 @router.post("/bot/start")
-async def bot_start(_=Depends(auth)):
+async def bot_start(_=Depends(require_role("super_admin"))):
+    from .bot import manager, zalo_manager  # FIX: trước đây thiếu import -> NameError 500
     token = db.get_setting("bot_token")
     zalo_token = db.get_setting("zalo_bot_token")
     if not token and not zalo_token: raise HTTPException(400, detail="Chua co Bot Token")
@@ -1047,7 +1163,8 @@ async def bot_start(_=Depends(auth)):
     return {"ok": ok or zalo_ok, "bot_running": manager.running, "zalo_running": zalo_manager.running}
 
 @router.post("/bot/stop")
-async def bot_stop(_=Depends(auth)):
+async def bot_stop(_=Depends(require_role("super_admin"))):
+    from .bot import manager, zalo_manager  # FIX: trước đây thiếu import -> NameError 500
     await poller.stop()
     await manager.stop()
     await zalo_manager.stop()
@@ -1060,7 +1177,7 @@ class IGTrackIn(BaseModel):
 @router.get("/ig-tracks")
 def get_ig_tracks(_=Depends(auth)):
     c = db.get_conn()
-    rows = c.execute("SELECT ig_username, MAX(last_followers) as last_followers, MAX(last_following) as last_following, MAX(last_posts) as last_posts FROM ig_tracks WHERE active=1 GROUP BY ig_username ORDER BY ig_username").fetchall()
+    rows = c.execute("SELECT ig_username, MAX(last_followers) as last_followers, MAX(last_following) as last_following, MAX(last_posts) as last_posts, MAX(avatar_url) as avatar_url FROM ig_tracks WHERE active=1 GROUP BY ig_username ORDER BY ig_username").fetchall()
     return [dict(r) for r in rows]
 
 @router.post("/ig-tracks")
@@ -1131,26 +1248,32 @@ def update_ig_video_track(post_id: str, body: IGVideoTrackUpdateIn, _=Depends(au
 
 # --- ZALO ENDPOINTS ---
 @router.get("/zalo-tracks")
-def api_get_zalo_tracks(user=Depends(auth)):
-    return db.user_zalo_tracks(user["tg_id"])
+def api_get_zalo_tracks(tg_id: int = Depends(user_auth)):
+    # FIX (C4): auth() trả admin_id (int) nên `user["tg_id"]` trước đây luôn TypeError ->
+    # endpoint 500. Đây là endpoint cho USER nên dùng user_auth (trả về tg_id).
+    return db.user_zalo_tracks(tg_id)
 
 @router.post("/zalo-tracks")
-async def api_add_zalo_track(body: dict, user=Depends(auth)):
+async def api_add_zalo_track(body: dict, tg_id: int = Depends(user_auth)):
     phone = body.get("phone", "").strip()
     if not phone: raise HTTPException(400, "Thiếu SĐT")
     
-    vip_level = user.get("vip_level", 0)
+    # FIX (C4): user_auth trả tg_id (int) -> phải tự lấy bản ghi user
+    user = db.get_user(tg_id)
+    if not user:
+        raise HTTPException(404, "Không tìm thấy người dùng")
+    vip_level = int(user["vip_level"] or 0)
     try: max_limit = int(db.get_setting(f"vip{vip_level}_limit", [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]))
     except: max_limit = [5, 50, 200, 1000][vip_level if vip_level <= 3 else 3]
     
     with db._lock: 
-        count = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (user["tg_id"],)).fetchone()[0]
-        z_count = db.get_conn().execute("SELECT COUNT(*) FROM zalo_tracks WHERE tg_user_id=?", (user["tg_id"],)).fetchone()[0]
+        count = db.get_conn().execute("SELECT COUNT(*) FROM tracks WHERE tg_user_id=?", (tg_id,)).fetchone()[0]
+        z_count = db.get_conn().execute("SELECT COUNT(*) FROM zalo_tracks WHERE tg_user_id=?", (tg_id,)).fetchone()[0]
     
     if count + z_count >= max_limit:
         raise HTTPException(400, f"Giới hạn hạng VIP của bạn là {max_limit} mục.")
         
-    ok, err = db.check_daily_limit(user["tg_id"])
+    ok, err = db.check_daily_limit(tg_id)
     if not ok: raise HTTPException(400, err)
     
     cookie = db.get_setting("zalo_cookie", "")
@@ -1169,14 +1292,14 @@ async def api_add_zalo_track(body: dict, user=Depends(auth)):
         # Still add it to track its state, unless user only wants to track existing?
         # Let's add it anyway with DIE status.
         
-    db.add_zalo_track(user["tg_id"], user["username"], phone, name, avatar, status)
-    db.add_log("track_add", f"Thêm Zalo {phone}", user["tg_id"], phone)
+    db.add_zalo_track(tg_id, user["username"], phone, name, avatar, status)
+    db.add_log("track_add", f"Thêm Zalo {phone}", tg_id, phone)
     return {"ok": True, "res": res}
 
 @router.delete("/zalo-tracks/{phone}")
-def api_del_zalo_track(phone: str, user=Depends(auth)):
-    db.remove_zalo_track(user["tg_id"], phone)
-    db.add_log("track_remove", f"Xóa Zalo {phone}", user["tg_id"], phone)
+def api_del_zalo_track(phone: str, tg_id: int = Depends(user_auth)):
+    db.remove_zalo_track(tg_id, phone)
+    db.add_log("track_remove", f"Xóa Zalo {phone}", tg_id, phone)
     return {"ok": True}
 
 @router.get("/admin/zalo-tracks")
@@ -1250,7 +1373,12 @@ def request_withdrawal(body: WithdrawIn, tg_id: int = Depends(user_auth)):
     if available < body.amount + fee:
         raise HTTPException(status_code=400, detail=f"Không đủ số dư. Lưu ý từ lần thứ 3 trong tháng phí rút là {fee} VNĐ.")
         
-    req_id = db.create_withdrawal_request(tg_id, body.amount, body.bank_info, fee)
+    # FIX (M1): giữ chỗ tiền NGUYÊN TỬ ngay khi tạo yêu cầu (trước đây chỉ kiểm tra rồi
+    # tạo, nên gửi nhiều yêu cầu liên tiếp trong lúc chờ duyệt là rút vượt số dư).
+    req_id, _err = db.withdrawal_reserve(tg_id, body.amount, body.bank_info, fee)
+    if not req_id:
+        raise HTTPException(status_code=400,
+                            detail="Không đủ số dư khả dụng để rút (có thể đang có yêu cầu chờ duyệt).")
     try:
         from .bot import notify_admin_withdrawal_request
         asyncio.create_task(notify_admin_withdrawal_request(req_id, tg_id, body.amount, body.bank_info, fee))
@@ -1279,16 +1407,18 @@ def get_referral_admin(_=Depends(auth)):
     }
 
 @router.post("/admin/withdrawals/{id}/approve")
-def approve_withdrawal(id: int, _=Depends(auth)):
+def approve_withdrawal(id: int, _=Depends(require_role("admin"))):
     c = db.get_conn()
-    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (id,)).fetchone()
+    req = _row(c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (id,)).fetchone())
     if not req or req["status"] != "pending":
         raise HTTPException(status_code=400, detail="Không tìm thấy yêu cầu hoặc đã xử lý")
-        
-    with db._lock:
-        c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), id))
-        c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?", (req["amount"], req["tg_id"]))
-        c.commit()
+
+    # FIX (M1): chuyển trạng thái + ghi sổ bằng hàm NGUYÊN TỬ/IDEMPOTENT của db, và số
+    # tiền luôn lấy từ BẢN GHI (req["amount"]) chứ không từ tham số ngoài. Tiền đã được
+    # GIỮ CHỖ lúc tạo yêu cầu nên ở đây không cộng lại ref_withdrawn (hàm db tự xử lý
+    # trường hợp yêu cầu cũ tạo trước bản vá, chưa giữ chỗ).
+    if not db.withdrawal_mark_approved(id):
+        raise HTTPException(status_code=400, detail="Yêu cầu đã được xử lý ở nơi khác")
         
     # Notify customer
     try:
@@ -1308,15 +1438,16 @@ def approve_withdrawal(id: int, _=Depends(auth)):
     return {"ok": True}
 
 @router.post("/admin/withdrawals/{id}/reject")
-def reject_withdrawal(id: int, _=Depends(auth)):
+def reject_withdrawal(id: int, _=Depends(require_role("admin"))):
     c = db.get_conn()
-    req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (id,)).fetchone()
+    req = _row(c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (id,)).fetchone())
     if not req or req["status"] != "pending":
         raise HTTPException(status_code=400, detail="Không tìm thấy yêu cầu hoặc đã xử lý")
-        
-    with db._lock:
-        c.execute("UPDATE withdrawal_requests SET status='rejected', updated_at=? WHERE id=?", (int(time.time()), id))
-        c.commit()
+
+    # FIX (M1): từ chối phải HOÀN phần tiền đã giữ chỗ — trước đây chỉ đổi trạng thái nên
+    # tiền bị treo vĩnh viễn trong ref_withdrawn (khách không rút lại được).
+    if not db.withdrawal_release(id, "rejected"):
+        raise HTTPException(status_code=400, detail="Yêu cầu đã được xử lý ở nơi khác")
         
     # Notify customer
     try:
@@ -1384,7 +1515,7 @@ def api_admin_delete_alert(id: int, _=Depends(auth)):
 
 @router.get("/admin/audit-logs")
 def api_get_audit_logs(admin_id: int = Depends(auth)):
-    admin = db.get_admin(admin_id)
+    admin = db.get_admin_by_id(admin_id)
     if not admin or admin["role"] not in ["admin", "super_admin"]:
         raise HTTPException(status_code=403, detail="Forbidden")
     return db.get_audit_logs(limit=100)

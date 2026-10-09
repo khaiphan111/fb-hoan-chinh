@@ -78,7 +78,10 @@ def test_definitive_fail_skips_fallbacks(monkeypatch):
     assert dt < 10, f"quá chậm ({dt:.1f}s), fallback vẫn chạy?"
 
 
-def test_busy_still_tries_fallbacks(monkeypatch):
+def test_busy_still_tries_fallbacks(monkeypatch, tdb):
+    # FIX: test này cần bảng `settings` (đọc fb_avatar_token) nhưng trước đây không dùng
+    # fixture `tdb` nên nó mở thẳng botcheckv2/backend/data.db -> lỗi "no such table:
+    # settings" ở mọi máy chưa có file DB. Nay dùng DB SQLite tạm như các test khác.
     """API bận (chưa có câu trả lời dứt khoát) -> vẫn thử fallback như cũ."""
     async def _tds(link, client):
         raise _fb.TraodoisubBusy("busy")

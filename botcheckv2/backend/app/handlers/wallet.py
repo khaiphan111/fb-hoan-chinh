@@ -197,7 +197,14 @@ async def on_ruttien(msg: Message):
         await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)}, Cần: {vnd(amount + fee)} bao gồm phí {vnd(fee)} nếu có)")
         return
         
-    req_id = db.create_withdrawal_request(msg.chat.id, amount, bank_info, fee)
+    # FIX (M1): GIỮ CHỖ tiền NGUYÊN TỬ ngay khi tạo yêu cầu. Trước đây chỉ kiểm tra
+    # `available` rồi tạo, nên gửi nhiều yêu cầu trong lúc chờ duyệt là rút vượt số dư
+    # (hoa hồng 1tr -> gửi 3 yêu cầu 500k, cả 3 đều qua -> duyệt cả 3 -> chi 1,5tr).
+    req_id, _err = db.withdrawal_reserve(msg.chat.id, amount, bank_info, fee)
+    if not req_id:
+        await msg.answer(
+            "❌ Không đủ số dư khả dụng để rút (có thể bạn đang có yêu cầu chờ duyệt).")
+        return
     await notify_admin_withdrawal_request(req_id, msg.chat.id, amount, bank_info, fee)
     await msg.answer(f"✅ Đã gửi yêu cầu rút <b>{vnd(amount)}</b>.\nVui lòng chờ Admin kiểm tra và duyệt chuyển khoản!", parse_mode="HTML")
 
@@ -302,10 +309,14 @@ async def on_admin_withdraw_approve(cb: CallbackQuery):
         return
         
     actual_req_id = req["id"]
-    with db._lock:
-        c.execute("UPDATE withdrawal_requests SET status='approved', updated_at=? WHERE id=?", (int(time.time()), actual_req_id))
-        c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?", (amount, tg_id))
-        c.commit()
+    # Số tiền LUÔN lấy từ BẢN GHI, không tin `amount` trong callback_data (dữ liệu nút
+    # có thể cũ/lệch -> sổ ref_withdrawn lệch so với tiền thực chuyển).
+    amount = int(req["amount"] or amount)
+    # FIX (M1): chuyển trạng thái + ghi sổ bằng hàm nguyên tử/idempotent trong db; tiền
+    # đã được giữ chỗ lúc tạo nên hàm này KHÔNG cộng lại ref_withdrawn.
+    if not db.withdrawal_mark_approved(actual_req_id):
+        await cb.answer("⚠️ Đơn này đã được xử lý ở nơi khác!", show_alert=True)
+        return
         
     await cb.answer("✅ Đã duyệt đơn rút tiền thành công!", show_alert=True)
     try:
@@ -354,9 +365,13 @@ async def on_admin_withdraw_reject(cb: CallbackQuery):
         return
         
     actual_req_id = req["id"]
-    with db._lock:
-        c.execute("UPDATE withdrawal_requests SET status='rejected', updated_at=? WHERE id=?", (int(time.time()), actual_req_id))
-        c.commit()
+    # Số tiền lấy từ bản ghi (không tin callback_data) cho phần thông báo/audit.
+    amount = int(req["amount"] or amount)
+    # FIX (M1): từ chối phải HOÀN phần tiền đã giữ chỗ — trước đây chỉ đổi trạng thái nên
+    # tiền bị treo vĩnh viễn trong ref_withdrawn (khách không rút lại được).
+    if not db.withdrawal_release(actual_req_id, "rejected"):
+        await cb.answer("⚠️ Đơn này đã được xử lý ở nơi khác!", show_alert=True)
+        return
         
     await cb.answer("❌ Đã từ chối đơn rút tiền.", show_alert=True)
     try:
@@ -1471,7 +1486,12 @@ async def on_tienich_wd_stk(msg: Message, state: FSMContext):
     if available < amount + fee:
         await msg.answer(f"❌ Số dư khả dụng không đủ! (Khả dụng: {vnd(available)}, Cần: {vnd(amount + fee)} bao gồm phí {vnd(fee)} nếu có)")
         return
-    req_id = db.create_withdrawal_request(msg.chat.id, amount, bank_info, fee)
+    # FIX (M1): giữ chỗ tiền nguyên tử (xem on_ruttien).
+    req_id, _err = db.withdrawal_reserve(msg.chat.id, amount, bank_info, fee)
+    if not req_id:
+        await msg.answer(
+            "❌ Không đủ số dư khả dụng để rút (có thể bạn đang có yêu cầu chờ duyệt).")
+        return
     await notify_admin_withdrawal_request(req_id, msg.chat.id, amount, bank_info, fee)
     await msg.answer(f"✅ Đã gửi yêu cầu rút <b>{vnd(amount)}</b>.\n🏦 {html.escape(bank_info)}\nVui lòng chờ Admin kiểm tra và duyệt chuyển khoản!", parse_mode="HTML")
 

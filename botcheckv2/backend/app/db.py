@@ -116,6 +116,15 @@ class SqliteCursor:
         self.lastrowid = None
         self.rowcount = 0
     def execute(self, sql, params=()):
+        # FIX: dịch khoá chính giống executescript. Trước đây CHỈ executescript() dịch
+        # BIGSERIAL -> INTEGER PRIMARY KEY AUTOINCREMENT, còn execute() thì không. Mà
+        # migrate_db() tạo bảng bằng execute() từng câu, nên trên SQLite bảng (vd
+        # admin_users) có cột id kiểu BIGSERIAL — KHÔNG phải rowid alias -> INSERT không
+        # truyền id sẽ cho id = NULL -> get_admin_by_id/update_admin/... không khớp dòng
+        # nào. (Production dùng Postgres nên không lộ; chỉ chế độ SQLite + bộ test bị.)
+        sql = sql.replace('BIGINT PRIMARY KEY AUTOINCREMENT',
+                          'INTEGER PRIMARY KEY AUTOINCREMENT')
+        sql = sql.replace('BIGSERIAL PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT')
         try:
             self.cur.execute(sql, params)
         except sqlite3.OperationalError as e:
@@ -836,18 +845,10 @@ def init_db() -> None:
         except Exception:
             pass
 
-        # Seed super admin if empty
-        admin_count = c.execute("SELECT COUNT(*) as c FROM admin_users").fetchone()["c"]
-        if admin_count == 0:
-            import hashlib
-            admin_pw = config.DEFAULT_SETTINGS.get("admin_password", "admin")
-            hash_pw = hashlib.sha256(admin_pw.encode()).hexdigest()
-            c.execute(
-                "INSERT INTO admin_users (username, password_hash, display_name, role, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("khaiphan111", hash_pw, "Super Admin", "super_admin", int(time.time()))
-            )
-            c.commit()
+        # Seed super admin: ĐÃ CHUYỂN sang cuối migrate_db() (xem _seed_super_admin).
+        # Lý do: bảng admin_users chỉ được tạo trong migrate_db() (chạy SAU init_db), nên
+        # truy vấn nó ở đây làm DB hoàn toàn mới ném "no such table: admin_users"
+        # -> init_db() chết -> không cài đặt được từ đầu và bộ test cũng không chạy được.
         
 # ============ MIGRATION TRACKING (muc 5: boot < 20s) ============
 # Moi cau migrate co key = md5(SQL chuan hoa). Chay xong (hoac loi "da ton tai")
@@ -936,6 +937,7 @@ def migrate_db():
             "CREATE TABLE IF NOT EXISTS track_history (id BIGINT PRIMARY KEY AUTOINCREMENT, track_id BIGINT NOT NULL, platform TEXT NOT NULL, track_type TEXT NOT NULL, stat_value BIGINT DEFAULT 0, created_at BIGINT)",
             "ALTER TABLE withdrawal_requests ADD COLUMN bank_info TEXT",
             "ALTER TABLE withdrawal_requests ADD COLUMN fee BIGINT DEFAULT 0",
+            "ALTER TABLE withdrawal_requests ADD COLUMN reserved BIGINT DEFAULT 0",
             "CREATE TABLE IF NOT EXISTS admin_users (id BIGSERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, display_name TEXT, role TEXT DEFAULT 'moderator', tg_id BIGINT DEFAULT 0, is_active BIGINT DEFAULT 1, last_login BIGINT DEFAULT 0, created_at BIGINT NOT NULL, created_by BIGINT DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS admin_audit_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT, action TEXT, target TEXT, details TEXT, ip_address TEXT, created_at BIGINT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS alert_rules (id BIGSERIAL PRIMARY KEY, tg_id TEXT, platform TEXT, target TEXT, condition TEXT, is_active BIGINT DEFAULT 1, created_at BIGINT NOT NULL)",
@@ -1008,6 +1010,47 @@ def migrate_db():
                 c.commit()
         except Exception:
             pass
+        _seed_super_admin(c)
+
+
+def _seed_super_admin(c) -> None:
+    """Tạo tài khoản super-admin đầu tiên khi bảng admin_users còn rỗng.
+
+    FIX bảo mật: TRƯỚC ĐÂY mật khẩu mặc định là "" -> lưu sha256("") => trên MỌI DB mới,
+    POST /api/login {"username":"khaiphan111","password":""} là vào được super-admin.
+    Nay: lấy ADMIN_PASSWORD từ env; nếu trống thì sinh mật khẩu ngẫu nhiên mạnh và IN RA
+    LOG khởi động để chủ shop đăng nhập lần đầu rồi đổi lại trong web admin.
+
+    FIX liên kết: hàm này được gọi ở CUỐI migrate_db() (KHÔNG phải init_db) vì bảng
+    admin_users chỉ được tạo trong migrate_db — gọi sớm hơn sẽ ném "no such table".
+    """
+    import hashlib
+    import secrets as _secrets
+    try:
+        row = c.execute("SELECT COUNT(*) as c FROM admin_users").fetchone()
+    except Exception as e:
+        print(f"[!] Bo qua seed super-admin (khong doc duoc bang admin_users): {e}",
+              flush=True)
+        return
+    if not row or int(row["c"] or 0) > 0:
+        return
+    admin_pw = (os.environ.get("ADMIN_PASSWORD")
+                or config.DEFAULT_SETTINGS.get("admin_password") or "").strip()
+    _pw_generated = False
+    if not admin_pw:
+        admin_pw = _secrets.token_urlsafe(12)
+        _pw_generated = True
+    hash_pw = hashlib.sha256(admin_pw.encode()).hexdigest()
+    c.execute(
+        "INSERT INTO admin_users (username, password_hash, display_name, role, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("khaiphan111", hash_pw, "Super Admin", "super_admin", int(time.time())))
+    c.commit()
+    if _pw_generated:
+        print("[!] DA TAO SUPER-ADMIN 'khaiphan111' VOI MAT KHAU NGAU NHIEN: "
+              f"{admin_pw}", flush=True)
+        print("[!] Hay dang nhap web admin va doi mat khau ngay, hoac dat "
+              "ADMIN_PASSWORD trong .env.", flush=True)
 
 # --- SETTINGS ---
 # Cache settings trong RAM (xem get_setting): key -> (value, timestamp)
@@ -1218,10 +1261,14 @@ def adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
         c = get_conn()
         bonuses: dict = {}
         if amount < 0:
-            r = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
-            if not r or int(r["balance"] or 0) + amount < 0:
+            # M5/M6: dieu kien nam trong SQL + rowcount (nhieu tien trinh dung chung Postgres)
+            cur = c.execute(
+                "UPDATE tg_users SET balance = balance + ?"
+                " WHERE tg_id=? AND COALESCE(balance,0) + ? >= 0",
+                (amount, tg_id, amount),
+            )
+            if cur.rowcount != 1:
                 return False
-            c.execute("UPDATE tg_users SET balance = balance + ? WHERE tg_id=?", (amount, tg_id))
             c.execute(
                 "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
                 (int(time.time()), tg_id, amount, reason),
@@ -1241,10 +1288,16 @@ def adjust_shop_balance(tg_id: int, amount: int, reason: str) -> bool:
     with _lock:
         c = get_conn()
         if amount < 0:
-            r = c.execute("SELECT shop_balance FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
-            if not r or int(r["shop_balance"] or 0) + amount < 0:
+            # M5/M6: dieu kien nam trong SQL + rowcount
+            cur = c.execute(
+                "UPDATE tg_users SET shop_balance = shop_balance + ?"
+                " WHERE tg_id=? AND COALESCE(shop_balance,0) + ? >= 0",
+                (amount, tg_id, amount),
+            )
+            if cur.rowcount != 1:
                 return False
-        c.execute("UPDATE tg_users SET shop_balance = shop_balance + ? WHERE tg_id=?", (amount, tg_id))
+        else:
+            c.execute("UPDATE tg_users SET shop_balance = shop_balance + ? WHERE tg_id=?", (amount, tg_id))
         c.execute(
             "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
             (int(time.time()), tg_id, amount, reason),
@@ -1281,10 +1334,19 @@ def adjust_wallet(tg_id: int, wallet: str, amount: int, reason: str) -> bool:
     with _lock:
         c = get_conn()
         if amount < 0:
-            r = c.execute(f"SELECT {col} FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
-            if not r or int(r[col] or 0) + amount < 0:
+            # M5/M6 FIX: điều kiện nằm NGAY TRONG SQL + kiểm rowcount. Trước đây là
+            # "SELECT số dư -> kiểm tra -> UPDATE", chỉ được bảo vệ bởi RLock trong 1
+            # tiến trình; hệ thống chạy ≥2 tiến trình chung Postgres (VM bot + Render web)
+            # nên 2 tiến trình cùng qua bước kiểm tra là số dư bị ÂM.
+            cur = c.execute(
+                f"UPDATE tg_users SET {col} = {col} + ? WHERE tg_id=? AND {col} + ? >= 0",
+                (amount, tg_id, amount),
+            )
+            if cur.rowcount != 1:
+                c.commit()
                 return False
-        c.execute(f"UPDATE tg_users SET {col} = {col} + ? WHERE tg_id=?", (amount, tg_id))
+        else:
+            c.execute(f"UPDATE tg_users SET {col} = {col} + ? WHERE tg_id=?", (amount, tg_id))
         c.execute(
             "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
             (int(time.time()), tg_id, amount, f"{reason} [ví {wallet}]"),
@@ -2218,6 +2280,129 @@ def create_withdrawal_request(tg_id: int, amount: int, bank_info: str, fee: int)
         c.commit()
         return int(req_id or 0)
 
+
+def _withdrawal_reserved(req) -> int:
+    """Đọc cờ `reserved` của đơn rút. DB chưa migrate -> coi như 0 (đơn cũ)."""
+    try:
+        return int(req["reserved"] or 0)
+    except Exception:
+        return 0
+
+
+def withdrawal_reserve(tg_id: int, amount: int, bank_info: str, fee: int) -> tuple:
+    """Tạo yêu cầu rút tiền + GIỮ CHỖ tiền ngay (nguyên tử).
+    Trả (req_id, "") nếu thành công; (None, lý do) nếu không đủ khả dụng.
+
+    Khả dụng = ref_earnings - ref_withdrawn, cần >= amount + fee (đúng rule cũ).
+    Khác bản cũ: giữ chỗ bằng 1 câu UPDATE có điều kiện + rowcount, nên 2 tiến
+    trình (VM bot / Render web) gọi song song vẫn không rút vượt — `_lock` chỉ
+    là RLock trong 1 tiến trình, còn PgConnection.autocommit=True khiến
+    commit()/rollback() thành no-op.
+    """
+    try:
+        amount = int(amount)
+        fee = int(fee or 0)
+    except (TypeError, ValueError):
+        return None, "invalid"
+    if amount <= 0 or fee < 0:
+        return None, "invalid"
+    need = amount + fee
+    with _lock:
+        now_ts = int(time.time())
+        c = get_conn()
+        # 1) Giữ chỗ: chỉ cộng ref_withdrawn nếu CÒN đủ khả dụng (điều kiện trong SQL)
+        cur = c.execute(
+            "UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ?"
+            " WHERE tg_id=? AND (COALESCE(ref_earnings,0) - COALESCE(ref_withdrawn,0)) >= ?",
+            (amount, tg_id, need),
+        )
+        if cur.rowcount != 1:
+            c.commit()
+            return None, "insufficient"
+        # 2) Tạo đơn; INSERT lỗi -> HOÀN giữ chỗ rồi báo db_error
+        try:
+            ins = c.execute(
+                "INSERT INTO withdrawal_requests(tg_id, amount, bank_info, fee, reserved, status, created_at, updated_at)"
+                " VALUES(?,?,?,?,?,?,?,?) RETURNING id",
+                (tg_id, amount, bank_info, fee, 1, 'pending', now_ts, now_ts),
+            )
+            req_id = ins.lastrowid
+            if not req_id:
+                row = c.execute(
+                    "SELECT id FROM withdrawal_requests WHERE tg_id=? AND status='pending' ORDER BY id DESC LIMIT 1",
+                    (tg_id,)).fetchone()
+                if row:
+                    req_id = row["id"]
+        except Exception as e:
+            print(f"[!] withdrawal_reserve insert error: {e}")
+            c.execute(
+                "UPDATE tg_users SET ref_withdrawn = CASE WHEN ref_withdrawn >= ? THEN ref_withdrawn - ? ELSE 0 END"
+                " WHERE tg_id=?",
+                (amount, amount, tg_id),
+            )
+            c.commit()
+            return None, "db_error"
+        c.commit()
+        return int(req_id or 0), ""
+
+
+def withdrawal_mark_approved(req_id: int) -> bool:
+    """Duyệt: CHỈ khi status='pending'. Trả True nếu lần này thực sự chuyển trạng thái.
+
+    Số tiền lấy từ chính row trong DB (KHÔNG tin amount từ callback_data).
+    Đơn cũ (reserved=0, tạo trước bản vá) chưa giữ chỗ -> cộng ref_withdrawn như
+    hành vi cũ; đơn mới (reserved=1) đã giữ chỗ lúc tạo nên KHÔNG cộng lại.
+    """
+    with _lock:
+        c = get_conn()
+        req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+        if not req:
+            return False
+        cur = c.execute(
+            "UPDATE withdrawal_requests SET status='approved', updated_at=?"
+            " WHERE id=? AND status='pending'",
+            (int(time.time()), req_id),
+        )
+        if cur.rowcount != 1:
+            c.commit()
+            return False
+        if _withdrawal_reserved(req) == 0:
+            amount = int(req["amount"] or 0)
+            if amount:
+                c.execute("UPDATE tg_users SET ref_withdrawn = ref_withdrawn + ? WHERE tg_id=?",
+                          (amount, req["tg_id"]))
+        c.commit()
+        return True
+
+
+def withdrawal_release(req_id: int, status: str = "rejected") -> bool:
+    """Từ chối/huỷ: HOÀN giữ chỗ (chỉ khi reserved=1 và status='pending')."""
+    with _lock:
+        c = get_conn()
+        req = c.execute("SELECT * FROM withdrawal_requests WHERE id=?", (req_id,)).fetchone()
+        if not req:
+            return False
+        cur = c.execute(
+            "UPDATE withdrawal_requests SET status=?, updated_at=?"
+            " WHERE id=? AND status='pending'",
+            (status, int(time.time()), req_id),
+        )
+        if cur.rowcount != 1:
+            c.commit()
+            return False
+        if _withdrawal_reserved(req):
+            amount = int(req["amount"] or 0)
+            if amount:
+                # SQLite không có MAX(a,b) 2 tham số trong UPDATE -> dùng CASE cho cả 2 backend
+                c.execute(
+                    "UPDATE tg_users SET ref_withdrawn = CASE WHEN ref_withdrawn >= ? THEN ref_withdrawn - ? ELSE 0 END"
+                    " WHERE tg_id=?",
+                    (amount, amount, req["tg_id"]),
+                )
+        c.commit()
+        return True
+
+
 # --- V2 PRO FEATURES ---
 
 # Audit Logs
@@ -2950,7 +3135,16 @@ def transfer_balance(from_id: int, to_id: int, amount: int) -> tuple[bool, str]:
         if not receiver:
             return False, "Không tìm thấy người nhận."
         ts = int(time.time())
-        c.execute("UPDATE tg_users SET balance = balance - ? WHERE tg_id=?", (amount, from_id))
+        # M5/M6 FIX: trừ người gửi bằng UPDATE CÓ ĐIỀU KIỆN + rowcount (nguyên tử giữa
+        # nhiều tiến trình). Trước đây SELECT rồi UPDATE nên bấm nhanh 2 lần / 2 tiến
+        # trình là chuyển vượt số dư.
+        deb = c.execute(
+            "UPDATE tg_users SET balance = balance - ? WHERE tg_id=? AND balance >= ?",
+            (amount, from_id, amount),
+        )
+        if deb.rowcount != 1:
+            c.commit()
+            return False, "Số dư không đủ (tài khoản vừa thay đổi, vui lòng thử lại)."
         c.execute("UPDATE tg_users SET balance = balance + ? WHERE tg_id=?", (amount, to_id))
         c.execute("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
                   (ts, from_id, -amount, f"Chuyển tiền cho {to_id}"))
@@ -3182,11 +3376,15 @@ def consume_credits(tg_id: int, n: int) -> bool:
         return True
     with _lock:
         c = get_conn()
-        row = c.execute("SELECT credits FROM tg_users WHERE tg_id=?", (tg_id,)).fetchone()
-        cur = int(row["credits"] or 0) if row else 0
-        if cur < n:
+        # M5/M6 FIX: điều kiện trong SQL + rowcount (trước đây SELECT rồi UPDATE nên 2
+        # tiến trình cùng đọc credits=100 rồi cùng trừ 100 -> credits = -100).
+        cur = c.execute(
+            "UPDATE tg_users SET credits = credits - ? WHERE tg_id=? AND credits >= ?",
+            (n, tg_id, n),
+        )
+        if cur.rowcount != 1:
+            c.commit()
             return False
-        c.execute("UPDATE tg_users SET credits = credits - ? WHERE tg_id=?", (n, tg_id))
         c.execute(
             "INSERT INTO credit_txns(ts, tg_id, delta, reason) VALUES(?,?,?,?)",
             (int(time.time()), tg_id, -n, "check_bulk"),
@@ -7441,11 +7639,15 @@ def loan_approve(loan_id: int, admin_id: int) -> dict | None:
     now = int(time.time())
     due = now + due_days * 86400
     c = get_conn()
-    c.execute(
+    # M5/M6: chỉ 1 tiến trình được chuyển pending->active (2 admin bấm cùng lúc
+    # trước đây đều qua -> cộng ví 2 lần). rowcount=0 nghĩa là đã bị xử lý.
+    cur = c.execute(
         "UPDATE acc_loans SET status='active', due_date=?, approved_by=?,"
         " updated_at=? WHERE id=? AND status='pending'",
         (due, admin_id, now, loan_id))
     c.commit()
+    if cur.rowcount == 0:
+        return None
     return loan_get(loan_id)
 
 
