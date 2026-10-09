@@ -6,6 +6,28 @@ from .event_bus import event_bus
 from . import ops
 
 
+# Chỉ KẾT LUẬN live/die với các status dứt khoát. Các status dưới đây là "chưa rõ"
+# (mạng/cookie lỗi hoặc FB không trả lời) -> GIỮ NGUYÊN trạng thái cũ, không ghi DB,
+# không bắn thông báo. Trước đây chúng bị quy thành "die" nên 1 lần cookie hết hạn là
+# toàn bộ watch báo "acc bị khoá" hàng loạt.
+# Tập status thật do fb.check_uid/check_uid_direct/_check_with_cookie sinh ra (fb.py):
+#   live, exists, dead, disabled, checkpoint, checkpoint_282, checkpoint_956,
+#   cookie_invalid, error, unknown, ""  -> dứt khoát chỉ có live/dead/disabled/checkpoint*.
+_INDETERMINATE_FB_STATUS = {"exists", "error", "cookie_invalid", "unknown", ""}
+
+
+def _conclusive_fb_status(status: str, alive) -> str | None:
+    """Trả 'live'/'die' nếu status dứt khoát, None nếu chưa kết luận được."""
+    s = (status or "").strip().lower()
+    if s in _INDETERMINATE_FB_STATUS:
+        return None
+    if s in ("live", "exists_live"):
+        return "live"
+    if s in ("dead", "die", "disabled") or s.startswith("checkpoint"):
+        return "die"
+    return "live" if alive else "die"
+
+
 def _job_on(name: str) -> bool:
     """Công tắc job nền (setting job_<name>, mặc định "1" = BẬT).
     Giữ nguyên hành vi hiện tại; admin tắt bằng /job <tên> off."""
@@ -144,16 +166,22 @@ class FollowerPoller:
                                 live_cnt = 0
                                 die_cnt = 0
                                 die_uids = []
+                                err_cnt = 0
                                 for t in targets:
                                     try:
                                         res = await check_uid(t)
-                                        if res.get("alive") or res.get("status") == "live":
+                                        # FIX (D4): chỉ tính DIE khi status dứt khoát;
+                                        # lỗi mạng/cookie tính riêng, không doạ khách.
+                                        _st = _conclusive_fb_status(res.get("status"), res.get("alive"))
+                                        if _st == "live":
                                             live_cnt += 1
-                                        else:
+                                        elif _st == "die":
                                             die_cnt += 1
                                             die_uids.append(t)
+                                        else:
+                                            err_cnt += 1
                                     except Exception:
-                                        die_cnt += 1
+                                        err_cnt += 1
 
                                 hour_str = f"{current_hour:02d}:00"
                                 report_text = (
@@ -161,7 +189,9 @@ class FollowerPoller:
                                     f"━━━━━━━━━━━━━━━━━━━━\n\n"
                                     f"📊 Dàn <b>{len(targets)}</b> nick FB của bạn đang có:\n"
                                     f"• 🟢 Live: <b>{live_cnt}</b> tài khoản\n"
-                                    f"• 🔴 Die: <b>{die_cnt}</b> tài khoản\n\n"
+                                    f"• 🔴 Die: <b>{die_cnt}</b> tài khoản\n"
+                                    + (f"• ⚠️ Chưa kiểm tra được: <b>{err_cnt}</b> tài khoản (lỗi mạng/cookie)\n" if err_cnt else "")
+                                    + "\n"
                                 )
                                 if die_uids:
                                     report_text += "🔴 <b>Chi tiết nick DIE hôm nay:</b>\n" + "\n".join(f"• <code>{u}</code>" for u in die_uids[:10])
@@ -604,6 +634,7 @@ class FollowerPoller:
         if not _consign.enabled():
             return
         rows = db.consign_disputes_remind_due()
+        ts_now = int(time.time())
         for d in rows:
             try:
                 d = dict(d)
@@ -611,7 +642,7 @@ class FollowerPoller:
                     "SELECT tg_id FROM consignors WHERE id=?",
                     (d["consignor_id"],)).fetchone()
                 if cr and cr["tg_id"]:
-                    left_h = max(1, int((d["deadline_at"] - now) / 3600))
+                    left_h = max(1, int((d["deadline_at"] - ts_now) / 3600))
                     if db.outbox_enqueue(
                         f"dispute_remind:{d['id']}", "dispute_remind", int(cr["tg_id"]),
                         f"⏰ <b>Nhắc: tranh chấp #{d['id']} còn ~{left_h}h nữa hết hạn phản hồi</b>\n"
@@ -621,7 +652,7 @@ class FollowerPoller:
                         "HTML", ref_consignor_id=int(d["consignor_id"])):
                         db.get_conn().execute(
                             "UPDATE consignment_disputes SET reminded_at=? WHERE id=?",
-                            (now, d["id"]))
+                            (ts_now, d["id"]))
                         db.get_conn().commit()
             except Exception as e:
                 log.warning("consign dispute remind %s: %s", d.get("id"), e)
@@ -2102,6 +2133,11 @@ class FollowerPoller:
                 continue
             try:
                 info = await fb.fetch_fb_post_info(vt["post_url"])
+                # FIX: chỉ cập nhật/báo khi LẤY ĐƯỢC số liệu thật. Trước đây khi token lỗi
+                # (hoặc mất mạng) hàm trả số 0 nhưng vẫn ghi vào track -> lần sau token
+                # hoạt động lại sẽ thấy "thay đổi" và gửi thông báo rác kèm dòng "Tăng" âm.
+                if not info.get("ok"):
+                    continue
                 old = {
                     "likes":    vt["last_likes"],
                     "comments": vt["last_comments"],
@@ -2192,7 +2228,15 @@ class FollowerPoller:
             res = await fb.check_uid(w["uid"])
             if not res["ok"]:
                 continue
-            new_status = "live" if res["alive"] else "die"
+            # FIX (D1): chỉ KẾT LUẬN khi status dứt khoát. exists/error/cookie_invalid/
+            # unknown = chưa rõ (cookie hết hạn, proxy lỗi, FB không trả lời) -> giữ nguyên
+            # trạng thái cũ, không ghi DB, không bắn thông báo. Trước đây tất cả bị quy
+            # thành "die" nên chỉ 1 lần lỗi cookie/proxy là toàn bộ watch báo "acc bị khoá".
+            new_status = _conclusive_fb_status(res.get("status"), res.get("alive"))
+            if new_status is None:
+                log.info("FB watch %s: bỏ qua vì chưa kết luận được (status=%s)",
+                         w["uid"], res.get("status"))
+                continue
             avatar = fb.display_avatar(res)
             old = w["last_status"]
             db.update_watch_status(w["id"], new_status, avatar)
@@ -2242,7 +2286,13 @@ class FollowerPoller:
         for track in tracks:
             try:
                 res = await fb.check_uid(track["fb_uid"])
-                new_status = "live" if res["alive"] else "die"
+                # FIX (D1): xem _conclusive_fb_status — không kết luận khi chưa rõ,
+                # tránh báo "🔴 BỊ KHOÁ (DIE)" oan hàng loạt khi cookie/proxy lỗi.
+                new_status = _conclusive_fb_status(res.get("status"), res.get("alive"))
+                if new_status is None:
+                    log.info("FB track %s: bỏ qua vì chưa kết luận được (status=%s)",
+                             track["fb_uid"], res.get("status"))
+                    continue
                 old_status = track["last_status"]
 
                 db.update_fb_track_status(track["id"], new_status, res.get("avatar_url", ""))
@@ -2385,10 +2435,17 @@ async def _poll_zalo():
             tracks = db.all_active_zalo_tracks()
             cookie = db.get_setting("zalo_cookie", "")
             imei = db.get_setting("zalo_imei", "")
+            bot = poller._bot
+            if not bot:
+                await asyncio.sleep(60)
+                continue
             
             for t in tracks:
                 try:
-                    if not _is_user_active(t["tg_user_id"]): continue
+                    # User hết hạn thì bỏ qua (user None coi như còn hợp lệ, giống _filter_expired_tracks)
+                    u = db.get_user(t["tg_user_id"])
+                    if u and (u["sub_until"] or 0) <= int(time.time()):
+                        continue
                     
                     res = await check_zalo_phone(t["phone"], cookie, imei)
                     
@@ -2400,14 +2457,14 @@ async def _poll_zalo():
                         icon = "✅" if new_status == "LIVE" else "❌"
                         name_str = f"\nTên Zalo: <b>{res.get('name', '')}</b>" if res.get('name') else ""
                         msg = f"{icon} SĐT Zalo <b>{t['phone']}</b> đã chuyển sang trạng thái <b>{new_status}</b>!{name_str}"
-                        await _bot.send_message(t["tg_user_id"], msg, parse_mode="HTML")
+                        await bot.send_message(t["tg_user_id"], msg, parse_mode="HTML")
                         
-                        await _handle_alerts("zalo", t["phone"], new_status, msg, _bot)
+                        await _handle_alerts("zalo", t["phone"], new_status, msg, bot)
                         
                     db.update_zalo_track_status(t["id"], new_status, res.get("name", t["name"]), res.get("avatar", t["avatar"]))
                 except Exception as e:
                     pass
                 await asyncio.sleep(5) # Delay 5 seconds between each check
         except Exception as e:
-            pass
+            log.warning("poll zalo: %s", e)
         await asyncio.sleep(60)

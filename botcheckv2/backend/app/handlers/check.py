@@ -200,7 +200,7 @@ async def process_fb_post_check(msg: Message, url: str):
     wait = await msg.answer("⏳ Đang lấy thông tin bài viết Facebook...")
     from ..fb import fetch_fb_post_info, build_fb_post_caption
     info = await fetch_fb_post_info(url)
-    if not info or not info.get("post_id"):
+    if not info or not info.get("ok") or not info.get("post_id"):
         await wait.edit_text("❌ Không lấy được thông tin bài viết FB. Vui lòng kiểm tra lại link.")
         return
     caption = build_fb_post_caption(info)
@@ -929,6 +929,9 @@ async def _process_cookie_text(msg: Message, raw_text: str, wait_msg=None, file_
     cp956_items = []
     checkpoint_items = []
     die_items = []
+    # FIX (D3): nhóm "chưa kết luận được" (lỗi cookie/mạng) — KHÔNG được xếp vào file
+    # "Nick DIE" xuất cho khách, vì khách sẽ vứt/đòi hoàn tiền những acc còn sống.
+    uncertain_items = []
 
     async def _check_line(line):
         async with sem:
@@ -959,8 +962,13 @@ async def _process_cookie_text(msg: Message, raw_text: str, wait_msg=None, file_
                 cp956_items.append(line)
             elif status == "checkpoint":
                 checkpoint_items.append(line)
-            else:
+            elif status in ("dead", "disabled"):
                 die_items.append(line)
+            else:
+                # FIX (D3): error / cookie_invalid / unknown / exists = CHƯA KẾT LUẬN ĐƯỢC
+                # (cookie hết hạn, mạng hoặc proxy lỗi, FB không trả lời). Trước đây rơi
+                # hết vào die_items nên khách tải về file "Nick DIE" và bỏ oan acc sống.
+                uncertain_items.append(line)
 
     tasks = [_check_line(line) for line in lines[:500]]
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -972,6 +980,7 @@ async def _process_cookie_text(msg: Message, raw_text: str, wait_msg=None, file_
         "checkpoint_956": cp956_items,
         "checkpoint": checkpoint_items,
         "die": die_items,
+        "uncertain": uncertain_items,
         "total": len(lines)
     })
 
@@ -984,7 +993,9 @@ async def _process_cookie_text(msg: Message, raw_text: str, wait_msg=None, file_
         f"🟡 Checkpoint 282 (xác minh): <b>{len(cp282_items)}</b>\n"
         f"🟠 Checkpoint 956 (vi phạm): <b>{len(cp956_items)}</b>\n"
         f"⚪ Checkpoint khác: <b>{len(checkpoint_items)}</b>\n"
-        f"🔴 DIE / Expired: <b>{len(die_items)}</b>\n\n"
+        f"🔴 DIE / Expired: <b>{len(die_items)}</b>\n"
+        + (f"⚠️ Chưa kiểm tra được (lỗi cookie/mạng, KHÔNG phải DIE): <b>{len(uncertain_items)}</b>\n" if uncertain_items else "")
+        + "\n"
         "<i>Bấm nút bên dưới để xuất file TXT riêng từng loại:</i>"
     )
 

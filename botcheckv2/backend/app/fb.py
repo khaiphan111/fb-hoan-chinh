@@ -2,8 +2,13 @@ import asyncio
 import httpx
 import re
 import os
+import html
+import logging
 from datetime import datetime
 from . import db
+from . import config
+
+log = logging.getLogger(__name__)
 
 def _make_http_client(**kwargs):
     """Tạo httpx.AsyncClient, workaround lỗi httpx parse no_proxy chứa IPv6 [::1].
@@ -527,10 +532,13 @@ async def check_uid_direct(uid: str) -> dict:
 
     cookie = db.get_setting("fb_cookie", "")
     token = db.get_setting("fb_avatar_token", "")
-    
+    _completed = False   # FIX (D2): chỉ set ok=True khi đã chạy hết nhánh xử lý
+
     try:
         async with _make_http_client(timeout=15) as client:
-            result["ok"] = True
+            # FIX (D2): TRƯỚC ĐÂY set result["ok"] = True ngay tại đây (trước khi làm gì)
+            # nên mọi lỗi httpx/proxy/DNS bị nuốt ở except bên dưới vẫn trả ok=True với
+            # status "unknown" -> tầng poller hiểu là đã check xong và quy thành DIE.
             result["avatar_url"] = avatar_url(uid)
             
             if cookie:
@@ -677,10 +685,18 @@ async def check_uid_direct(uid: str) -> dict:
                     else:
                         result["alive"] = False
                         result["status"] = "error"
-                
-    except Exception:
-        pass
+            _completed = True
 
+    except Exception as e:
+        # FIX (D2): trước đây `pass` nuốt lỗi, không log và không hạ ok -> lỗi hạ tầng
+        # biến thành "acc die". Nay log rõ và trả status "error" (chưa kết luận).
+        result["ok"] = False
+        result["alive"] = False
+        result["status"] = "error"
+        log.warning("check_uid_direct loi %s: %s", uid, e, exc_info=True)
+
+    if _completed:
+        result["ok"] = True
     return result
 
 
@@ -830,6 +846,170 @@ def build_fb_caption(res: dict) -> str:
         "", "──────────────────────────",
         "🤖 <i>FB Checker V2 by @khaikhai998</i>",
     ]
+    return "\n".join(lines)
+
+
+# ─── Theo dõi bài viết Facebook (post tracker) ────────────────────────────────
+# Được gọi bởi poller._check_fb_posts() và handlers/check.py:process_fb_post_check().
+# fetch_fb_post_info KHÔNG bao giờ raise và LUÔN trả đủ key (ok/status/post_id/
+# post_url/author/desc/cover/likes/comments/shares) để poller đọc trực tiếp
+# (info["likes"], info["comments"], info["shares"]) mà không bị KeyError.
+
+_FB_POST_ID_PATTERNS = (
+    r"/posts/([A-Za-z0-9._-]+)",
+    r"/videos/(\d+)",
+    r"[?&]story_fbid=([A-Za-z0-9._-]+)",
+    r"[?&]fbid=([A-Za-z0-9._-]+)",
+    r"(pfbid[A-Za-z0-9]+)",
+)
+
+
+def parse_fb_post_id(post_url: str) -> str:
+    """Trích ID bài viết Facebook từ link. Trả "" nếu không nhận diện được.
+
+    Hỗ trợ: /posts/<id>, /permalink.php?story_fbid=<id>, /photo.php?fbid=<id>,
+    /videos/<id>, story_fbid=..., pfbid...
+    """
+    url = (post_url or "").strip()
+    if not url:
+        return ""
+    for pat in _FB_POST_ID_PATTERNS:
+        m = re.search(pat, url, re.IGNORECASE)
+        if m:
+            return m.group(1).strip("?&#/")
+    return ""
+
+
+def _fb_count(value) -> int:
+    """Ép số liệu Graph API về int; thiếu/None/kiểu lạ -> 0 (KHÔNG bịa số)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def fetch_fb_post_info(post_url: str) -> dict:
+    """Lấy thông tin bài viết Facebook qua Graph API (token fb_avatar_token).
+
+    Luôn trả dict đủ key, KHÔNG raise:
+      ok (bool), status ("ok"/"error"/"unavailable"), post_id, post_url,
+      author, desc, cover, likes, comments, shares.
+    Không có token hoặc Graph trả lỗi -> ok=False, status="error", số liệu = 0
+    (không đoán, không bịa số liệu).
+    """
+    post_url = (post_url or "").strip()
+    post_id = parse_fb_post_id(post_url)
+    result = {
+        "ok": False,
+        "status": "error",
+        "post_id": post_id,
+        "post_url": post_url,
+        "author": "",
+        "desc": "",
+        "cover": None,
+        "likes": 0,
+        "comments": 0,
+        "shares": 0,
+    }
+    if not post_id:
+        # Link không nhận diện được bài viết -> không phải lỗi hạ tầng
+        result["status"] = "unavailable"
+        return result
+    if not result["post_url"]:
+        result["post_url"] = f"https://www.facebook.com/{post_id}"
+
+    token = db.get_setting("fb_avatar_token", "")
+    if not token:
+        log.warning("fetch_fb_post_info: chua cau hinh fb_avatar_token, bo qua %s", post_url)
+        return result
+
+    try:
+        async with _make_http_client(timeout=20) as client:
+            r = await client.get(
+                f"{config.FB_GRAPH}/{post_id}",
+                params={
+                    "fields": "id,message,shares,likes.summary(true),"
+                              "comments.summary(true),full_picture,from",
+                    "access_token": token,
+                },
+            )
+            data = r.json() if r.text else {}
+            if not isinstance(data, dict) or data.get("error") or not data.get("id"):
+                log.warning("fetch_fb_post_info: Graph tra loi loi cho %s: %s",
+                            post_url, str(data)[:300])
+                return result
+
+            likes = ((data.get("likes") or {}).get("summary") or {})
+            comments = ((data.get("comments") or {}).get("summary") or {})
+            shares = (data.get("shares") or {})
+            result["ok"] = True
+            result["status"] = "ok"
+            # Giữ post_id trích từ link (không thay bằng id page-scoped của Graph)
+            # để log/caption luôn khớp với bài viết khách đã gửi.
+            result["desc"] = data.get("message") or ""
+            result["cover"] = data.get("full_picture") or None
+            result["author"] = ((data.get("from") or {}).get("name") or "")
+            result["likes"] = _fb_count(likes.get("total_count"))
+            result["comments"] = _fb_count(comments.get("total_count"))
+            result["shares"] = _fb_count(shares.get("count"))
+    except Exception:
+        # Mẫu xử lý lỗi giống check_uid_direct: không raise ra ngoài, chỉ log + trả dict
+        log.warning("fetch_fb_post_info loi %s", post_url, exc_info=True)
+        result["ok"] = False
+        result["status"] = "error"
+        result["likes"] = 0
+        result["comments"] = 0
+        result["shares"] = 0
+    return result
+
+
+def build_fb_post_caption(info: dict) -> str:
+    """Dựng caption HTML cho thông báo bài viết FB (poller + handler dùng chung)."""
+    info = info or {}
+    post_id = str(info.get("post_id") or "")
+    link = (info.get("post_url") or "").strip()
+    if not link and post_id:
+        link = f"https://www.facebook.com/{post_id}"
+
+    if not info.get("ok"):
+        # Không hiển thị "DIE" hay số liệu giả khi không lấy được số liệu
+        lines = [
+            "📊 <b>CẬP NHẬT BÀI VIẾT FACEBOOK</b>",
+            "",
+            "⚠️ <b>Không lấy được số liệu bài viết (kiểm tra token FB)</b>",
+        ]
+        if post_id:
+            lines.append(f"🆔 Bài viết: <code>{html.escape(post_id)}</code>")
+        if link:
+            lines.append(f"🔗 <a href=\"{html.escape(link, quote=True)}\">▶ Xem bài viết</a>")
+        lines += ["", "🤖 <i>FB Checker V2 by @khaikhai998</i>"]
+        return "\n".join(lines)
+
+    desc = " ".join(str(info.get("desc") or "").split())
+    if len(desc) > 200:
+        desc = desc[:200] + "..."
+    author = str(info.get("author") or "").strip() or "Không xác định"
+
+    lines = [
+        "📊 <b>CẬP NHẬT BÀI VIẾT FACEBOOK</b>",
+        "",
+        f"👤 Tác giả: <b>{html.escape(author)}</b>",
+    ]
+    if post_id:
+        lines.append(f"🆔 Bài viết: <code>{html.escape(post_id)}</code>")
+    if desc:
+        lines.append(f"📝 {html.escape(desc)}")
+
+    lines += [
+        "",
+        "━━━━ 📈 THỐNG KÊ ━━━━",
+        f"❤️ Lượt thích: <b>{_fb_count(info.get('likes')):,}</b>",
+        f"💬 Bình luận: <b>{_fb_count(info.get('comments')):,}</b>",
+        f"🔁 Chia sẻ: <b>{_fb_count(info.get('shares')):,}</b>",
+    ]
+    if link:
+        lines += ["", f"🔗 <a href=\"{html.escape(link, quote=True)}\">▶ Xem bài viết ngay</a>"]
+    lines += ["", "🤖 <i>FB Checker V2 by @khaikhai998</i>"]
     return "\n".join(lines)
 
 
