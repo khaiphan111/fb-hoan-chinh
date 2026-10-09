@@ -16,6 +16,12 @@ SUPPORT_FACEBOOK = "nhanxp"
 
 PORT = int(os.environ.get("PORT", 8000))
 
+# Chu kỳ poll (giây) — env không phải số thì dùng mặc định, không làm sập app lúc import
+try:
+    POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", 60))
+except Exception:
+    POLL_INTERVAL = 60
+
 # Token dùng cho avatar FB — cấu hình qua biến môi trường, không hardcode
 DEFAULT_FB_AVATAR_TOKEN = os.environ.get("FB_AVATAR_TOKEN", "")
 
@@ -41,7 +47,10 @@ STATIC_DIR = os.path.join(resource_dir(), "static")
 # Các giá trị nhạy cảm lấy từ biến môi trường hoặc nhập qua trang setup.
 DEFAULT_SETTINGS = {
     "bot_token": os.environ.get("BOT_TOKEN", ""),
-    "admin_password": "",
+    # FIX: mật khẩu super-admin đọc từ env khi TẠO DB lần đầu. Để trống thì db.py sinh
+    # mật khẩu ngẫu nhiên và in ra log (trước đây mặc định "" -> seed hash rỗng =>
+    # đăng nhập được super-admin bằng mật khẩu trống trên mọi DB mới).
+    "admin_password": os.environ.get("ADMIN_PASSWORD", ""),
     "price_1d": "5000",
     "price_7d": "20000",
     "price_1m": "50000",

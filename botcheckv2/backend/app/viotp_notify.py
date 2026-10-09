@@ -10,8 +10,16 @@ import logging
 import os
 import sys
 
-sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
-import dynamic_credentials as _dc
+# FIX (liên kết module): `dynamic_credentials` CHỈ có trên máy Hatch. Trước đây import ở
+# cấp module làm cả app không import nổi ngoài Hatch (handlers/__init__ -> thueso ->
+# viotp/viotp_notify). Nay import mềm; khi thiếu vault thì bot thông báo ViOTP tự tắt
+# (xem _vault_token/start) thay vì kéo sập cả tiến trình.
+_dc = None
+try:
+    sys.path.insert(0, "/opt/hatch/skills/skill-creator/bin")
+    import dynamic_credentials as _dc  # type: ignore
+except Exception:
+    _dc = None
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
@@ -30,7 +38,13 @@ _VAULT_CRED = "custom.viotp-notify-bot"
 
 
 def _vault_token() -> str:
-    """Surrogate token từ Secure Vault (Sentinel thay bằng token thật khi gọi ra ngoài)."""
+    """Surrogate token từ Secure Vault (Sentinel thay bằng token thật khi gọi ra ngoài).
+
+    Trả "" khi không có vault (máy không phải Hatch) — start() sẽ coi như bot này chưa
+    cấu hình và tự tắt, KHÔNG làm chết tiến trình backend."""
+    if _dc is None:
+        log.info("Không có dynamic_credentials (ngoài máy Hatch) — ViOTP notify disabled.")
+        return ""
     entry = _dc.dynamic_credential_entry(_VAULT_CRED)
     tok = str(entry.get("surrogate") or "").strip()
     return tok

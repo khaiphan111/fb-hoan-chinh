@@ -50,7 +50,7 @@ async def _cb_answer(cb, *args, **kwargs):
     """Tra loi callback an toan: query het han/khong hop le thi bo qua,
     khong de lam chet ca update (nguoi dung thay bot im re)."""
     try:
-        await _cb_answer(cb, *args, **kwargs)
+        await cb.answer(*args, **kwargs)
     except Exception:
         pass
 

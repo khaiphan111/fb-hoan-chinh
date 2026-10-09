@@ -284,9 +284,17 @@ def health():
 
 
 @app.get("/api/debug/status")
-async def debug_status():
+async def debug_status(request: Request):
     """GĐ2 quan trắc: uptime, RAM, độ trễ event loop, số task asyncio.
-    Chỉ bind 127.0.0.1 nên không cần auth."""
+
+    FIX bảo mật: comment cũ nói "chỉ bind 127.0.0.1 nên không cần auth", nhưng không có
+    gì trong code đảm bảo điều đó — và khi chạy sau reverse proxy thì MỌI request đều
+    tới từ 127.0.0.1. Nay bắt buộc token admin; thiếu token trả 404 để không lộ sự tồn tại.
+    """
+    from .api import verify_admin_token
+    _tok = request.headers.get("authorization", "").replace("Bearer ", "").strip()
+    if not verify_admin_token(_tok):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
     t0 = time.monotonic()
     await asyncio.sleep(0.05)
     lag_ms = (time.monotonic() - t0 - 0.05) * 1000
@@ -332,10 +340,13 @@ if os.path.isdir(config.STATIC_DIR):
     assets_dir = os.path.join(config.STATIC_DIR, "assets")
     if os.path.isdir(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    # FIX bảo mật: BỎ mount tĩnh công khai cả thư mục data/images. Trước đây ai biết URL
+    # đều tải được ảnh QR ngân hàng cá nhân (/images/qr_1.jpg) mà không cần đăng nhập.
+    # Ảnh QR nay phục vụ qua GET /api/qr/{filename} (bắt buộc token admin). Khách vẫn
+    # nhận ảnh QR qua bot (bot gửi trực tiếp từ file trên đĩa) nên luồng nạp tiền không đổi.
     images_dir = os.path.join(os.path.dirname(__file__), "..", "data", "images")
     if not os.path.isdir(images_dir):
         os.makedirs(images_dir, exist_ok=True)
-    app.mount("/images", StaticFiles(directory=images_dir), name="images")
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):

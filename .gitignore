@@ -11,9 +11,23 @@ cloudflared/
 ngrok/
 tailscale/
 node_modules/
-watchdog/
+# watchdog: TRƯỚC ĐÂY ignore cả thư mục nên watchdog/tg_throttle.sh (cron tham chiếu qua
+# BASH_ENV) không được git theo dõi -> máy mới clone bị thiếu file. Nay chỉ bỏ qua file
+# runtime, giữ script trong repo.
+watchdog/*.log
+watchdog/*.state
+watchdog/*.pid
+watchdog/last_*
+watchdog/backend_heartbeat
 .DS_Store
 buff_session.json
+
+# DỮ LIỆU THẬT KHÔNG ĐƯỢC COMMIT (đã từng lộ: kho acc + ảnh QR ngân hàng cá nhân)
+backups/
+*.xlsx
+botcheckv2/backend/data/
+.pytest_cache/
+.ruff_cache/
 
 # Deploy money test runtime state
 .last_deploy_test_sha

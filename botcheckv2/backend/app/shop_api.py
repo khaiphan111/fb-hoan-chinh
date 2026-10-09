@@ -3,6 +3,7 @@
 Chi la lop boc HTTP quanh cac ham db.py san co — KHONG doi logic nghiep vu.
 Tat ca endpoint yeu cau dang nhap admin web (Depends(auth)).
 """
+import logging
 import time
 from typing import Optional
 
@@ -14,6 +15,7 @@ from . import pause as pause_mod
 from .api import auth, require_role
 
 router = APIRouter(prefix="/api", tags=["shop"])
+log = logging.getLogger(__name__)
 
 
 def _d(r):
@@ -1001,16 +1003,19 @@ def viotp_rentals(limit: int = Query(50, le=200), q: str = Query(""),
 
 
 @router.get("/viotp/services")
-def viotp_services(_=Depends(auth)):
-    """Danh sách dịch vụ ViOTP kèm giá vốn và trạng thái bật/tắt."""
+async def viotp_services(_=Depends(auth)):
+    """Danh sách dịch vụ ViOTP kèm giá vốn và trạng thái bật/tắt.
+
+    FIX: trước đây gọi `_viotp.get_services_sync()` — hàm KHÔNG tồn tại — qua hasattr
+    nên luôn trả danh sách rỗng: trang "Thuê số" không bao giờ có dịch vụ để bán.
+    Nay gọi hàm async thật `get_services()` (đã có cache 1 giờ trong viotp.py).
+    """
     import json as _json
     from . import viotp as _viotp
     try:
-        items = _viotp.get_services_sync() if hasattr(_viotp, "get_services_sync") else []
-    except Exception:
-        items = []
-    # Nếu không có sync, thử lấy từ cache
-    if not items:
+        items = await _viotp.get_services()
+    except Exception as _e:
+        log.warning("viotp get_services lỗi, dùng cache: %s", _e)
         try:
             items = _viotp._services_cache.get("items", [])
         except Exception:

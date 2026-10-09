@@ -5,3 +5,6 @@ botcheckv2/backend/.env
 **/node_modules
 backups/
 *.log
+# FIX: không đưa ảnh QR ngân hàng + dữ liệu thật vào Docker image
+botcheckv2/backend/data/
+*.xlsx

@@ -3,7 +3,7 @@ import { IconCircleCheck, IconCircleX, IconDeviceFloppy, IconPlugConnected, Icon
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label } from "../components/ui";
-import { api } from "../lib/api";
+import { api, getToken } from "../lib/api";
 import { vnd } from "../lib/utils";
 
 function Check({ ok, label }: { ok: boolean; label: string }) {
@@ -663,7 +663,7 @@ export default function Settings({ onSaved }: { onSaved: () => void }) {
               <div className="flex gap-4 flex-wrap">
                 {s.qr_images.map((img: string) => (
                   <div key={img} className="relative group rounded-md border p-1 border-border/50 bg-background/50">
-                    <img src={`/images/${img}?t=${Date.now()}`} alt={img} className="w-24 h-24 object-cover rounded" />
+                    <img src={`/api/qr/${img}?t=${encodeURIComponent(getToken())}&ts=${Date.now()}`} alt={img} className="w-24 h-24 object-cover rounded" />
                     <button
                       onClick={() => handleDeleteQr(img)}
                       className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full w-6 h-6 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-destructive/90"

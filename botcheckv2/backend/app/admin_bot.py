@@ -145,13 +145,13 @@ async def cmd_phatcodeall(msg: Message):
         
         # Tell the main bot manager to broadcast
         from .bot import manager as main_bot_manager
-        asyncio.create_task(broadcast_code_to_all(main_bot_manager, code, amount, expire_at))
+        asyncio.create_task(broadcast_code_to_all(main_bot_manager, code, amount, expire_at, wallet))
         
         await msg.answer(f"✅ Đã tạo mã <code>{code}</code> ({db.wallet_label(wallet)}) và đang gửi thông báo tới {total_users} người dùng!", parse_mode="HTML")
     except Exception as e:
         await msg.answer(f"❌ Lỗi: {e}")
 
-async def broadcast_code_to_all(main_bot_manager, code: str, amount: int, expire_at: int):
+async def broadcast_code_to_all(main_bot_manager, code: str, amount: int, expire_at: int, wallet: str = "main"):
     # Fetch all users
     users = db.get_conn().execute("SELECT tg_id FROM tg_users").fetchall()
     
