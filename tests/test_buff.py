@@ -173,27 +173,27 @@ def test_linkwh_export_and_build_values(tdb):
     rows = db.buff_link_warehouse_export()
     assert len(rows) == 2
     vals = si.build_linkwh_values(rows)
-    # Tiêu đề 7 cột đúng thứ tự
-    assert vals[0] == ["STT", "Khách hàng", "Nền tảng", "Link",
-                       "Số lần dùng", "Lần đầu dùng", "Lần cuối dùng"]
-    assert len(vals) == 3  # tiêu đề + 2 dòng
-    # Dòng 1: STT=1, có tên khách + tg_id, đủ 7 cột
-    assert vals[1][0] == 1
-    assert "111001" in vals[1][1]
-    assert "Nguyen Van A" in vals[1][1]
-    assert vals[1][2] == "TikTok"
-    assert vals[1][4] == 2  # dùng 2 lần
-    # Cột giờ định dạng dd/mm/yyyy HH:MM
-    import re
-    assert re.match(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", vals[1][5])
-    assert re.match(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", vals[1][6])
-    # Khách không có tên → chỉ hiện tg_id
-    assert vals[2][1] == "222002"
-    assert vals[2][4] == 1
+    # Tiêu đề dùng ĐÚNG hằng số của module (10 cột, có Dịch vụ + giá vốn/giá bán/lãi).
+    # Test cũ kỳ vọng bản 7 cột (Link, Số lần dùng, Lần đầu/cuối dùng) -> đã lỗi thời so
+    # với LINKWH_HEADERS hiện tại, cập nhật theo code.
+    assert vals[0] == si.LINKWH_HEADERS
+    assert len(vals) == 4  # tiêu đề + 2 dòng + dòng tổng lãi
+    # Không phụ thuộc thứ tự dòng: tra theo ô "Khách hàng"
+    rows_by_cust = {r[1]: r for r in vals[1:3]}
+    r1 = next(r for c, r in rows_by_cust.items() if "111001" in c)
+    r2 = next(r for c, r in rows_by_cust.items() if "222002" in c)
+    assert r1[0] == 1 and "Nguyen Van A" in r1[1]
+    assert r1[2] == "TikTok"
+    assert r1[4] == "https://tiktok.com/@a/video/1"
+    assert r1[8] == 2      # dùng 2 lần (link trùng không tạo dòng mới)
+    # Khách không có tên -> chỉ hiện tg_id
+    assert r2[1] == "222002"
+    assert r2[8] == 1
+    assert vals[3][0] == "\U0001F4CA T\u1ed4NG"
 
 
 def test_linkwh_build_values_empty(tdb):
     from app import sheet_import as si
     vals = si.build_linkwh_values([])
-    assert vals == [["STT", "Khách hàng", "Nền tảng", "Link",
-                     "Số lần dùng", "Lần đầu dùng", "Lần cuối dùng"]]
+    # Kho rỗng -> chỉ có dòng tiêu đề (không thêm dòng tổng).
+    assert vals == [si.LINKWH_HEADERS]
