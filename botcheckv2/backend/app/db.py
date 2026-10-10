@@ -188,6 +188,20 @@ def get_conn():
             _pg_conn = SqliteConnection()
     return _pg_conn
 
+def db_mode() -> str:
+    """Chế độ DB hiện tại: 'postgres' hay 'sqlite'.
+
+    FIX: trước đây backend rớt về SQLite im lặng (chỉ print log) mà
+    /api/health vẫn 200 nên watchdog tưởng khỏe — bot phục vụ dữ liệu cũ
+    cho khách thật (đã xảy ra 2026-09-29). Nay health endpoint báo db_mode
+    để giám sát phát hiện và cảnh báo.
+    """
+    c = get_conn()
+    if isinstance(c, PgConnection):
+        return "postgres"
+    return "sqlite"
+
+
 def init_db() -> None:
     c = get_conn()
     with _lock:
@@ -4506,23 +4520,47 @@ def _rv(row, key: str) -> str:
         return ""
 
 
+class AccAlreadySold(Exception):
+    """Acc đã bị tiến trình khác bán trước (thua race claim SOLD)."""
+
+
 def _acc_order_create(c, tg_id: int, row, cat_id: int, price: int, now: int) -> int:
     """Tạo đơn hàng kèm TOÀN BỘ thông tin acc, rồi ĐÁNH DẤU acc đã bán
     (status='SOLD') thay vì xóa — giữ lại lịch sử trong kho.
-    Trả order_id."""
-    cur = c.execute(
-        "INSERT INTO acc_orders(tg_id, stock_id, cat_id, price, created_at, delivered_at,"
-        " uid, password, created_date, backup_mail, note, totp, cookie, token, batch)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
-        (tg_id, row["id"], cat_id, price, now, now,
-         _rv(row, "uid"), _rv(row, "password"), _rv(row, "created_date"),
-         _rv(row, "backup_mail"), _rv(row, "note"), _rv(row, "totp"),
-         _rv(row, "cookie"), _rv(row, "token"), _rv(row, "batch")))
-    order_id = cur.lastrowid
-    c.execute(
+    Trả order_id. Raise AccAlreadySold nếu acc đã bị bán trước.
+
+    FIX: claim SOLD nguyên tử TRƯỚC khi tạo đơn — UPDATE có điều kiện
+    AND status='AVAILABLE' + kiểm rowcount. 2 tiến trình cùng bán 1 acc:
+    chỉ 1 claim được, bên thua raise AccAlreadySold -> caller trả None
+    để handler hoàn tiền. Bản cũ UPDATE vô điều kiện sau khi INSERT đơn
+    nên 2 đơn cùng trỏ 1 acc.
+    """
+    claim = c.execute(
         "UPDATE acc_stock SET status='SOLD', sold_to=?, sold_at=?, price_sold=? "
-        "WHERE id=?",
+        "WHERE id=? AND status='AVAILABLE'",
         (tg_id, now, price, row["id"]))
+    if claim.rowcount != 1:
+        raise AccAlreadySold(f"acc_stock id={row['id']} đã bị bán trước")
+    try:
+        cur = c.execute(
+            "INSERT INTO acc_orders(tg_id, stock_id, cat_id, price, created_at, delivered_at,"
+            " uid, password, created_date, backup_mail, note, totp, cookie, token, batch)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+            (tg_id, row["id"], cat_id, price, now, now,
+             _rv(row, "uid"), _rv(row, "password"), _rv(row, "created_date"),
+             _rv(row, "backup_mail"), _rv(row, "note"), _rv(row, "totp"),
+             _rv(row, "cookie"), _rv(row, "token"), _rv(row, "batch")))
+        order_id = cur.lastrowid
+    except Exception:
+        # Bù: nhả claim để acc không kẹt SOLD mà không có đơn
+        try:
+            c.execute(
+                "UPDATE acc_stock SET status='AVAILABLE', sold_to=0, sold_at=0, price_sold=0 "
+                "WHERE id=? AND status='SOLD'",
+                (row["id"],))
+        except Exception:
+            pass
+        raise
     _consign_on_sell(c, row, tg_id, order_id, price, now, cat_id)
     return order_id
 
@@ -4677,7 +4715,10 @@ def acc_sell_one(cat_id: int, tg_id: int, price: int):
             "ORDER BY id LIMIT 1", (cat_id,)).fetchone()
         if not row:
             return None
-        order_id = _acc_order_create(c, tg_id, row, cat_id, price, now)
+        try:
+            order_id = _acc_order_create(c, tg_id, row, cat_id, price, now)
+        except AccAlreadySold:
+            return None
         c.commit()
         return order_id, row
 
@@ -4706,7 +4747,11 @@ def acc_sell_many(cat_id: int, tg_id: int, price_total: int, qty: int):
                 c.rollback()
                 return None
             p = each if i < len(rows) - 1 else price_total - each * (len(rows) - 1)
-            out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
+            try:
+                out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
+            except AccAlreadySold:
+                c.rollback()
+                return None
         c.commit()
         return out
 
@@ -5002,7 +5047,11 @@ def acc_sell_stock_ids(cat_id: int, tg_id: int, price_total: int, stock_ids):
         each = price_total // qty if qty else price_total
         for i, row in enumerate(rows):
             p = each if i < qty - 1 else price_total - each * (qty - 1)
-            out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
+            try:
+                out.append((_acc_order_create(c, tg_id, row, cat_id, p, now), row))
+            except AccAlreadySold:
+                c.rollback()
+                return None
         c.commit()
         return out
 
@@ -5683,7 +5732,11 @@ def acc_auto_replace(order_id: int, old_stock_id: int, cat_id: int, tg_id: int):
         if not chk:
             c.commit()
             return None
-        order_id = _acc_order_create(c, tg_id, row, cat_id, 0, now)
+        try:
+            order_id = _acc_order_create(c, tg_id, row, cat_id, 0, now)
+        except AccAlreadySold:
+            c.commit()
+            return None
         c.commit()
         return order_id, dict(row)
 
@@ -5965,7 +6018,10 @@ def acc_mystery_sell(tg_id: int, price: int):
                         (row["id"],)).fetchone()
         if not chk:
             return None
-        order_id = _acc_order_create(c, tg_id, row, ct["id"], price, now)
+        try:
+            order_id = _acc_order_create(c, tg_id, row, ct["id"], price, now)
+        except AccAlreadySold:
+            return None
         c.commit()
         return order_id, row, ct["name"]
 
@@ -6295,19 +6351,25 @@ def buff_get_balance(tg_id: int) -> int:
 
 
 def buff_adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
-    """Cộng/trừ ví buff. Trừ tiền kiểm tra nguyên tử: không đủ -> False."""
+    """Cộng/trừ ví buff. Trừ tiền kiểm tra nguyên tử: không đủ -> False.
+
+    FIX: điều kiện số dư nằm trong SQL (AND buff_balance + ? >= 0) + kiểm
+    rowcount — nguyên tử cả khi 2 tiến trình (bot VM + web Render) trừ đồng
+    thời. Bản cũ SELECT rồi UPDATE riêng nên 2 request cùng qua check -> ví âm.
+    """
     with _lock:
         c = get_conn()
         if amount < 0:
-            try:
-                r = c.execute("SELECT buff_balance FROM tg_users WHERE tg_id=?",
-                              (tg_id,)).fetchone()
-            except Exception:
+            cur = c.execute(
+                "UPDATE tg_users SET buff_balance = buff_balance + ? "
+                "WHERE tg_id=? AND buff_balance + ? >= 0",
+                (amount, tg_id, amount))
+            if cur.rowcount != 1:
+                c.commit()
                 return False
-            if not r or int(r["buff_balance"] or 0) + amount < 0:
-                return False
-        c.execute("UPDATE tg_users SET buff_balance = buff_balance + ? WHERE tg_id=?",
-                  (amount, tg_id))
+        else:
+            c.execute("UPDATE tg_users SET buff_balance = buff_balance + ? WHERE tg_id=?",
+                      (amount, tg_id))
         c.execute(
             "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
             (int(time.time()), tg_id, amount, reason),
@@ -6327,19 +6389,23 @@ def rent_get_balance(tg_id: int) -> int:
 
 
 def rent_adjust_balance(tg_id: int, amount: int, reason: str) -> bool:
-    """Cộng/trừ ví thuê số. Trừ tiền kiểm tra nguyên tử: không đủ -> False."""
+    """Cộng/trừ ví thuê số. Trừ tiền kiểm tra nguyên tử: không đủ -> False.
+
+    FIX: như buff_adjust_balance — điều kiện trong SQL + rowcount.
+    """
     with _lock:
         c = get_conn()
         if amount < 0:
-            try:
-                r = c.execute("SELECT rent_balance FROM tg_users WHERE tg_id=?",
-                              (tg_id,)).fetchone()
-            except Exception:
+            cur = c.execute(
+                "UPDATE tg_users SET rent_balance = rent_balance + ? "
+                "WHERE tg_id=? AND rent_balance + ? >= 0",
+                (amount, tg_id, amount))
+            if cur.rowcount != 1:
+                c.commit()
                 return False
-            if not r or int(r["rent_balance"] or 0) + amount < 0:
-                return False
-        c.execute("UPDATE tg_users SET rent_balance = rent_balance + ? WHERE tg_id=?",
-                  (amount, tg_id))
+        else:
+            c.execute("UPDATE tg_users SET rent_balance = rent_balance + ? WHERE tg_id=?",
+                      (amount, tg_id))
         c.execute(
             "INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
             (int(time.time()), tg_id, amount, reason),

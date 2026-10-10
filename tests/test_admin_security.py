@@ -165,3 +165,48 @@ def test_qr_route_chan_truy_cap_an_danh_va_path_traversal(api_client, tdb):
     tok = create_admin_token(sup_id)
     r = api_client.get(f"/api/qr/khong_ton_tai.jpg?t={tok}")
     assert r.status_code == 404
+
+
+def test_qr_delete_chan_path_traversal(api_client, tdb, tmp_path):
+    """Path traversal DELETE /api/upload-qr/{filename}: filename lạ -> 404,
+    không được xóa file ngoài thư mục ảnh."""
+    import os
+    from app.api import create_admin_token
+
+    db = tdb
+    sup_id = _make_admin(db, "boss_qr1", "BossPass123", "super_admin")
+    headers = _bearer(create_admin_token(sup_id))
+
+    # file "mồi" đặt ngoài img_dir — nếu traversal còn sống là mất
+    decoy = tmp_path / "decoy.txt"
+    decoy.write_text("quan trọng")
+    # endpoint dùng img_dir tương đối từ app/api.py; chỉ cần assert 404
+    for evil in ("..%2F..%2Fdecoy.txt", "..", "qr_..%2F..%2Fdecoy.txt",
+                 "notqr_1.png", "qr_1.png/../../decoy.txt"):
+        r = api_client.delete(f"/api/upload-qr/{evil}", headers=headers)
+        assert r.status_code == 404, f"traversal lọt: {evil} -> {r.status_code}"
+    assert decoy.exists(), "file ngoài thư mục đã bị xóa!"
+    # filename hợp lệ nhưng không tồn tại -> 200 ok (không crash)
+    r = api_client.delete("/api/upload-qr/qr_9.png", headers=headers)
+    assert r.status_code == 200, r.text
+
+
+def test_qr_upload_chan_ext_doc_hai(api_client, tdb):
+    """Upload QR: ext từ filename user không được chứa path traversal."""
+    from app.api import create_admin_token
+
+    db = tdb
+    sup_id = _make_admin(db, "boss_qr2", "BossPass123", "super_admin")
+    headers = _bearer(create_admin_token(sup_id))
+
+    for evil_name in ("x.png/../../evil", "x.php", "qr.exe", "x.png/.hidden"):
+        r = api_client.post(
+            "/api/upload-qr", headers=headers,
+            files={"file": (evil_name, b"fake-bytes", "image/png")})
+        assert r.status_code == 400, f"ext độc lọt: {evil_name} -> {r.status_code}"
+    # ext hợp lệ -> cho qua (200)
+    r = api_client.post(
+        "/api/upload-qr", headers=headers,
+        files={"file": ("qr.png", b"fake-bytes", "image/png")})
+    assert r.status_code == 200, r.text
+    assert r.json()["filename"].startswith("qr_")

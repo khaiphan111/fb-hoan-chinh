@@ -752,19 +752,28 @@ async def _make_payos_order(tg_id: int, amount: int, target: str = "main"):
         return int(existing["order_code"]), existing["checkout_url"], qr_code, True
     if existing and int(existing["amount"]) != int(amount):
         # Số tiền khác -> hủy đơn cũ, tạo đơn mới (tránh link thanh toán sai tiền)
-        # FIX (A2): xác minh trạng thái thật với PayOS trước khi hủy — nếu đơn
-        # đã PAID thì quyết toán luôn thay vì ghi đè CANCELLED (mất tiền oan).
+        # FIX: chỉ hủy khi XÁC MINH được đơn chưa thanh toán. Nếu PayOS API lỗi
+        # (mạng chập chờn) mà đơn thực ra đã PAID -> giữ PENDING để webhook/
+        # poller quyết toán sau. Hủy oan lúc này là tiền kẹt vĩnh viễn vì
+        # settle chỉ nhận PENDING/EXPIRED, poller chỉ quét EXPIRED,
+        # reconciler chỉ quét PAID — đơn CANCELLED không đường nào cứu.
+        verified_unpaid = False
         try:
             info = await payos_mod.get_payment_info(int(existing["order_code"]))
             if str(info.get("status") or "").upper() == "PAID":
                 db.settle_payos_order(int(existing["order_code"]))
+            else:
+                verified_unpaid = True
         except Exception:
             pass
-        try:
-            await payos_mod.cancel_payment_link(int(existing["order_code"]))
-        except Exception:
-            pass
-        db.mark_payos_status(int(existing["order_code"]), "CANCELLED")
+        if verified_unpaid:
+            try:
+                await payos_mod.cancel_payment_link(int(existing["order_code"]))
+            except Exception:
+                pass
+            db.mark_payos_status(int(existing["order_code"]), "CANCELLED")
+        # Chưa xác minh được: giữ PENDING. Đơn mới vẫn tạo bên dưới (mới nhất
+        # được ưu tiên); đơn cũ do webhook/poller xử lý tiếp.
     import sqlite3
     description = f"NAP{tg_id}"[-25:]
     return_url, cancel_url = payos_mod.get_return_urls()

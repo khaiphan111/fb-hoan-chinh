@@ -775,7 +775,11 @@ async def upload_qr(file: UploadFile = File(...), _=Depends(require_role("super_
     
     # Define max 2 files (qr_1.png/jpg, qr_2.png/jpg)
     # Just save it as qr_1 or qr_2 depending on what exists, or overwrite
-    ext = os.path.splitext(file.filename)[1]
+    # FIX bảo mật: whitelist phần mở rộng — trước đây ext lấy từ filename
+    # user (vd "x.png/../../evil") cho phép ghi file tùy ý (path traversal).
+    ext = (os.path.splitext(file.filename)[1] or "").lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(status_code=400, detail="Chỉ nhận file ảnh png/jpg/webp")
     
     # List current qr_ files
     existing = [f for f in os.listdir(img_dir) if f.startswith("qr_")]
@@ -800,6 +804,11 @@ async def upload_qr(file: UploadFile = File(...), _=Depends(require_role("super_
 
 @router.delete("/upload-qr/{filename}")
 async def delete_qr(filename: str, _=Depends(require_role("super_admin"))):
+    # FIX bảo mật: whitelist filename — trước đây nối trực tiếp vào path
+    # (vd "../../../.env") cho phép xóa file tùy ý (path traversal).
+    # Cùng whitelist với GET /qr/{filename}.
+    if not re.fullmatch(r"qr_[A-Za-z0-9._-]{1,80}", filename or ""):
+        raise HTTPException(status_code=404, detail="Not found")
     img_dir = os.path.join(os.path.dirname(__file__), "..", "data", "images")
     filepath = os.path.join(img_dir, filename)
     if os.path.exists(filepath):

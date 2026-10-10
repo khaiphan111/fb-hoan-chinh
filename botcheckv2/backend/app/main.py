@@ -280,7 +280,14 @@ async def on_shutdown():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "app": config.APP_NAME, "version": config.APP_VERSION}
+    # db_mode để giám sát phát hiện backend rớt về SQLite (dữ liệu cũ) —
+    # trước đây health 200 vô điều kiện nên watchdog không biết.
+    try:
+        mode = db.db_mode()
+    except Exception:
+        mode = "unknown"
+    return {"ok": True, "app": config.APP_NAME, "version": config.APP_VERSION,
+            "db_mode": mode}
 
 
 @app.get("/api/debug/status")
