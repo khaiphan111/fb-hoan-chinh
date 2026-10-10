@@ -46,13 +46,12 @@ async def get_panel_order_progress(panel_order_id: str) -> dict:
     if not panel_order_id:
         return {"ok": False, "error": "thiếu mã panel"}
 
-    apw = browser = None
+    apw = browser = ctx = None
     try:
         apw, browser, ctx = await buff_worker._new_context(None)
         page = await ctx.new_page()
         ok, info = await buff_worker._ensure_login(page)
         if not ok:
-            await ctx.close()
             return {"ok": False, "error": f"login panel thất bại: {info}"}
 
         # Trang lịch sử đơn — thử các URL phổ biến
@@ -104,21 +103,33 @@ async def get_panel_order_progress(panel_order_id: str) -> dict:
                             status = v
                             break
 
-                    await ctx.close()
                     return {"ok": True, "done": done, "total": total, "status": status}
             except Exception:
                 continue
 
-        await ctx.close()
         return {"ok": False, "error": f"không tìm thấy đơn {panel_order_id} trên panel"}
     except Exception as e:
         log.warning("get_panel_order_progress lỗi: %s", e)
+        return {"ok": False, "error": str(e)[:200]}
+    finally:
+        # FIX (D1): đóng cả browser + playwright driver — trước đây chỉ ctx.close()
+        # nên mỗi đơn rò 1 Chromium + 1 node driver + temp profile -> OOM.
+        for _c in (ctx,):
+            try:
+                if _c:
+                    await _c.close()
+            except Exception:
+                pass
         try:
-            if ctx:
-                await ctx.close()
+            if browser:
+                await browser.close()
         except Exception:
             pass
-        return {"ok": False, "error": str(e)[:200]}
+        try:
+            if apw:
+                await apw.stop()
+        except Exception:
+            pass
 
 
 async def scan_running_orders(bot=None):

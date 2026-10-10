@@ -379,6 +379,7 @@ _task = None
 
 async def _poll_loop():
     log.info("PayOS poll loop started")
+    _last_reconcile = 0.0
     while True:
         try:
             stats = await check_pending_once()
@@ -386,6 +387,21 @@ async def _poll_loop():
                 log.info("PayOS poll: %s", stats)
         except Exception as e:
             log.error("PayOS poll loop lỗi: %s", e)
+        # Đối soát định kỳ (A1): bù đơn PAID thiếu txn, idempotent theo order_code.
+        # Chạy thưa (30 phút/lần) vì quét 200 đơn PAID mới nhất qua tunnel.
+        try:
+            now = time.monotonic()
+            if now - _last_reconcile >= 1800:
+                _last_reconcile = now
+                from . import db as _db
+                rc = await asyncio.to_thread(_db.reconcile_payos_paid)
+                if rc.get("fixed"):
+                    log.warning("PayOS reconcile: bù %s đơn PAID thiếu txn %s",
+                                rc["fixed"], rc)
+                elif rc.get("checked"):
+                    log.info("PayOS reconcile: %s đơn PAID, không thiếu txn", rc["checked"])
+        except Exception as e:
+            log.error("PayOS reconcile lỗi: %s", e)
         await asyncio.sleep(POLL_INTERVAL)
 
 

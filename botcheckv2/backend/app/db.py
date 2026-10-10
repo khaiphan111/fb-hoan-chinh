@@ -3779,38 +3779,206 @@ def mark_payos_paid(order_code: int) -> bool:
         return cur.rowcount > 0
 
 
-def settle_payos_order(order_code: int) -> dict:
-    """Quyet toan don PayOS trong 1 transaction duy nhat.
+def _raw_dict_cursor(raw):
+    """Raw cursor cho row dạng dict trên cả Postgres (DictCursor) và SQLite
+    (row_factory=sqlite3.Row đã set ở SqliteConnection)."""
+    try:
+        return raw.cursor(cursor_factory=DictCursor)
+    except TypeError:
+        return raw.cursor()
 
-    PENDING/EXPIRED -> PAID + cong vao vi dich (target) + total_topup + hoa hong
-    F1/F2, tat ca trong cung 1 commit. Tra {'ok': True, 'target': ...} khi quyet
-    toan xong, {'ok': False} khi don da duoc xu ly truoc do (webhook/poller trung).
+
+def _raw_x(cur, raw, sql, params=()):
+    """Execute trên raw cursor với placeholder đúng backend (?/ %s)."""
+    import sqlite3
+    if not isinstance(raw, sqlite3.Connection):
+        sql = sql.replace("?", "%s")
+    cur.execute(sql, params)
+    return cur.rowcount
+
+
+def _raw_one(cur, raw, sql, params=()):
+    _raw_x(cur, raw, sql, params)
+    return cur.fetchone()
+
+
+def _credit_topup_raw(cur, raw, tg_id: int, amount: int, reason: str, wallet: str = "main") -> dict:
+    """Cộng tiền nạp vào ví + total_topup + hoa hồng F1/F2 bằng raw cursor.
+
+    FIX (A1): bản dùng trong transaction thật — caller đã tắt autocommit,
+    mọi câu lệnh ở đây chung 1 transaction với caller; KHÔNG commit/rollback
+    ở đây. Logic giữ nguyên _credit_topup_nolock.
+    """
+    def _x(sql, params=()):
+        return _raw_x(cur, raw, sql, params)
+
+    def _one(sql, params=()):
+        return _raw_one(cur, raw, sql, params)
+
+    now = int(time.time())
+    col = ("shop_balance" if wallet == "shop"
+           else ("buff_balance" if wallet == "buff"
+           else ("rent_balance" if wallet == "rent" else "balance")))
+    _x(f"UPDATE tg_users SET {col} = {col} + ?, total_topup = total_topup + ? WHERE tg_id=?",
+       (amount, amount, tg_id))
+    _x("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+       (now, tg_id, amount, reason))
+    bonuses: dict = {}
+    user = _one("SELECT referrer_id FROM tg_users WHERE tg_id=?", (tg_id,))
+    if user and user["referrer_id"]:
+        f1_id = user["referrer_id"]
+        f1_topup_row = _one("SELECT SUM(total_topup) as s FROM tg_users WHERE referrer_id=?", (f1_id,))
+        total_f1_topup = f1_topup_row["s"] if f1_topup_row and f1_topup_row["s"] else 0
+        rates = get_ref_rates()
+        percentage = rates["f1_pct"] / 100
+        if total_f1_topup >= rates["f1_gold_min"]:
+            percentage = rates["f1_gold_pct"] / 100
+        elif total_f1_topup >= rates["f1_silver_min"]:
+            percentage = rates["f1_silver_pct"] / 100
+        f1_bonus = int(amount * percentage)
+        if f1_bonus > 0:
+            _x("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?",
+               (f1_bonus, f1_id))
+            _x("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+               (now, f1_id, f1_bonus, "Hoa hồng giới thiệu F1"))
+            _x("INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at)"
+               " VALUES(?,?,?,?,?,?)",
+               (f1_id, tg_id, 1, amount, f1_bonus, now))
+            bonuses["f1"] = (f1_id, f1_bonus)
+        f1_user = _one("SELECT referrer_id FROM tg_users WHERE tg_id=?", (f1_id,))
+        if f1_user and f1_user["referrer_id"]:
+            f2_id = f1_user["referrer_id"]
+            f2_bonus = int(amount * rates["f2_pct"] / 100)
+            if f2_bonus > 0:
+                _x("UPDATE tg_users SET ref_earnings = ref_earnings + ? WHERE tg_id=?",
+                   (f2_bonus, f2_id))
+                _x("INSERT INTO txns(ts, tg_id, amount, reason) VALUES(?,?,?,?)",
+                   (now, f2_id, f2_bonus, "Hoa hồng giới thiệu F2"))
+                _x("INSERT INTO ref_commissions(referrer_id, from_user_id, level, amount, commission, created_at)"
+                   " VALUES(?,?,?,?,?,?)",
+                   (f2_id, tg_id, 2, amount, f2_bonus, now))
+                bonuses["f2"] = (f2_id, f2_bonus)
+    return bonuses
+
+
+def settle_payos_order(order_code: int) -> dict:
+    """Quyết toán đơn PayOS trong 1 transaction Postgres THẬT.
+
+    FIX (A1): trước đây UPDATE PAID commit ngay (autocommit=True) rồi mới cộng
+    tiền — tunnel rớt/process chết ở giữa là đơn PAID nhưng ví không được cộng,
+    job đối soát lại bỏ qua đơn PAID. Nay claim + cộng ví + hoa hồng F1/F2 tất
+    cả trong cùng 1 commit; lỗi giữa chừng -> rollback toàn bộ, đơn giữ nguyên
+    PENDING/EXPIRED để poller/webhook thử lại (idempotent theo order_code).
+
+    Trả {'ok': True, 'target': ...} khi quyết toán xong,
+    {'ok': False} khi đơn không tồn tại hoặc đã được xử lý trước đó.
     """
     with _lock:
         c = get_conn()
-        order = c.execute(
-            "SELECT tg_id, amount, COALESCE(target,'main') AS target "
-            "FROM payos_orders WHERE order_code=?",
-            (order_code,),
-        ).fetchone()
-        if not order:
+        raw = getattr(c, "conn", None)
+        if raw is None:
             return {"ok": False}
-        tg_id, amount = int(order["tg_id"]), int(order["amount"])
-        target = order["target"] or "main"
-        if target not in ("main", "shop", "buff", "rent"):
-            target = "main"
-        cur = c.execute(
-            "UPDATE payos_orders SET status='PAID', updated_at=? "
-            "WHERE order_code=? AND status IN ('PENDING','EXPIRED')",
-            (int(time.time()), order_code),
-        )
-        if cur.rowcount == 0:
-            return {"ok": False}
-        bonuses = _credit_topup_nolock(c, tg_id, amount, "payos", target)
-        c.commit()
+        prev_ac = raw.autocommit
+        raw.autocommit = False
+        try:
+            cur = _raw_dict_cursor(raw)
+            order = _raw_one(cur, raw,
+                "SELECT tg_id, amount, COALESCE(target,'main') AS target "
+                "FROM payos_orders WHERE order_code=?",
+                (order_code,))
+            if not order:
+                raw.rollback()
+                return {"ok": False}
+            tg_id, amount = int(order["tg_id"]), int(order["amount"])
+            target = order["target"] or "main"
+            if target not in ("main", "shop", "buff", "rent"):
+                target = "main"
+            rc = _raw_x(cur, raw,
+                "UPDATE payos_orders SET status='PAID', updated_at=? "
+                "WHERE order_code=? AND status IN ('PENDING','EXPIRED')",
+                (int(time.time()), order_code))
+            if rc == 0:
+                raw.rollback()
+                return {"ok": False}
+            # Idempotency key CHÍNH XÁC theo order_code trong reason của txn.
+            # Reconciler kiểm tra reason='payos:{order_code}' nên không bao giờ
+            # cộng trùng, kể cả khi webhook/poller gọi settle trùng nhau.
+            bonuses = _credit_topup_raw(cur, raw, tg_id, amount, f"payos:{order_code}", target)
+            raw.commit()
+        except Exception:
+            try:
+                raw.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            raw.autocommit = prev_ac
     out: dict = {"ok": True, "target": target}
     out.update(bonuses)
     return out
+
+
+def reconcile_payos_paid() -> dict:
+    """Job đối soát: tìm đơn PAID nhưng thiếu txns nạp tương ứng -> cộng bù.
+
+    FIX (A1): lưới an toàn cho các đơn đã PAID trước bản vá (khi settle chưa
+    nguyên tử). Idempotent CHÍNH XÁC theo order_code:
+      - đơn settle sau bản vá: txn reason='payos:{order_code}'
+      - đơn settle trước bản vá: txn reason='payos' (không có order_code) ->
+        fallback đoán theo amount trong vòng 1 ngày quanh updated_at
+    Bù cũng dùng reason='payos:{order_code}' nên lần chạy sau luôn tìm thấy,
+    không bao giờ cộng trùng (bản trước dùng 'payos_bu:{oc}' nhưng check
+    'payos' -> cộng bù lặp vô hạn).
+    Trả {'checked': n, 'fixed': m}.
+    """
+    checked = fixed = 0
+    with _lock:
+        c = get_conn()
+        rows = c.execute(
+            "SELECT order_code, tg_id, amount, COALESCE(target,'main') AS target, updated_at "
+            "FROM payos_orders WHERE status='PAID' ORDER BY updated_at DESC LIMIT 200"
+        ).fetchall()
+        for r in rows:
+            d = dict(r)
+            checked += 1
+            oc, tg_id, amount = d["order_code"], int(d["tg_id"]), int(d["amount"])
+            target = d["target"] or "main"
+            if target not in ("main", "shop", "buff", "rent"):
+                target = "main"
+            # 1) Khớp chính xác theo order_code (đơn mới + đơn đã bù trước đó)
+            hit = c.execute(
+                "SELECT 1 FROM txns WHERE tg_id=? AND amount=? AND "
+                "(reason=? OR reason=?) LIMIT 1",
+                (tg_id, amount, f"payos:{oc}", f"payos_bu:{oc}")).fetchone()
+            if not hit:
+                # 2) Fallback cho đơn cũ (trước bản vá idempotency): reason='payos'
+                lo, hi = int(d["updated_at"]) - 86400, int(d["updated_at"]) + 86400
+                hit = c.execute(
+                    "SELECT 1 FROM txns WHERE tg_id=? AND amount=? AND reason='payos' "
+                    "AND ts BETWEEN ? AND ? LIMIT 1",
+                    (tg_id, amount, lo, hi)).fetchone()
+            if hit:
+                continue
+            # Thiếu txn -> cộng bù trong transaction thật với idempotency key
+            # là order_code; lần chạy sau bước (1) sẽ tìm thấy.
+            raw = getattr(c, "conn", None)
+            if raw is None:
+                continue
+            prev_ac = raw.autocommit
+            raw.autocommit = False
+            try:
+                cur = _raw_dict_cursor(raw)
+                _credit_topup_raw(cur, raw, tg_id, amount, f"payos:{oc}", target)
+                raw.commit()
+                fixed += 1
+            except Exception:
+                try:
+                    raw.rollback()
+                except Exception:
+                    pass
+            finally:
+                raw.autocommit = prev_ac
+    return {"checked": checked, "fixed": fixed}
 
 
 def get_overdue_pending_payos_orders(max_age_sec: int) -> list:
@@ -3859,14 +4027,20 @@ def mark_payos_final_checked(order_code: int) -> None:
         pass
 
 
-def mark_payos_status(order_code: int, status: str) -> None:
+def mark_payos_status(order_code: int, status: str) -> bool:
+    """Đổi trạng thái đơn PayOS — FIX (A2): chỉ cho phép chuyển từ
+    PENDING/EXPIRED. Đơn đã PAID/SETTLED không bao giờ bị ghi đè (trước đây
+    bấm "Hủy đơn" sau khi đã thanh toán là mất tiền oan).
+    Trả True nếu thực sự đổi trạng thái."""
     with _lock:
         c = get_conn()
-        c.execute(
-            "UPDATE payos_orders SET status=?, updated_at=? WHERE order_code=?",
+        cur = c.execute(
+            "UPDATE payos_orders SET status=?, updated_at=? "
+            "WHERE order_code=? AND status IN ('PENDING','EXPIRED')",
             (status, int(time.time()), order_code),
         )
         c.commit()
+        return cur.rowcount > 0
 
 
 def payos_stats_today() -> dict:
@@ -4405,8 +4579,90 @@ def _consign_on_sell(c, row, buyer_tg_id: int, order_id: int, price: int, now: i
             (now, price, fee_fixed, fee_pct, net, w_until, item_id))
     except Exception as e:
         # PG autocommit: đơn bán đã commit trước đó nên KHÔNG raise (không được fail đơn khách).
-        # Log lớn để admin phát hiện và bù bút toán tay (idempotency theo order_ref).
+        # FIX (B3): log lỗi rõ + job reconcile_consign_sales() sẽ bù bút toán
+        # (idempotency theo order_ref nên chạy lại an toàn).
         print(f"[CONSIGN-ERR] _consign_on_sell {order_ref}: {e}", flush=True)
+
+
+def reconcile_consign_sales(limit: int = 100) -> dict:
+    """Job đối soát ký gửi (B3): tìm acc đã SOLD có consign_item_id nhưng thiếu
+    consignment_orders -> tạo bù bút toán. Idempotent theo order_ref.
+    Trả {'checked': n, 'fixed': m}."""
+    checked = fixed = 0
+    with _lock:
+        c = get_conn()
+        try:
+            rows = c.execute(
+                "SELECT s.id AS stock_id, s.uid, s.consign_item_id,"
+                " o.id AS order_id, o.price, o.tg_id AS buyer_tg_id, o.created_at"
+                " FROM acc_stock s"
+                " JOIN acc_orders o ON o.stock_id = s.id"
+                " WHERE s.status='SOLD' AND COALESCE(s.consign_item_id,0) > 0"
+                " AND NOT EXISTS (SELECT 1 FROM consignment_orders co"
+                "                 WHERE co.order_ref = 'ACC-' || CAST(o.id AS TEXT))"
+                " LIMIT ?", (limit,)).fetchall()
+        except Exception as e:
+            print(f"[CONSIGN-ERR] reconcile query: {e}", flush=True)
+            return {"checked": 0, "fixed": 0, "error": "query"}
+        for r in rows:
+            d = dict(r)
+            checked += 1
+            order_ref = f"ACC-{d['order_id']}"
+            try:
+                # Chỉ tăng fixed khi tạo sổ thật (hàm trả True)
+                if _consign_on_sell_retry(c, d, order_ref):
+                    fixed += 1
+            except Exception as e:
+                print(f"[CONSIGN-ERR] reconcile {order_ref}: {e}", flush=True)
+            c.commit()
+    return {"checked": checked, "fixed": fixed}
+
+
+def _consign_on_sell_retry(c, d: dict, order_ref: str) -> bool:
+    """Tạo bù bút toán ký gửi cho đơn đã bán nhưng thiếu sổ.
+
+    Trả True khi tạo sổ thật, False khi bỏ qua (đã có sổ / thiếu dữ liệu).
+    """
+    now = int(time.time())
+    dup = c.execute("SELECT 1 FROM consignment_orders WHERE order_ref=? LIMIT 1",
+                    (order_ref,)).fetchone()
+    if dup:
+        return False
+    it = c.execute(
+        "SELECT i.*, b.floor_price, b.sell_price AS batch_sell_price, b.warranty_days, b.category_id"
+        " FROM consignment_items i JOIN consignment_batches b ON b.id=i.batch_id"
+        " WHERE i.id=?", (d["consign_item_id"],)).fetchone()
+    if not it:
+        return False
+    price = int(d["price"] or 0)
+    fee_row = c.execute("SELECT fee_fixed, fee_pct FROM consignment_fees WHERE category_id=?",
+                        (it["category_id"],)).fetchone()
+    fee_fixed = int(fee_row["fee_fixed"]) if fee_row and fee_row["fee_fixed"] else 0
+    fee_pct = float(fee_row["fee_pct"]) if fee_row and fee_row["fee_pct"] else 0.0
+    fee_amount = fee_fixed + int(price * fee_pct / 100)
+    net = price - fee_amount
+    if net < 0:
+        net = 0
+    w_days = it["warranty_days"] or 0
+    w_until = now + w_days * 86400 if w_days > 0 else now
+    cur = c.execute(
+        "INSERT INTO consignment_orders (item_id, batch_id, consignor_id, buyer_tg_id, order_ref,"
+        " sell_price, floor_price, fee_fixed, fee_pct, fee_amount, net_amount,"
+        " warranty_days, warranty_until, status, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'sold',?) RETURNING id",
+        (it["id"], it["batch_id"], it["consignor_id"], d["buyer_tg_id"], order_ref,
+         price, it["floor_price"], fee_fixed, fee_pct, fee_amount, net,
+         w_days, w_until, now))
+    c.execute(
+        "INSERT INTO consignment_ledger (consignor_id, kind, amount, ref_type, ref_id, note, created_at)"
+        " VALUES (?,?,?,?,?,?,?) RETURNING id",
+        (it["consignor_id"], "pending_in", net, "order", cur.lastrowid,
+         f"Bán {order_ref} (bù đối soát)", now))
+    c.execute(
+        "UPDATE consignment_items SET status='sold', sold_at=?, sold_price=?,"
+        " fee_fixed=?, fee_pct=?, net_amount=?, warranty_until=? WHERE id=?",
+        (now, price, fee_fixed, fee_pct, net, w_until, it["id"]))
+    return True
 
 
 def acc_sell_one(cat_id: int, tg_id: int, price: int):
@@ -7303,13 +7559,15 @@ def consign_batch_do_return(bid: int, approve: bool, by_id: int = 0) -> bool:
             return False
         now = int(time.time())
         if approve:
+            # FIX (B2): cho phép trả cả item 'dead' (acc DIE đã gỡ khỏi shop) —
+            # trước đây chỉ 'listed' nên acc dead kẹt vĩnh viễn, đối tác không lấy lại được.
             items = c.execute(
-                "SELECT id, acc_stock_id FROM consignment_items WHERE batch_id=? AND status='listed'",
+                "SELECT id, acc_stock_id, status FROM consignment_items WHERE batch_id=? AND status IN ('listed','dead')",
                 (bid,)).fetchall()
             for it in items:
                 c.execute("UPDATE consignment_items SET status='returned' WHERE id=?", (it["id"],))
                 if it["acc_stock_id"]:
-                    c.execute("UPDATE acc_stock SET status='RETURNED' WHERE id=? AND status='AVAILABLE'",
+                    c.execute("UPDATE acc_stock SET status='RETURNED' WHERE id=? AND status IN ('AVAILABLE','DIE')",
                               (it["acc_stock_id"],))
             left = c.execute("SELECT COUNT(*) v FROM consignment_items WHERE batch_id=? AND status='listed'",
                              (bid,)).fetchone()["v"]

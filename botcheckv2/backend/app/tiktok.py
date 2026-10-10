@@ -1,4 +1,5 @@
 import json, re, logging, time, hashlib, random as _random
+import asyncio
 from typing import Optional
 import httpx
 
@@ -173,6 +174,32 @@ def parse_video_id(raw: str) -> Optional[str]:
     return None
 
 
+async def resolve_tiktok_url(url: str) -> str:
+    """Resolve link rút gọn (vt.tiktok.com / vm.tiktok.com) -> URL đầy đủ.
+
+    Không raise — resolve thất bại thì trả về URL gốc.
+    """
+    from .safeurl import is_safe_url, TIKTOK_HOSTS
+    url = (url or "").strip()
+    if not url or "/video/" in url:
+        return url
+    try:
+        if not await is_safe_url(url, TIKTOK_HOSTS):
+            return url
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            try:
+                r = await client.head(url)
+                final = str(r.url)
+            except Exception:
+                final = url
+            if "/video/" not in final:
+                r = await client.get(url)
+                final = str(r.url)
+            return final
+    except Exception:
+        return url
+
+
 def fmt_num(n) -> str:
     try: n = int(n)
     except: return "N/A"
@@ -271,31 +298,40 @@ async def fetch_video_info(video_url: str) -> dict:
     """
     Lay thong tin + stats cua 1 video cu the tu URL.
     video_url: https://www.tiktok.com/@user/video/12345...
+    TikTok tra ve chập chờn tu IP server (bot detection ngau nhien) nen
+    retry toi da 3 lan; van khong co du lieu -> raise ValueError.
     """
-    html = await _get_html(video_url)
-    data = _extract_page_data(html)
+    last_err = None
+    for attempt in range(3):
+        try:
+            html = await _get_html(video_url)
+            data = _extract_page_data(html)
 
-    # Thu cau truc video detail
-    scope = data.get("__DEFAULT_SCOPE__", {})
-    vd = scope.get("webapp.video-detail", {})
-    item_struct = (
-        vd.get("itemInfo", {}).get("itemStruct")
-        or vd.get("itemList", [None])[0]
-        or None
-    )
+            # Thu cau truc video detail
+            scope = data.get("__DEFAULT_SCOPE__", {})
+            vd = scope.get("webapp.video-detail", {})
+            item_struct = (
+                vd.get("itemInfo", {}).get("itemStruct")
+                or vd.get("itemList", [None])[0]
+                or None
+            )
 
-    if not item_struct:
-        # Fallback: tim trong ItemModule
-        item_module = data.get("ItemModule", {})
-        if item_module:
-            item_struct = list(item_module.values())[0]
+            if not item_struct:
+                # Fallback: tim trong ItemModule
+                item_module = data.get("ItemModule", {})
+                if item_module:
+                    item_struct = list(item_module.values())[0]
 
-    if not item_struct:
-        raise ValueError("Khong the lay thong tin video. TikTok co the da can VIDEO_ID hop le.")
-
-    vid_id = parse_video_id(video_url) or item_struct.get("id", "")
-    author = (item_struct.get("author") or {}).get("uniqueId", "")
-    return _extract_video_item(item_struct, author)
+            if item_struct:
+                vid_id = parse_video_id(video_url) or item_struct.get("id", "")
+                author = (item_struct.get("author") or {}).get("uniqueId", "")
+                return _extract_video_item(item_struct, author)
+            last_err = ValueError("Khong the lay thong tin video. TikTok co the da can VIDEO_ID hop le.")
+        except ValueError as e:
+            last_err = e
+        if attempt < 2:
+            await asyncio.sleep(2)
+    raise last_err
 
 
 # ─── CAPTIONS ────────────────────────────────────────────────

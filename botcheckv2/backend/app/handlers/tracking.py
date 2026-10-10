@@ -525,6 +525,22 @@ async def on_trackmenu_fb_input(msg: Message, state: FSMContext):
         await state.clear()
         await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
 
+@router.message(TrackMenuState.waiting_fb_post)
+async def on_trackmenu_fb_post_input(msg: Message, state: FSMContext):
+    """Nhận link bài viết FB từ nút '📊 Check bài viết' -> check số liệu 1 lần."""
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    url = (msg.text or "").strip().split()[0]
+    if not url or "facebook.com" not in url.lower():
+        await msg.answer("❌ Link không phải Facebook. Gửi lại link bài viết, hoặc /huy để hủy.")
+        return
+    await state.clear()
+    from .check import process_fb_post_check
+    await process_fb_post_check(msg, url)
+
+
 @router.message(TrackMenuState.waiting_ig_username)
 async def on_trackmenu_ig_input(msg: Message, state: FSMContext):
     if _is_cancel(msg.text):
@@ -990,6 +1006,19 @@ async def on_trackmenu_cb(cb: CallbackQuery, state: FSMContext):
             await cb.answer()
             return
 
+        # ── Facebook: check số liệu 1 bài viết (1 lần, không theo dõi) ──
+        if data == "trackmenu:fb_post_check":
+            await state.set_state(TrackMenuState.waiting_fb_post)
+            await cb.message.edit_text(
+                "📊 <b>CHECK SỐ LIỆU BÀI VIẾT FB</b>\n\n"
+                "Gửi link bài viết / reel / video Facebook cần check.\n"
+                "VD: <code>https://www.facebook.com/share/v/...</code>\n\n"
+                "Bot sẽ đọc số lượt thích, bình luận, chia sẻ công khai.\n\n"
+                "Gõ /huy để hủy.",
+                parse_mode="HTML", reply_markup=_trackmenu_back_kb("trackmenu:fb"))
+            await cb.answer()
+            return
+
         # ── Facebook: danh sách ──
         if data == "trackmenu:fb_list":
             rows = db.get_user_watches(tg_id)
@@ -1056,6 +1085,8 @@ async def on_trackmenu_cb(cb: CallbackQuery, state: FSMContext):
                 "🎵 <b>THEO DÕI TIKTOK</b>\n\nGửi username TikTok (không cần @).\nVD: <code>cristiano</code>\n\nGõ /huy để hủy."),
             "trackmenu:tiktok_video_add": (TrackMenuState.waiting_tiktok_video,
                 "🎬 <b>THEO DÕI VIDEO TIKTOK</b>\n\nGửi link video TikTok.\nVD: <code>https://tiktok.com/@user/video/123</code>\n\nGõ /huy để hủy."),
+            "trackmenu:tiktok_video_check": (TrackMenuState.waiting_tiktok_video_check,
+                "📊 <b>CHECK SỐ LIỆU VIDEO TIKTOK</b>\n\nGửi link video TikTok cần check.\nVD: <code>https://tiktok.com/@user/video/123</code>\n\nBot sẽ đọc số lượt xem, tim, bình luận, chia sẻ, lượt lưu (1 lần, không theo dõi).\n\nGõ /huy để hủy."),
             "trackmenu:ig_add": (TrackMenuState.waiting_ig_username,
                 "📸 <b>THEO DÕI INSTAGRAM</b>\n\nGửi username IG (không cần @).\nVD: <code>cristiano</code>\n\nGõ /huy để hủy."),
             "trackmenu:ig_post_add": (TrackMenuState.waiting_ig_post,
@@ -1073,6 +1104,7 @@ async def on_trackmenu_cb(cb: CallbackQuery, state: FSMContext):
             st, txt = prompts[data]
             back_map = {
                 "trackmenu:tiktok_add": "trackmenu:tiktok", "trackmenu:tiktok_video_add": "trackmenu:tiktok",
+                "trackmenu:tiktok_video_check": "trackmenu:tiktok",
                 "trackmenu:ig_add": "trackmenu:ig", "trackmenu:ig_post_add": "trackmenu:ig",
                 "trackmenu:zalo_add": "trackmenu:zalo", "trackmenu:lists_new": "trackmenu:lists",
                 "trackmenu:lists_add": "trackmenu:lists", "trackmenu:alert_add": "trackmenu:alerts",

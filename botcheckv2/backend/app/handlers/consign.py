@@ -640,6 +640,29 @@ async def _kg_finish_items(msg: Message, state: FSMContext, items: list, errs: l
     if not items:
         await msg.answer("Không đọc được acc nào. Kiểm tra lại định dạng.")
         return
+    # FIX (B1): giải link FB -> UID số TRƯỚC khi kiểm trùng. Trước đây uid để
+    # nguyên link nên chống trùng vô hiệu: 1 acc gửi 2 lần (1 link + 1 UID số)
+    # đều qua -> duyệt cả 2 -> 2 khách mua cùng 1 acc.
+    from .common import _resolve_stock_links
+    wait0 = await msg.answer("⏳ Đang chuẩn bị...")
+    try:
+        resolved, failed, failed_lines, _, _ = await _resolve_stock_links(
+            items, wait0, action_text="ký gửi")
+    finally:
+        try:
+            await wait0.delete()
+        except Exception:
+            pass
+    items = [x for x in items if x.get("uid")]
+    if failed_lines:
+        await msg.answer(
+            "⚠️ <b>%d dòng</b> không giải được link FB (đã bỏ qua):\n%s" % (
+                len(failed_lines),
+                html.escape("\n".join(failed_lines[:10]))),
+            parse_mode="HTML")
+    if not items:
+        await msg.answer("Không còn acc hợp lệ sau khi giải link.")
+        return
     d = await state.get_data()
     # FIX 2026-09-29 (bổ sung): state có thể mất sau restart backend ->
     # báo rõ thay vì KeyError crash ngầm
