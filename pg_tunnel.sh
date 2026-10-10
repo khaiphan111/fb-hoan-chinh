@@ -19,6 +19,14 @@ PG_HOST="${PG_SUPABASE_HOST:-}"
 if [ -z "$PG_HOST" ]; then
     ENV_FILE="${FB_ENV_FILE:-$HOME/workspace/fb-hoan-chinh/botcheckv2/backend/.env}"
     if [ -f "$ENV_FILE" ]; then
+        # FIX 2026-10-10: đọc PG_SUPABASE_HOST từ .env trước (SUPABASE_DB_URL
+        # trỏ 127.0.0.1:5433 là tunnel, suy host từ đó là vòng lặp)
+        PG_HOST=$(grep -m1 '^PG_SUPABASE_HOST=' "$ENV_FILE" | cut -d= -f2- | tr -d '"' | tr -d "'")
+    fi
+fi
+if [ -z "$PG_HOST" ]; then
+    ENV_FILE="${FB_ENV_FILE:-$HOME/workspace/fb-hoan-chinh/botcheckv2/backend/.env}"
+    if [ -f "$ENV_FILE" ]; then
         PG_URL=$(grep -m1 '^SUPABASE_DB_URL=' "$ENV_FILE" | cut -d= -f2- | tr -d '"' | tr -d "'")
         PG_HOST=$(python3 -c "import sys;from urllib.parse import urlsplit;print(urlsplit(sys.argv[1]).hostname or '')" "$PG_URL" 2>/dev/null)
     fi
