@@ -115,3 +115,40 @@ def test_a2_huy_don_pending_ok(tdb):
     assert tdb.mark_payos_status(900022, "CANCELLED") is True
     st = c.execute("SELECT status FROM payos_orders WHERE order_code=?", (900022,)).fetchone()
     assert st["status"] == "CANCELLED"
+
+
+def test_a1_reconcile_khong_cong_bu_lap(tdb):
+    """REGRESSION: reconciler chạy 2 lần -> lần 2 không cộng bù nữa.
+
+    Bản cũ: bù với reason 'payos_bu:{oc}' nhưng check 'payos' -> mỗi lần
+    chạy lại cộng thêm tiền vô hạn. Bản mới: idempotent theo order_code.
+    """
+    c = tdb.get_conn()
+    now = int(time.time())
+    c.execute(
+        "INSERT INTO payos_orders(order_code, tg_id, amount, status, created_at, updated_at, target)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (900021, 9210021, 60000, "PAID", now, now, "main"))
+    c.execute("INSERT OR IGNORE INTO tg_users(tg_id, balance) VALUES(?, 0)", (9210021,))
+    c.commit()
+    r1 = tdb.reconcile_payos_paid()
+    assert r1["fixed"] == 1, r1
+    r2 = tdb.reconcile_payos_paid()
+    assert r2["fixed"] == 0, f"cộng bù lặp! lần 2 fixed={r2['fixed']}"
+    bal = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (9210021,)).fetchone()
+    assert int(bal["balance"]) == 60000, f"ví bị cộng sai: {bal['balance']}"
+
+
+def test_a1_settle_tao_txn_theo_order_code(tdb):
+    """Settle tạo txn với reason='payos:{order_code}' (idempotency key chính xác)."""
+    _mk_order(tdb, 900022, 9210022, 45000)
+    assert tdb.settle_payos_order(900022)["ok"] is True
+    c = tdb.get_conn()
+    row = c.execute(
+        "SELECT reason FROM txns WHERE tg_id=? AND amount=? ORDER BY ts DESC LIMIT 1",
+        (9210022, 45000)).fetchone()
+    assert row["reason"] == "payos:900022", f"reason sai: {row['reason']}"
+    # Reconciler thấy txn này -> không bù
+    r = tdb.reconcile_payos_paid()
+    bal = c.execute("SELECT balance FROM tg_users WHERE tg_id=?", (9210022,)).fetchone()
+    assert int(bal["balance"]) == 45000

@@ -135,6 +135,8 @@ class FollowerPoller:
             self._buff_running = False
         if not hasattr(self, '_viotp_task') or not (self._viotp_task and not self._viotp_task.done()):
             self._viotp_task = asyncio.create_task(self._viotp_loop())
+        if not hasattr(self, '_reconcile_task') or not (self._reconcile_task and not self._reconcile_task.done()):
+            self._reconcile_task = asyncio.create_task(self._reconcile_loop())
         log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign + maintenance + buff).")
 
     async def _daily_summary_loop(self):
@@ -1550,6 +1552,24 @@ class FollowerPoller:
             except Exception as e:
                 log.error("viotp_loop lỗi: %s", e)
             await asyncio.sleep(30)
+
+    async def _reconcile_loop(self):
+        """Đối soát định kỳ (B3): bù bút toán ký gửi cho đơn đã bán nhưng thiếu sổ.
+
+        Chạy mỗi giờ qua db.reconcile_consign_sales() — idempotent theo order_ref
+        nên chạy lại an toàn, chỉ tạo sổ khi thật sự thiếu.
+        """
+        await asyncio.sleep(120)
+        while True:
+            try:
+                rc = await asyncio.to_thread(db.reconcile_consign_sales)
+                if rc.get("fixed"):
+                    log.warning("reconcile_consign_sales: bù %s bút toán thiếu %s", rc["fixed"], rc)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.error("reconcile_consign_sales lỗi: %s", e)
+            await asyncio.sleep(3600)
 
     async def _process_viotp_waiting(self):
         from . import viotp as _viotp_mod

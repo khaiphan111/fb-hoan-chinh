@@ -3900,7 +3900,10 @@ def settle_payos_order(order_code: int) -> dict:
             if rc == 0:
                 raw.rollback()
                 return {"ok": False}
-            bonuses = _credit_topup_raw(cur, raw, tg_id, amount, "payos", target)
+            # Idempotency key CHÍNH XÁC theo order_code trong reason của txn.
+            # Reconciler kiểm tra reason='payos:{order_code}' nên không bao giờ
+            # cộng trùng, kể cả khi webhook/poller gọi settle trùng nhau.
+            bonuses = _credit_topup_raw(cur, raw, tg_id, amount, f"payos:{order_code}", target)
             raw.commit()
         except Exception:
             try:
@@ -3919,8 +3922,13 @@ def reconcile_payos_paid() -> dict:
     """Job đối soát: tìm đơn PAID nhưng thiếu txns nạp tương ứng -> cộng bù.
 
     FIX (A1): lưới an toàn cho các đơn đã PAID trước bản vá (khi settle chưa
-    nguyên tử). Idempotent theo order_code: chỉ cộng bù khi chưa có txn
-    reason='payos' với amount khớp trong vòng 1 ngày quanh updated_at.
+    nguyên tử). Idempotent CHÍNH XÁC theo order_code:
+      - đơn settle sau bản vá: txn reason='payos:{order_code}'
+      - đơn settle trước bản vá: txn reason='payos' (không có order_code) ->
+        fallback đoán theo amount trong vòng 1 ngày quanh updated_at
+    Bù cũng dùng reason='payos:{order_code}' nên lần chạy sau luôn tìm thấy,
+    không bao giờ cộng trùng (bản trước dùng 'payos_bu:{oc}' nhưng check
+    'payos' -> cộng bù lặp vô hạn).
     Trả {'checked': n, 'fixed': m}.
     """
     checked = fixed = 0
@@ -3937,15 +3945,22 @@ def reconcile_payos_paid() -> dict:
             target = d["target"] or "main"
             if target not in ("main", "shop", "buff", "rent"):
                 target = "main"
-            lo, hi = int(d["updated_at"]) - 86400, int(d["updated_at"]) + 86400
+            # 1) Khớp chính xác theo order_code (đơn mới + đơn đã bù trước đó)
             hit = c.execute(
-                "SELECT 1 FROM txns WHERE tg_id=? AND amount=? AND reason='payos' "
-                "AND ts BETWEEN ? AND ? LIMIT 1",
-                (tg_id, amount, lo, hi)).fetchone()
+                "SELECT 1 FROM txns WHERE tg_id=? AND amount=? AND "
+                "(reason=? OR reason=?) LIMIT 1",
+                (tg_id, amount, f"payos:{oc}", f"payos_bu:{oc}")).fetchone()
+            if not hit:
+                # 2) Fallback cho đơn cũ (trước bản vá idempotency): reason='payos'
+                lo, hi = int(d["updated_at"]) - 86400, int(d["updated_at"]) + 86400
+                hit = c.execute(
+                    "SELECT 1 FROM txns WHERE tg_id=? AND amount=? AND reason='payos' "
+                    "AND ts BETWEEN ? AND ? LIMIT 1",
+                    (tg_id, amount, lo, hi)).fetchone()
             if hit:
                 continue
-            # Thiếu txn -> cộng bù trong transaction thật (tái dùng settle logic
-            # nhưng đơn đã PAID nên chỉ cộng tiền, không claim lại)
+            # Thiếu txn -> cộng bù trong transaction thật với idempotency key
+            # là order_code; lần chạy sau bước (1) sẽ tìm thấy.
             raw = getattr(c, "conn", None)
             if raw is None:
                 continue
@@ -3953,7 +3968,7 @@ def reconcile_payos_paid() -> dict:
             raw.autocommit = False
             try:
                 cur = _raw_dict_cursor(raw)
-                _credit_topup_raw(cur, raw, tg_id, amount, f"payos_bu:{oc}", target)
+                _credit_topup_raw(cur, raw, tg_id, amount, f"payos:{oc}", target)
                 raw.commit()
                 fixed += 1
             except Exception:
@@ -4594,28 +4609,31 @@ def reconcile_consign_sales(limit: int = 100) -> dict:
             checked += 1
             order_ref = f"ACC-{d['order_id']}"
             try:
-                # Tái dùng logic ghi sổ (đã có idempotency theo order_ref)
-                _consign_on_sell_retry(c, d, order_ref)
-                fixed += 1
+                # Chỉ tăng fixed khi tạo sổ thật (hàm trả True)
+                if _consign_on_sell_retry(c, d, order_ref):
+                    fixed += 1
             except Exception as e:
                 print(f"[CONSIGN-ERR] reconcile {order_ref}: {e}", flush=True)
             c.commit()
     return {"checked": checked, "fixed": fixed}
 
 
-def _consign_on_sell_retry(c, d: dict, order_ref: str):
-    """Tạo bù bút toán ký gửi cho đơn đã bán nhưng thiếu sổ."""
+def _consign_on_sell_retry(c, d: dict, order_ref: str) -> bool:
+    """Tạo bù bút toán ký gửi cho đơn đã bán nhưng thiếu sổ.
+
+    Trả True khi tạo sổ thật, False khi bỏ qua (đã có sổ / thiếu dữ liệu).
+    """
     now = int(time.time())
     dup = c.execute("SELECT 1 FROM consignment_orders WHERE order_ref=? LIMIT 1",
                     (order_ref,)).fetchone()
     if dup:
-        return
+        return False
     it = c.execute(
         "SELECT i.*, b.floor_price, b.sell_price AS batch_sell_price, b.warranty_days, b.category_id"
         " FROM consignment_items i JOIN consignment_batches b ON b.id=i.batch_id"
         " WHERE i.id=?", (d["consign_item_id"],)).fetchone()
     if not it:
-        return
+        return False
     price = int(d["price"] or 0)
     fee_row = c.execute("SELECT fee_fixed, fee_pct FROM consignment_fees WHERE category_id=?",
                         (it["category_id"],)).fetchone()
@@ -4644,6 +4662,7 @@ def _consign_on_sell_retry(c, d: dict, order_ref: str):
         "UPDATE consignment_items SET status='sold', sold_at=?, sold_price=?,"
         " fee_fixed=?, fee_pct=?, net_amount=?, warranty_until=? WHERE id=?",
         (now, price, fee_fixed, fee_pct, net, w_until, it["id"]))
+    return True
 
 
 def acc_sell_one(cat_id: int, tg_id: int, price: int):
