@@ -41,6 +41,43 @@ def is_admin(chat_id: int, user_id: int) -> bool:
     admins = get_admin_ids()
     return chat_id in admins or user_id in admins
 
+
+def _can_money(user_id: int) -> bool:
+    """FIX (E2): quyền cho hành động TIỀN — KHÔNG tin tưởng group chat.
+
+    Trước đây is_admin() trả True cho MỌI thành viên group admin nên bất kỳ ai
+    trong group bấm "✅ Xác nhận + Cộng tiền" là cộng tiền cho user bất kỳ.
+    Nay chỉ: super admin, hoặc có quyền 'tien' được tick, hoặc là admin cá nhân
+    (admin_tg_id — không tính group).
+    """
+    try:
+        if _perms.is_super(user_id):
+            return True
+        if _perms.has_perm(user_id, "tien"):
+            return True
+        try:
+            v = db.get_setting("admin_tg_id")
+            if v and int(v) == int(user_id):
+                return True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return False
+
+
+async def _need_perm(msg, perm: str) -> bool:
+    """FIX (E1): lệnh gõ tay trên bot admin phải kiểm quyền cụ thể, không chỉ is_admin.
+    Trả True nếu có quyền (được làm tiếp), False nếu đã báo lỗi."""
+    try:
+        if _perms.has_perm(msg.from_user.id, perm):
+            return True
+    except Exception:
+        pass
+    label = _perms.perm_label(perm) if hasattr(_perms, "perm_label") else perm
+    await msg.answer(f"❌ Bạn không có quyền {label}.")
+    return False
+
 def parse_time_str(time_str: str) -> int:
     """Parses time string like 2d, 12h, 1d12h to seconds"""
     total_seconds = 0
@@ -60,6 +97,8 @@ def parse_time_str(time_str: str) -> int:
 @router.message(Command("phatcode"))
 async def cmd_phatcode(msg: Message):
     if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    if not await _need_perm(msg, "promo"):
         return
 
     parts = msg.text.split()
@@ -110,6 +149,8 @@ async def cmd_phatcode(msg: Message):
 @router.message(Command("phatcodeall"))
 async def cmd_phatcodeall(msg: Message):
     if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    if not await _need_perm(msg, "promo"):
         return
         
     parts = msg.text.split()
@@ -197,8 +238,9 @@ async def broadcast_code_to_all(main_bot_manager, code: str, amount: int, expire
 
 @router.callback_query(F.data.startswith("tg_admin_confirm_"))
 async def on_admin_confirm(cb: CallbackQuery):
-    if not is_admin(cb.message.chat.id, cb.from_user.id):
-        await cb.answer("❌ Bạn không có quyền duyệt!", show_alert=True)
+    # FIX (E2): hành động tiền phải kiểm quyền cá nhân, không tin group chat.
+    if not _can_money(cb.from_user.id):
+        await cb.answer("❌ Bạn không có quyền duyệt (cần quyền 💰Tiền tệ)!", show_alert=True)
         return
         
     parts = cb.data.split("_")
@@ -258,8 +300,9 @@ async def on_admin_confirm(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("tg_admin_withdraw_approve_"))
 async def on_admin_withdraw_approve(cb: CallbackQuery):
-    if not is_admin(cb.message.chat.id, cb.from_user.id):
-        await cb.answer("❌ Bạn không có quyền duyệt!", show_alert=True)
+    # FIX (E2): hành động tiền phải kiểm quyền cá nhân, không tin group chat.
+    if not _can_money(cb.from_user.id):
+        await cb.answer("❌ Bạn không có quyền duyệt (cần quyền 💰Tiền tệ)!", show_alert=True)
         return
         
     parts = cb.data.split("_")
@@ -306,8 +349,9 @@ async def on_admin_withdraw_approve(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("tg_admin_withdraw_reject_"))
 async def on_admin_withdraw_reject(cb: CallbackQuery):
-    if not is_admin(cb.message.chat.id, cb.from_user.id):
-        await cb.answer("❌ Bạn không có quyền từ chối!", show_alert=True)
+    # FIX (E2): hành động tiền phải kiểm quyền cá nhân, không tin group chat.
+    if not _can_money(cb.from_user.id):
+        await cb.answer("❌ Bạn không có quyền từ chối (cần quyền 💰Tiền tệ)!", show_alert=True)
         return
         
     parts = cb.data.split("_")
@@ -3244,6 +3288,8 @@ async def cmd_topup(msg: Message):
     """Cộng tiền thẳng cho user."""
     if not is_admin(msg.chat.id, msg.from_user.id):
         return
+    if not await _need_perm(msg, "tien"):
+        return
     parts = msg.text.split()
     if len(parts) < 3:
         await msg.answer("❌ HDSD: /topup &lt;user_id&gt; &lt;số_tiền&gt;\nVí dụ: /topup 123456789 100000", parse_mode="HTML")
@@ -3285,6 +3331,8 @@ async def cmd_setbal(msg: Message):
     """Set cứng số dư cho user."""
     if not is_admin(msg.chat.id, msg.from_user.id):
         return
+    if not await _need_perm(msg, "tien"):
+        return
     parts = msg.text.split()
     if len(parts) < 3:
         await msg.answer("❌ HDSD: /setbal &lt;user_id&gt; &lt;số_tiền&gt;\nVí dụ: /setbal 123456789 0", parse_mode="HTML")
@@ -3307,6 +3355,8 @@ async def cmd_setbal(msg: Message):
 async def cmd_ban(msg: Message):
     """Khoá tài khoản user."""
     if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    if not await _need_perm(msg, "user"):
         return
     parts = msg.text.split(maxsplit=2)
     if len(parts) < 2:
@@ -3340,6 +3390,8 @@ async def cmd_unban(msg: Message):
     """Mở khoá tài khoản user."""
     if not is_admin(msg.chat.id, msg.from_user.id):
         return
+    if not await _need_perm(msg, "user"):
+        return
     parts = msg.text.split()
     if len(parts) < 2:
         await msg.answer("❌ HDSD: /unban &lt;user_id&gt;", parse_mode="HTML")
@@ -3366,6 +3418,8 @@ async def cmd_unban(msg: Message):
 async def cmd_setvip(msg: Message):
     """Tặng/set VIP cho user."""
     if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    if not await _need_perm(msg, "user"):
         return
     parts = msg.text.split()
     if len(parts) < 3:
@@ -3505,6 +3559,8 @@ async def cmd_broadcast(msg: Message):
     """Gửi thông báo hàng loạt tới user."""
     if not is_admin(msg.chat.id, msg.from_user.id):
         return
+    if not await _need_perm(msg, "bcast"):
+        return
 
     parts = msg.text.split(maxsplit=2)
     if len(parts) < 2:
@@ -3569,6 +3625,8 @@ _pending_broadcasts = {}
 async def cmd_job(msg: Message):
     """Bật/tắt job nền. /job xem danh sách, /job <tên> <on|off>."""
     if not is_admin(msg.chat.id, msg.from_user.id):
+        return
+    if not await _need_perm(msg, "sup"):
         return
     jobs = [
         ("backup_telegram", "📦 Gửi backup DB qua Telegram (0h)"),

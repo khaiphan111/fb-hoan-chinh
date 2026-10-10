@@ -752,6 +752,14 @@ async def _make_payos_order(tg_id: int, amount: int, target: str = "main"):
         return int(existing["order_code"]), existing["checkout_url"], qr_code, True
     if existing and int(existing["amount"]) != int(amount):
         # Số tiền khác -> hủy đơn cũ, tạo đơn mới (tránh link thanh toán sai tiền)
+        # FIX (A2): xác minh trạng thái thật với PayOS trước khi hủy — nếu đơn
+        # đã PAID thì quyết toán luôn thay vì ghi đè CANCELLED (mất tiền oan).
+        try:
+            info = await payos_mod.get_payment_info(int(existing["order_code"]))
+            if str(info.get("status") or "").upper() == "PAID":
+                db.settle_payos_order(int(existing["order_code"]))
+        except Exception:
+            pass
         try:
             await payos_mod.cancel_payment_link(int(existing["order_code"]))
         except Exception:
@@ -1115,11 +1123,25 @@ async def on_payos_cancel(cb: CallbackQuery):
     if str(order["status"]).upper() != "PENDING":
         await cb.answer("Đơn này đã được xử lý rồi.", show_alert=True)
         return
+    # FIX (A2): xác minh trạng thái thật với PayOS trước khi hủy. Nếu khách đã
+    # thanh toán (PAID) thì quyết toán cộng tiền thay vì hủy (tránh mất tiền).
+    # Không đọc được PayOS -> không hủy mù, báo thử lại.
+    try:
+        info = await payos_mod.get_payment_info(order_code)
+    except Exception:
+        await cb.answer("❌ Không kiểm tra được trạng thái đơn, thử lại sau.", show_alert=True)
+        return
+    if str(info.get("status") or "").upper() == "PAID":
+        db.settle_payos_order(order_code)
+        await cb.answer("✅ Đơn đã được thanh toán, tiền đã vào ví!", show_alert=True)
+        return
     try:
         await payos_mod.cancel_payment_link(order_code, "User hủy trên bot")
     except Exception:
         pass
-    db.mark_payos_status(order_code, "CANCELLED")
+    if not db.mark_payos_status(order_code, "CANCELLED"):
+        await cb.answer("Đơn này đã được xử lý rồi.", show_alert=True)
+        return
     await cb.answer("✅ Đã hủy đơn.", show_alert=True)
     try:
         await cb.message.edit_text(

@@ -17,6 +17,11 @@ import pytest  # noqa: E402
 from app import config as _config  # noqa: E402
 from app import db as _db  # noqa: E402
 
+# Chắn load_dotenv() trong config.py/db.py nạp lại SUPABASE_DB_URL từ
+# botcheckv2/backend/.env (nó tìm .env từ vị trí file gọi, không phải cwd) —
+# nếu không test sẽ trỏ nhầm Postgres thật.
+_db.SUPABASE_URL = None
+
 
 @pytest.fixture()
 def tdb(tmp_path, monkeypatch):

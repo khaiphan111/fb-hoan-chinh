@@ -919,6 +919,20 @@ class FollowerPoller:
         placeholders = ",".join("?" * len(die_ids))
         db.get_conn().execute(f"UPDATE consignment_items SET status='dead' WHERE id IN ({placeholders})",
                               die_ids)
+        # FIX (B2): gỡ acc DIE khỏi kho bán — trước đây acc_stock vẫn AVAILABLE
+        # nên acc DIE vẫn bán được (sạp live_check=0 không quét lại).
+        try:
+            stock_ids = [dict(r) for r in db.get_conn().execute(
+                f"SELECT acc_stock_id FROM consignment_items WHERE id IN ({placeholders})"
+                " AND COALESCE(acc_stock_id,0) > 0", die_ids).fetchall()]
+            sids = [int(r["acc_stock_id"]) for r in stock_ids if r["acc_stock_id"]]
+            if sids:
+                ph2 = ",".join("?" * len(sids))
+                db.get_conn().execute(
+                    f"UPDATE acc_stock SET status='DIE' WHERE id IN ({ph2})"
+                    " AND status='AVAILABLE'", sids)
+        except Exception as e:
+            log.warning("consign recheck: gỡ acc_stock DIE lỗi: %s", e)
         db.get_conn().commit()
         # Báo từng đối tác
         by_partner = {}
