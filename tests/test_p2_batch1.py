@@ -160,3 +160,166 @@ def test_d1_dong_sach_playwright_khi_loi():
     ctx.close.assert_awaited()
     browser.close.assert_awaited()
     apw.stop.assert_awaited()
+
+
+def test_fix2_buff_rent_tru_nguyen_tu(tdb):
+    """Fix 2: trừ ví buff/rent khi không đủ -> False, ví không đổi (không âm).
+
+    Điều kiện nằm trong SQL (AND balance + ? >= 0) nên nguyên tử cả khi
+    2 tiến trình trừ đồng thời — bản cũ SELECT rồi UPDATE riêng -> ví âm.
+    """
+    c = tdb.get_conn()
+    c.execute("INSERT OR IGNORE INTO tg_users(tg_id, buff_balance, rent_balance)"
+              " VALUES(?, 50000, 50000)", (9210061,))
+    c.commit()
+    # trừ vừa đủ -> True
+    assert tdb.buff_adjust_balance(9210061, -50000, "test") is True
+    assert tdb.rent_adjust_balance(9210061, -30000, "test") is True
+    # trừ quá số dư -> False, ví giữ nguyên
+    assert tdb.buff_adjust_balance(9210061, -1, "test") is False
+    assert tdb.rent_adjust_balance(9210061, -20001, "test") is False
+    row = c.execute("SELECT buff_balance, rent_balance FROM tg_users WHERE tg_id=?",
+                    (9210061,)).fetchone()
+    assert int(row["buff_balance"]) == 0, "ví buff bị âm!"
+    assert int(row["rent_balance"]) == 20000, "ví rent bị trừ sai!"
+    # cộng vẫn bình thường
+    assert tdb.buff_adjust_balance(9210061, 10000, "test") is True
+    row = c.execute("SELECT buff_balance FROM tg_users WHERE tg_id=?",
+                    (9210061,)).fetchone()
+    assert int(row["buff_balance"]) == 10000
+    # user không tồn tại -> False (không tạo ví ma)
+    assert tdb.buff_adjust_balance(999999999, -100, "test") is False
+
+
+def test_fix3_khong_ban_trung_1_acc(tdb):
+    """Fix 3: 2 lần bán cùng acc -> lần 2 thua race (None), chỉ 1 đơn tồn tại.
+
+    Mô phỏng 2 tiến trình cùng SELECT thấy AVAILABLE: tiến trình 1 claim
+    SOLD thành công; tiến trình 2 (dùng row cũ) phải raise AccAlreadySold
+    thay vì tạo đơn thứ 2 như bản cũ.
+    """
+    import time
+    c = tdb.get_conn()
+    now = int(time.time())
+    c.execute(
+        "INSERT INTO acc_stock(cat_id, uid, password, status, added_at)"
+        " VALUES(?,?,?, 'AVAILABLE', ?)",
+        (7, "race_acc_1", "pw", now))
+    c.commit()
+    sid = c.execute("SELECT id FROM acc_stock WHERE uid=?", ("race_acc_1",)).fetchone()["id"]
+
+    # tiến trình 1: bán thành công
+    r1 = tdb.acc_sell_one(7, 9210071, 100000)
+    assert r1 is not None, "lần bán đầu phải thành công"
+    # tiến trình 2: SELECT cũ vẫn thấy row, nhưng claim SOLD phải thua
+    row2 = c.execute("SELECT * FROM acc_stock WHERE id=?", (sid,)).fetchone()
+    try:
+        tdb._acc_order_create(c, 9210072, row2, 7, 100000, now)
+        assert False, "bản cũ: tạo đơn thứ 2 cho cùng 1 acc!"
+    except tdb.AccAlreadySold:
+        pass
+    n = c.execute("SELECT COUNT(*) v FROM acc_orders WHERE stock_id=?", (sid,)).fetchone()
+    assert n["v"] == 1, f"có {n['v']} đơn cho 1 acc!"
+    st = c.execute("SELECT status, sold_to FROM acc_stock WHERE id=?", (sid,)).fetchone()
+    assert st["status"] == "SOLD" and int(st["sold_to"]) == 9210071
+    # acc_sell_one lần nữa -> hết hàng (None), không tạo đơn ma
+    assert tdb.acc_sell_one(7, 9210073, 100000) is None
+
+
+def test_fix4_khong_huy_oan_khi_payos_loi(tdb, monkeypatch):
+    """Fix 4: PayOS API lỗi giữa chừng -> đơn cũ giữ PENDING (không CANCELLED oan).
+
+    Bản cũ: get_payment_info throw -> except pass -> vẫn đánh CANCELLED ->
+    tiền user đã trả kẹt vĩnh viễn (settle/poller/reconciler đều bỏ qua CANCELLED).
+    """
+    import asyncio
+    import time
+    from app.handlers import wallet as _w
+    from app import payos as _pm
+
+    now = int(time.time())
+    c = tdb.get_conn()
+    c.execute(
+        "INSERT INTO payos_orders(order_code, tg_id, amount, status, created_at, updated_at,"
+        " target, checkout_url) VALUES(?,?,?,?,?,?,?,?)",
+        (910001, 9210081, 50000, "PENDING", now, now, "main", "https://payos.link/old"))
+    c.execute("INSERT OR IGNORE INTO tg_users(tg_id, balance) VALUES(?, 0)", (9210081,))
+    c.commit()
+
+    async def _raise(*a, **k):
+        raise RuntimeError("mạng chập chờn")
+
+    async def _noop_cancel(*a, **k):
+        return None
+
+    monkeypatch.setattr(_pm, "is_configured", lambda: True)
+    monkeypatch.setattr(_pm, "get_payment_info", _raise)
+    monkeypatch.setattr(_pm, "cancel_payment_link", _noop_cancel)
+    monkeypatch.setattr(_pm, "new_order_code", lambda tg: 910002)
+    monkeypatch.setattr(_pm, "get_return_urls", lambda: ("https://r/", "https://c/"))
+    async def _mk_link(*a, **k):
+        return {"paymentLinkId": "PL2", "checkoutUrl": "https://payos.link/new", "qrCode": "QR2"}
+    monkeypatch.setattr(_pm, "create_payment_link", _mk_link)
+
+    oc, url, qr, reused = asyncio.run(_w._make_payos_order(9210081, 99999, "main"))
+    assert oc == 910002 and reused is False
+    st = c.execute("SELECT status FROM payos_orders WHERE order_code=910001").fetchone()
+    assert st["status"] == "PENDING", f"đơn bị hủy oan: {st['status']}"
+
+
+def test_fix4_huy_that_khi_xac_minh_chua_tra(tdb, monkeypatch):
+    """Fix 4: xác minh được đơn PENDING thật -> vẫn hủy cũ, tạo mới như cũ."""
+    import asyncio
+    import time
+    from app.handlers import wallet as _w
+    from app import payos as _pm
+
+    now = int(time.time())
+    c = tdb.get_conn()
+    c.execute(
+        "INSERT INTO payos_orders(order_code, tg_id, amount, status, created_at, updated_at,"
+        " target, checkout_url) VALUES(?,?,?,?,?,?,?,?)",
+        (910011, 9210082, 50000, "PENDING", now, now, "main", "https://payos.link/old"))
+    c.execute("INSERT OR IGNORE INTO tg_users(tg_id, balance) VALUES(?, 0)", (9210082,))
+    c.commit()
+
+    cancelled = []
+
+    async def _info_pending(*a, **k):
+        return {"status": "PENDING"}
+
+    async def _cancel(code, *a, **k):
+        cancelled.append(code)
+
+    monkeypatch.setattr(_pm, "is_configured", lambda: True)
+    monkeypatch.setattr(_pm, "get_payment_info", _info_pending)
+    monkeypatch.setattr(_pm, "cancel_payment_link", _cancel)
+    monkeypatch.setattr(_pm, "new_order_code", lambda tg: 910012)
+    monkeypatch.setattr(_pm, "get_return_urls", lambda: ("https://r/", "https://c/"))
+    async def _mk_link(*a, **k):
+        return {"paymentLinkId": "PL3", "checkoutUrl": "https://payos.link/new2", "qrCode": "QR3"}
+    monkeypatch.setattr(_pm, "create_payment_link", _mk_link)
+
+    oc, url, qr, reused = asyncio.run(_w._make_payos_order(9210082, 77777, "main"))
+    assert oc == 910012
+    st = c.execute("SELECT status FROM payos_orders WHERE order_code=910011").fetchone()
+    assert st["status"] == "CANCELLED", f"đơn PENDING thật phải bị hủy: {st['status']}"
+    assert cancelled == [910011]
+
+
+def test_fix5_db_mode_bao_dung_che_do(tdb):
+    """Fix 5: db.db_mode() phân biệt postgres/sqlite để health báo đúng.
+
+    Trước đây rớt SQLite im lặng mà health vẫn 200 -> watchdog tưởng khỏe.
+    """
+    # test DB là SQLite -> phải báo sqlite
+    assert tdb.db_mode() == "sqlite"
+    assert isinstance(tdb.get_conn(), tdb.SqliteConnection)
+    # giả lập Postgres -> phải báo postgres
+    class _FakePg(tdb.PgConnection):
+        def __init__(self):
+            pass
+    assert isinstance(_FakePg(), tdb.PgConnection)
+    import unittest.mock as _mock
+    with _mock.patch.object(tdb, "get_conn", return_value=_FakePg()):
+        assert tdb.db_mode() == "postgres"
