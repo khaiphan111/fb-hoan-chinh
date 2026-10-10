@@ -323,3 +323,148 @@ def test_fix5_db_mode_bao_dung_che_do(tdb):
     import unittest.mock as _mock
     with _mock.patch.object(tdb, "get_conn", return_value=_FakePg()):
         assert tdb.db_mode() == "postgres"
+
+
+def test_pool_result_giong_interface_cu(tdb):
+    """Item 1: PooledResult giữ interface cũ (fetchone/fetchall/lastrowid/rowcount)."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
+                                    "botcheckv2", "backend"))
+    from app.db import PooledResult
+    r = PooledResult(rows=[{"a": 1}], one={"a": 1}, lastrowid=5, rowcount=1)
+    assert r.fetchone() == {"a": 1}
+    assert r.fetchall() == [{"a": 1}]
+    assert r.lastrowid == 5
+    assert r.rowcount == 1
+    r.close()
+
+
+def test_pool_dich_sql_dung(tdb):
+    """Item 1: dịch SQL SQLite -> Postgres đúng."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
+                                    "botcheckv2", "backend"))
+    from app.db import _translate_pg_sql, _translate_pg_script
+    assert _translate_pg_sql("SELECT * FROM t WHERE a=?") == \
+        "SELECT * FROM t WHERE a=%s"
+    assert "BIGSERIAL PRIMARY KEY" in _translate_pg_sql(
+        "CREATE TABLE t (id BIGINT PRIMARY KEY AUTOINCREMENT)")
+    assert "PRAGMA" not in _translate_pg_script("PRAGMA journal_mode=WAL; SELECT 1;")
+
+
+def test_failclosed_khong_rot_sqlite_im_lang(tdb, monkeypatch):
+    """Item 3: có SUPABASE_DB_URL mà nối lỗi -> raise, không rớt SQLite."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
+                                    "botcheckv2", "backend"))
+    import app.db as _db
+    monkeypatch.setattr(_db, "SUPABASE_URL", "postgresql://x:1@127.0.0.1:1/db")
+    monkeypatch.setattr(_db, "_pg_conn", None)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    import pytest as _pt
+    with _pt.raises(RuntimeError, match="Không nối được PostgreSQL"):
+        _db.get_conn()
+
+
+def test_pool_noi_postgres_that_chi_select_1():
+    """Item 1: pool nối Postgres thật (chỉ SELECT 1, không ghi dữ liệu)."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
+                                    "botcheckv2", "backend"))
+    import app.db as _db
+    if not _db.SUPABASE_URL:
+        import pytest as _pt
+        _pt.skip("không có SUPABASE_DB_URL")
+    p = _db._get_pg_pool()
+    conn = p.getconn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SHOW statement_timeout")
+        assert cur.fetchone()[0] == "30s"
+        cur.close()
+    finally:
+        p.putconn(conn)
+
+
+def test_poller_role_tach_heavy_loop(tdb, monkeypatch):
+    """Item 2: role=main bỏ qua loop buff; role=heavy chỉ chạy loop buff."""
+    import asyncio as _aio
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
+                                    "botcheckv2", "backend"))
+    from app.poller import FollowerPoller
+    created = []
+
+    def _rec(coro):
+        try:
+            name = coro.__qualname__
+        except Exception:
+            name = str(coro)
+        created.append(name)
+        coro.close()
+        class _D:
+            def done(self): return True
+        return _D()
+    monkeypatch.setattr(_aio, "create_task", _rec)
+
+    p = FollowerPoller()
+    p.start(role="main")
+    names = " ".join(created)
+    assert "_buff_loop" not in names, f"main không được chạy buff: {names}"
+    assert "_buff_tracker_loop" not in names
+    assert "_account_loop" in names
+
+    created.clear()
+    p2 = FollowerPoller()
+    p2.start(role="heavy")
+    names2 = " ".join(created)
+    assert "_buff_loop" in names2, f"heavy phải chạy buff: {names2}"
+    assert "_buff_tracker_loop" in names2
+    assert "_account_loop" not in names2
+
+
+def test_loinhuan_tinh_dung(tdb):
+    """Item 4: báo cáo lãi/lỗ tính đúng doanh thu/vốn theo từng mảng."""
+    import time as _t
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
+                                    "botcheckv2", "backend"))
+    from app import profit_report as _pr
+    now = int(_t.time())
+    c = tdb.get_conn()
+    c.execute("INSERT INTO acc_stock(cat_id, uid, batch, status, added_at)"
+              " VALUES(1,'u1','BATCH1','SOLD',?),(1,'u2','BATCH1','SOLD',?)",
+              (now, now))
+    c.execute("INSERT INTO acc_batches(batch, cat_id, cost_per_acc, created_at)"
+              " VALUES('BATCH1',1,90000,?)", (now,))
+    s1 = c.execute("SELECT id FROM acc_stock ORDER BY id").fetchall()
+    c.execute("INSERT INTO acc_orders(tg_id, stock_id, cat_id, price, created_at)"
+              " VALUES(1,?,1,100000,?), (1,?,1,200000,?)",
+              (s1[0]["id"], now, s1[1]["id"], now))
+    c.execute("INSERT INTO buff_orders(code,tg_id,service_id,link,quantity,"
+              "total_price,total_cost,status,created_at,updated_at)"
+              " VALUES('B1',1,1,'l',100,50000,30000,'completed',?,?),"
+              "('B2',1,1,'l',100,50000,30000,'failed',?,?)",
+              (now, now, now, now))
+    c.execute("INSERT INTO viotp_rentals(tg_id,request_id,phone_number,service_id,"
+              "service_name,cost_price,sell_price,status,created_at,updated_at)"
+              " VALUES(1,'r1','09x',1,'fb',6000,10000,'done',?,?),"
+              "(1,'r2','09y',1,'fb',6000,10000,'expired',?,?)",
+              (now, now, now, now))
+    c.execute("INSERT INTO payos_orders(order_code,tg_id,amount,status,"
+              "created_at,updated_at) VALUES(111,1,500000,'PAID',?,?)",
+              (now, now))
+    c.execute("INSERT INTO withdrawal_requests(tg_id,amount,status,created_at)"
+              " VALUES(1,200000,'approved',?)", (now,))
+    d = _pr.daily_profit()
+    assert d["shop"] == {"don": 2, "doanh_thu": 300000, "von": 180000,
+                         "lai": 120000}
+    assert d["buff"]["lai"] == 20000
+    assert d["thueso"]["lai"] == 4000
+    assert d["tong_lai"] == 144000
+    assert d["nap"]["tien"] == 500000
+    assert d["rut"]["tien"] == 200000
+    txt = _pr.format_report(d)
+    assert "144,000đ" in txt and "TỔNG LÃI GỘP" in txt

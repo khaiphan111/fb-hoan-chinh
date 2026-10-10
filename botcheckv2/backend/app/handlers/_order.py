@@ -190,6 +190,7 @@ MESSAGE_ORDER = [
     "on_help",
     "on_adm",
     "on_stats",
+    "on_loinhuan",
     "on_history",
     "on_top",
     "on_chuyentien",

@@ -149,6 +149,32 @@ async def on_adm(msg: Message, state: FSMContext):
     await state.clear()
     await _handle_adm_cmd(msg, bot_instance=manager.bot)
 
+@router.message(Command("loinhuan"))
+async def on_loinhuan(msg: Message):
+    """Báo cáo lãi/lỗ theo ngày — chỉ chủ shop (số liệu nhạy cảm)."""
+    if not _perms.is_super(msg.from_user.id):
+        await msg.answer("🚫 Chỉ chủ shop mới xem được báo cáo này.")
+        return
+    from .. import profit_report as _pr
+    # /loinhuan [dd/mm/yyyy] — mặc định hôm nay
+    day_ts = None
+    parts = (msg.text or "").split()
+    if len(parts) > 1:
+        try:
+            d, m, y = parts[1].split("/")
+            day_ts = time.mktime(time.strptime(f"{y}-{m}-{d} 12:00",
+                                               "%Y-%m-%d %H:%M"))
+        except Exception:
+            await msg.answer("❌ Sai định dạng. Dùng: <code>/loinhuan 09/10/2026</code>",
+                             parse_mode="HTML")
+            return
+    try:
+        data = _pr.daily_profit(day_ts)
+        await msg.answer(_pr.format_report(data), parse_mode="HTML")
+    except Exception as e:
+        await msg.answer(f"❌ Lỗi tính báo cáo: {e}")
+
+
 @router.message(Command("stats"))
 async def on_stats(msg: Message):
     """Thống kê cá nhân của user."""

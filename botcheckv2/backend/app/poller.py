@@ -111,33 +111,45 @@ class FollowerPoller:
         except Exception:
             pass
 
-    def start(self):
-        if not (self._account_task and not self._account_task.done()):
+    # Loop nặng (Playwright) chạy ở process heavy_worker riêng, không kéo sập bot chính.
+    HEAVY_LOOP_ATTRS = ("_buff_task", "_buff_tracker_task")
+
+    def start(self, role=None):
+        # role: "main" (mặc định) = bỏ qua heavy loops; "heavy" = chỉ chạy heavy loops.
+        # Đọc từ env POLLER_ROLE để heavy_worker.sh không cần sửa code gọi.
+        import os as _os
+        if role is None:
+            role = _os.environ.get("POLLER_ROLE", "main")
+        heavy_only = (role == "heavy")
+        def _skip(attr):
+            is_heavy = attr in FollowerPoller.HEAVY_LOOP_ATTRS
+            return is_heavy != heavy_only
+        if not _skip("_account_task") and not (self._account_task and not self._account_task.done()):
             self._account_task = asyncio.create_task(self._account_loop())
-        if not (self._video_task and not self._video_task.done()):
+        if not _skip("_video_task") and not (self._video_task and not self._video_task.done()):
             self._video_task = asyncio.create_task(self._video_loop())
-        if not (self._backup_task and not self._backup_task.done()):
+        if not _skip("_backup_task") and not (self._backup_task and not self._backup_task.done()):
             self._backup_task = asyncio.create_task(self._backup_loop())
-        if not hasattr(self, '_campaign_task') or not (self._campaign_task and not self._campaign_task.done()):
+        if not _skip("_campaign_task") and (not hasattr(self, '_campaign_task') or not (self._campaign_task and not self._campaign_task.done())):
             self._campaign_task = asyncio.create_task(self._campaign_scheduler_loop())
-        if not hasattr(self, '_proxy_task') or not (self._proxy_task and not self._proxy_task.done()):
+        if not _skip("_proxy_task") and (not hasattr(self, '_proxy_task') or not (self._proxy_task and not self._proxy_task.done())):
             self._proxy_task = asyncio.create_task(self._proxy_loop())
-        if not hasattr(self, '_daily_summary_task') or not (self._daily_summary_task and not self._daily_summary_task.done()):
+        if not _skip("_daily_summary_task") and (not hasattr(self, '_daily_summary_task') or not (self._daily_summary_task and not self._daily_summary_task.done())):
             self._daily_summary_task = asyncio.create_task(self._daily_summary_loop())
-        if not hasattr(self, '_maint_task') or not (self._maint_task and not self._maint_task.done()):
+        if not _skip("_maint_task") and (not hasattr(self, '_maint_task') or not (self._maint_task and not self._maint_task.done())):
             self._maint_task = asyncio.create_task(self._maintenance_loop())
-        if not hasattr(self, '_ops_task') or not (self._ops_task and not self._ops_task.done()):
+        if not _skip("_ops_task") and (not hasattr(self, '_ops_task') or not (self._ops_task and not self._ops_task.done())):
             self._ops_task = asyncio.create_task(self._ops_loop())
-        if not hasattr(self, '_buff_task') or not (self._buff_task and not self._buff_task.done()):
+        if not _skip("_buff_task") and (not hasattr(self, '_buff_task') or not (self._buff_task and not self._buff_task.done())):
             self._buff_task = asyncio.create_task(self._buff_loop())
-        if not hasattr(self, '_buff_tracker_task') or not (self._buff_tracker_task and not self._buff_tracker_task.done()):
+        if not _skip("_buff_tracker_task") and (not hasattr(self, '_buff_tracker_task') or not (self._buff_tracker_task and not self._buff_tracker_task.done())):
             self._buff_tracker_task = asyncio.create_task(self._buff_tracker_loop())
             self._buff_running = False
-        if not hasattr(self, '_viotp_task') or not (self._viotp_task and not self._viotp_task.done()):
+        if not _skip("_viotp_task") and (not hasattr(self, '_viotp_task') or not (self._viotp_task and not self._viotp_task.done())):
             self._viotp_task = asyncio.create_task(self._viotp_loop())
-        if not hasattr(self, '_reconcile_task') or not (self._reconcile_task and not self._reconcile_task.done()):
+        if not _skip("_reconcile_task") and (not hasattr(self, '_reconcile_task') or not (self._reconcile_task and not self._reconcile_task.done())):
             self._reconcile_task = asyncio.create_task(self._reconcile_loop())
-        log.info("Poller khoi dong (account + video + backup + proxy + daily_summary + campaign + maintenance + buff).")
+        log.info("Poller khoi dong (role=%s).", role)
 
     async def _daily_summary_loop(self):
         while True:
@@ -1388,6 +1400,14 @@ class FollowerPoller:
             lines.append("🏆 <b>Top nạp tiền:</b>")
             for i, r in enumerate(top, 1):
                 lines.append(f"{i}. <code>{r['tg_id']}</code> — {int(r['s']):,}đ")
+        # Lãi/lỗ theo mảng (khuyến nghị kiến trúc #4) — nối vào báo cáo 8h sẵn có
+        try:
+            from . import profit_report as _pr
+            _pdata = _pr.daily_profit(time.time() - 86400)
+            lines.append("")
+            lines.append(_pr.format_report(_pdata))
+        except Exception as e:
+            log.warning("profit report lỗi: %s", e)
         await self._send_admin_report("\n".join(lines))
         log.info("Revenue report sent for %s: %sđ", day_str, int(revenue))
 

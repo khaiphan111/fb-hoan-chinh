@@ -5,12 +5,64 @@ import hashlib
 from typing import Optional, Any
 import os
 import psycopg2
+from psycopg2 import pool as _pg_pool
 from psycopg2.extras import DictCursor
 from dotenv import load_dotenv
 from . import config
 
 load_dotenv()
 SUPABASE_URL = os.environ.get('SUPABASE_DB_URL')
+
+
+def _translate_pg_sql(sql):
+    """Dịch SQL viết cho SQLite sang Postgres (dùng cho cả pool)."""
+    sql = sql.replace('?', '%s')
+    sql = sql.replace('BIGINT PRIMARY KEY AUTOINCREMENT', 'BIGSERIAL PRIMARY KEY')
+    sql = sql.replace('BIGINT PRIMARY KEY', 'BIGSERIAL PRIMARY KEY')
+    sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
+    sql = sql.replace('INTEGER PRIMARY KEY', 'BIGINT PRIMARY KEY')
+    sql = re.sub(r'\bBLOB\b', 'BYTEA', sql)
+    sql = sql.replace(
+        "INSERT OR REPLACE INTO extra_admins(tg_id, name, perms, added_by, added_at, expires_at)",
+        "INSERT INTO extra_admins(tg_id, name, perms, added_by, added_at, expires_at)"
+        " ON CONFLICT(tg_id) DO UPDATE SET name=EXCLUDED.name, perms=EXCLUDED.perms,"
+        " added_by=EXCLUDED.added_by, added_at=EXCLUDED.added_at, expires_at=EXCLUDED.expires_at")
+    return sql
+
+def _translate_pg_script(sql):
+    sql = sql.replace('BIGINT PRIMARY KEY AUTOINCREMENT', 'BIGSERIAL PRIMARY KEY')
+    sql = sql.replace('BIGINT PRIMARY KEY', 'BIGSERIAL PRIMARY KEY')
+    sql = sql.replace('INTEGER PRIMARY KEY AUTOINCREMENT', 'SERIAL PRIMARY KEY')
+    sql = sql.replace('PRAGMA journal_mode=WAL;', '')
+    return sql
+
+class PooledResult:
+    """Kết quả query từ pool — giữ interface cũ (fetchone/fetchall/lastrowid/rowcount)."""
+    def __init__(self, rows=None, one=None, lastrowid=None, rowcount=0):
+        self._rows = rows
+        self._one = one
+        self.lastrowid = lastrowid
+        self.rowcount = rowcount
+    def fetchone(self):
+        return self._one
+    def fetchall(self):
+        return self._rows or []
+    def close(self):
+        pass
+
+_pg_pool_obj = None
+_pg_pool_lock = threading.Lock()
+
+def _get_pg_pool():
+    """Singleton ThreadedConnectionPool (2-10 conn), statement_timeout 30s."""
+    global _pg_pool_obj
+    if _pg_pool_obj is None:
+        with _pg_pool_lock:
+            if _pg_pool_obj is None:
+                _pg_pool_obj = _pg_pool.ThreadedConnectionPool(
+                    2, 10, SUPABASE_URL, connect_timeout=10,
+                    options="-c statement_timeout=30000")
+    return _pg_pool_obj
 
 class PgCursor:
     def __init__(self, conn):
@@ -56,52 +108,77 @@ class PgCursor:
         return self.cur.fetchall()
 
 class PgConnection:
+    """Connection Postgres qua ThreadedConnectionPool (2-10 conn).
+
+    Mỗi query lấy 1 conn từ pool, chạy xong trả về ngay — 1 query treo
+    không nghẽn toàn bộ hệ thống như single-connection trước đây.
+    """
     def __init__(self):
-        self.conn = psycopg2.connect(SUPABASE_URL, connect_timeout=10)
-        self.conn.autocommit = True
         self.row_factory = None
-        self._last_ping = 0.0
-    def _reconnect(self):
-        self.conn = psycopg2.connect(SUPABASE_URL, connect_timeout=10)
-        self.conn.autocommit = True
-        self._last_ping = time.time()
+        # Khởi tạo pool ngay để fail-fast nếu DB không nối được
+        _get_pg_pool()
     def check_conn(self):
-        # Bỏ ping SELECT 1 mỗi query: mỗi ping là 1 round-trip qua tunnel
-        # (~0.3-0.5s), handler gọi nhiều query -> bot trả lời chậm.
-        # Chỉ ping lại nếu >60s chưa verify hoặc conn đã đóng.
-        now = time.time()
-        if self._last_ping and now - self._last_ping < 60:
-            if getattr(self.conn, "closed", 1) == 0:
-                return
+        # Pool tự quản lý conn chết; không cần ping thủ công.
+        pass
+    def _run(self, sql, params, is_script=False):
+        p = _get_pg_pool()
+        conn = p.getconn()
         try:
-            with self.conn.cursor() as cur:
-                cur.execute('SELECT 1')
-            self._last_ping = time.time()
-        except Exception:
-            self._reconnect()
+            conn.autocommit = True
+            cur = conn.cursor(cursor_factory=DictCursor)
+            try:
+                if is_script:
+                    tsql = _translate_pg_script(sql)
+                    # Retry 1 lần khi lỗi kết nối (giống execute)
+                    try:
+                        cur.execute(tsql)
+                    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                        p.putconn(conn, close=True)
+                        conn = p.getconn()
+                        conn.autocommit = True
+                        cur = conn.cursor(cursor_factory=DictCursor)
+                        cur.execute(tsql)
+                    return PooledResult()
+                tsql = _translate_pg_sql(sql)
+                try:
+                    cur.execute(tsql, params)
+                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                    # Conn chết (tunnel rớt...) -> đóng conn hỏng, lấy conn mới retry 1 lần
+                    p.putconn(conn, close=True)
+                    conn = p.getconn()
+                    conn.autocommit = True
+                    cur = conn.cursor(cursor_factory=DictCursor)
+                    cur.execute(_translate_pg_sql(sql), params)
+                lastrowid = None
+                rowcount = cur.rowcount
+                one = None
+                rows = None
+                if tsql.strip().upper().startswith('INSERT') and 'RETURNING id' in tsql:
+                    try:
+                        res = cur.fetchone()
+                        if res:
+                            lastrowid = res['id']
+                    except psycopg2.ProgrammingError:
+                        pass
+                elif tsql.strip().upper().startswith('SELECT') or 'RETURNING' in tsql.upper():
+                    try:
+                        rows = cur.fetchall()
+                        one = rows[0] if rows else None
+                    except psycopg2.ProgrammingError:
+                        pass
+                return PooledResult(rows=rows, one=one, lastrowid=lastrowid,
+                                    rowcount=rowcount)
+            finally:
+                cur.close()
+        finally:
+            p.putconn(conn)
     def execute(self, sql, params=()):
-        self.check_conn()
-        try:
-            return PgCursor(self.conn).execute(sql, params)
-        except (psycopg2.OperationalError, psycopg2.InterfaceError):
-            # Chỉ reconnect khi lỗi KẾT NỐI thật (tunnel rớt, conn chết).
-            # Lỗi SQL logic (sai cú pháp, cột đã tồn tại...) thì raise luôn,
-            # không reconnect vô ích (mỗi reconnect tốn ~2s qua tunnel).
-            self._reconnect()
-            return PgCursor(self.conn).execute(sql, params)
+        return self._run(sql, params, is_script=False)
     def executescript(self, sql):
-        self.check_conn()
-        try:
-            return PgCursor(self.conn).executescript(sql)
-        except (psycopg2.OperationalError, psycopg2.InterfaceError):
-            self._reconnect()
-            return PgCursor(self.conn).executescript(sql)
+        return self._run(sql, (), is_script=True)
     def commit(self):
-        # self.conn.commit()
         pass
     def rollback(self):
-        # autocommit=True nên không có transaction để rollback;
-        # method này tồn tại để code dùng chung với SQLite không vỡ.
         pass
 
 _lock = threading.RLock()
@@ -173,19 +250,32 @@ class SqliteConnection:
             pass
 
 def get_conn():
+    """Fail-closed: có SUPABASE_DB_URL mà không nối được -> raise, KHÔNG rớt SQLite.
+
+    (Bài học 2026-09-29: rớt SQLite im lặng khiến bot phục vụ dữ liệu cũ sai
+    cho khách thật.) Không có SUPABASE_DB_URL -> SQLite cho dev/test như cũ.
+    """
     global _pg_conn
     if _pg_conn is None:
-        if SUPABASE_URL:
-            try:
-                _pg_conn = PgConnection()
-                _pg_conn.check_conn()
-            except Exception as e:
-                print(f"[!] PostgreSQL connect error: {e}")
-                print("[!] Falling back to local SQLite database...")
-                _pg_conn = SqliteConnection()
-        else:
-            print("[!] SUPABASE_DB_URL not found, falling back to local SQLite database...")
-            _pg_conn = SqliteConnection()
+        with _lock:
+            if _pg_conn is None:
+                if SUPABASE_URL:
+                    err = None
+                    for attempt in range(3):
+                        try:
+                            _pg_conn = PgConnection()
+                            break
+                        except Exception as e:
+                            err = e
+                            print(f"[!] PostgreSQL connect thử {attempt+1}/3 lỗi: {e}")
+                            time.sleep(5)
+                    else:
+                        raise RuntimeError(
+                            f"Không nối được PostgreSQL sau 3 lần thử, từ chối "
+                            f"chạy để không phục vụ dữ liệu sai: {err}")
+                else:
+                    print("[!] SUPABASE_DB_URL not found, dùng SQLite local (chế độ dev/test)...")
+                    _pg_conn = SqliteConnection()
     return _pg_conn
 
 def db_mode() -> str:
