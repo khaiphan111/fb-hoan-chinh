@@ -28,6 +28,16 @@ def _ip_is_dangerous(ip_str: str) -> bool:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
         return True
+    # NGOẠI LỆ (2026-10-10): VM chạy sau egress proxy — DNS local bị intercept,
+    # mọi domain ngoài đều resolve ra IP giả trong dải 198.18.0.0/15 (benchmark).
+    # Kết nối thật KHÔNG tới IP này mà đi qua hatch-egress-proxy:3128 (proxy
+    # mới là bên resolve DNS thật), nên IP intercept không phải SSRF.
+    # Các dải nguy hiểm thật (127.x, 10.x, 192.168.x, 169.254.x...) vẫn chặn.
+    try:
+        if ip in ipaddress.ip_network("198.18.0.0/15"):
+            return False
+    except ValueError:
+        pass
     return (
         ip.is_private
         or ip.is_loopback

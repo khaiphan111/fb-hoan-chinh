@@ -44,8 +44,10 @@ from .core import _SHOP_WALLET_HINT, _sub_active, log, manager
 
 class TrackMenuState(StatesGroup):
     waiting_fb_uid = State()
+    waiting_fb_post = State()  # Check so lieu 1 bai viet/reel FB (1 lan, khong theo doi)
     waiting_tiktok_username = State()
     waiting_tiktok_video = State()
+    waiting_tiktok_video_check = State()  # Check so lieu 1 video TikTok (1 lan, khong theo doi)
     waiting_ig_username = State()
     waiting_ig_post = State()
     waiting_zalo_phone = State()
@@ -456,12 +458,14 @@ def _trackmenu_sub_kb(prefix: str):
     if prefix == "fb":
         rows = [
             [InlineKeyboardButton(text="➕ Thêm UID FB", callback_data="trackmenu:fb_add")],
+            [InlineKeyboardButton(text="📊 Check bài viết", callback_data="trackmenu:fb_post_check")],
             [InlineKeyboardButton(text="📋 Đang theo dõi", callback_data="trackmenu:fb_list")],
         ]
     elif prefix == "tiktok":
         rows = [
             [InlineKeyboardButton(text="➕ Theo dõi tài khoản", callback_data="trackmenu:tiktok_add"),
              InlineKeyboardButton(text="🎬 Theo dõi video", callback_data="trackmenu:tiktok_video_add")],
+            [InlineKeyboardButton(text="📊 Check video", callback_data="trackmenu:tiktok_video_check")],
             [InlineKeyboardButton(text="📋 DS tài khoản", callback_data="trackmenu:tiktok_list"),
              InlineKeyboardButton(text="📋 DS video", callback_data="trackmenu:tiktok_vlist")],
         ]

@@ -758,6 +758,65 @@ async def check_uid(uid: str) -> dict:
                 "via": "direct_fallback_failed"}
 
 
+FB_POST_STATS_TIMEOUT = 180.0  # giay cho 1 link (worker mo trinh duyet, co the thu lai khi cookie chet)
+
+
+def _blank_post_stats(url: str, status: str = "error") -> dict:
+    return {
+        "ok": False, "status": status, "post_id": "", "post_url": (url or "").strip(),
+        "author": "", "desc": "", "cover": None,
+        "likes": 0, "comments": 0, "shares": 0, "views": 0, "via": "",
+    }
+
+
+async def fetch_post_stats_via_worker(url: str) -> dict | None:
+    """Goi worker /post_stats. Tra None neu worker chet/timeout (de fallback)."""
+    url = (url or "").strip()
+    if not url or "facebook.com" not in url.lower():
+        return _blank_post_stats(url, "unavailable")
+    try:
+        async with _make_http_client(timeout=FB_POST_STATS_TIMEOUT) as client:
+            r = await client.post(f"{FB_WORKER_URL}/post_stats", json={"url": url})
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("status"):
+                return data
+    except Exception:
+        pass
+    return None
+
+
+async def fetch_post_stats(url: str) -> dict:
+    """Diem vao duy nhat de check so lieu 1 bai viet/reel FB.
+
+    1. Thu Graph API (fetch_fb_post_info): nhanh, chinh xac khi co token
+       va link trich duoc post_id.
+    2. That bai -> nho worker mo trinh duyet doc so lieu cong khai
+       (khong can dang nhap, ho tro ca link share).
+    3. Worker chet -> tra ok=False (khong doan, khong bia so lieu).
+    """
+    url = (url or "").strip()
+    if not url or "facebook.com" not in url.lower():
+        return _blank_post_stats(url, "unavailable")
+    # 1. Graph API truoc
+    try:
+        info = await fetch_fb_post_info(url)
+        if info and info.get("ok"):
+            info["views"] = 0
+            info["via"] = "graph_api"
+            return info
+    except Exception:
+        pass
+    # 2. Worker Playwright (doc cong khai, ho tro link share)
+    res = await fetch_post_stats_via_worker(url)
+    if res is not None:
+        return res
+    # 3. Ca hai deu hong
+    out = _blank_post_stats(url, "error")
+    out["via"] = "worker_unavailable"
+    return out
+
+
 def build_fb_caption(res: dict) -> str:
     has_cookie = bool(db.get_setting("fb_cookie", ""))
     status = res.get("status", "unknown")
@@ -857,7 +916,10 @@ def build_fb_caption(res: dict) -> str:
 
 _FB_POST_ID_PATTERNS = (
     r"/posts/([A-Za-z0-9._-]+)",
+    r"/reel/(\d+)",
+    r"/reels/(\d+)",
     r"/videos/(\d+)",
+    r"/watch/\?v=(\d+)",
     r"[?&]story_fbid=([A-Za-z0-9._-]+)",
     r"[?&]fbid=([A-Za-z0-9._-]+)",
     r"(pfbid[A-Za-z0-9]+)",
@@ -886,6 +948,16 @@ def _fb_count(value) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _fb_stat(value) -> str:
+    """Hiển thị số liệu: None (không đọc được) -> '—', số -> định dạng ngàn."""
+    if value is None:
+        return "—"
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 async def fetch_fb_post_info(post_url: str) -> dict:
@@ -1003,10 +1075,12 @@ def build_fb_post_caption(info: dict) -> str:
     lines += [
         "",
         "━━━━ 📈 THỐNG KÊ ━━━━",
-        f"❤️ Lượt thích: <b>{_fb_count(info.get('likes')):,}</b>",
-        f"💬 Bình luận: <b>{_fb_count(info.get('comments')):,}</b>",
-        f"🔁 Chia sẻ: <b>{_fb_count(info.get('shares')):,}</b>",
+        f"❤️ Lượt thích: <b>{_fb_stat(info.get('likes'))}</b>",
+        f"💬 Bình luận: <b>{_fb_stat(info.get('comments'))}</b>",
+        f"🔁 Chia sẻ: <b>{_fb_stat(info.get('shares'))}</b>",
     ]
+    if info.get("views") is not None:
+        lines.append(f"👁️ Lượt xem: <b>{_fb_stat(info.get('views'))}</b>")
     if link:
         lines += ["", f"🔗 <a href=\"{html.escape(link, quote=True)}\">▶ Xem bài viết ngay</a>"]
     lines += ["", "🤖 <i>FB Checker V2 by @khaikhai998</i>"]

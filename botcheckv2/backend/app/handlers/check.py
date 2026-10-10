@@ -197,14 +197,80 @@ async def on_fb_quickcheck(cb: CallbackQuery):
     await process_fb_check(cb.message, uid)
 
 async def process_fb_post_check(msg: Message, url: str):
+    """Check số liệu 1 bài viết/reel FB (1 lần, không theo dõi).
+
+    Dùng fb.fetch_post_stats: thử Graph API trước, fallback worker mở
+    trình duyệt đọc số liệu công khai (hỗ trợ cả link share).
+    """
     wait = await msg.answer("⏳ Đang lấy thông tin bài viết Facebook...")
-    from ..fb import fetch_fb_post_info, build_fb_post_caption
-    info = await fetch_fb_post_info(url)
-    if not info or not info.get("ok") or not info.get("post_id"):
-        await wait.edit_text("❌ Không lấy được thông tin bài viết FB. Vui lòng kiểm tra lại link.")
+    from ..fb import fetch_post_stats, build_fb_post_caption
+    info = await fetch_post_stats(url)
+    if not info or not info.get("ok"):
+        status = (info or {}).get("status") or "error"
+        if status == "unavailable":
+            await wait.edit_text("❌ Link không phải bài viết Facebook hợp lệ.\n"
+                                 "Gửi link dạng facebook.com/.../posts/..., /reel/..., /videos/... hoặc link share.")
+        else:
+            await wait.edit_text("❌ Không lấy được số liệu bài viết lúc này.\n"
+                                 "Bài viết có thể không công khai, hoặc Facebook đang chặn — thử lại sau nhé.")
         return
     caption = build_fb_post_caption(info)
     await wait.edit_text(caption, disable_web_page_preview=True)
+
+
+@router.message(Command("checkpost"))
+async def on_checkpost(msg: Message):
+    """Check nhanh số liệu 1 bài viết/reel FB: /checkpost <link>."""
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await msg.answer(
+            "📊 <b>Check số liệu bài viết Facebook</b>\n\n"
+            "Cú pháp: /checkpost &lt;link bài viết&gt;\n"
+            "Ví dụ: /checkpost https://www.facebook.com/share/v/1EviDSdYDW/\n\n"
+            "Bot sẽ đọc số lượt thích, bình luận, chia sẻ công khai của bài viết.",
+            parse_mode="HTML",
+        )
+        return
+    await process_fb_post_check(msg, parts[1].strip().split()[0])
+
+
+async def process_tiktok_video_check(msg: Message, video_url: str):
+    """Check số liệu 1 video TikTok (1 lần, không theo dõi).
+
+    Tự resolve link rút gọn (vt.tiktok.com) trước khi parse.
+    """
+    from ..tiktok import fetch_video_info, parse_video_id, resolve_tiktok_url, build_video_caption
+    video_url = await resolve_tiktok_url(video_url)
+    if not parse_video_id(video_url):
+        await msg.answer("❌ Link video TikTok không hợp lệ.\n"
+                         "Gửi link dạng https://www.tiktok.com/@user/video/123... (link rút gọn vt.tiktok.com cũng được)")
+        return
+    wait = await msg.answer("⏳ Đang lấy thông tin video TikTok...")
+    try:
+        info = await fetch_video_info(video_url)
+    except Exception as e:
+        log.warning("check video tiktok loi %s: %s", video_url, e)
+        await wait.edit_text("❌ Không lấy được số liệu video lúc này.\n"
+                             "Video có thể đã xóa/riêng tư, hoặc TikTok đang chặn — thử lại sau nhé.")
+        return
+    caption = build_video_caption(info)
+    await wait.edit_text(caption, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.message(Command("checktiktok"))
+async def on_checktiktok(msg: Message):
+    """Check nhanh số liệu 1 video TikTok: /checktiktok <link>."""
+    parts = (msg.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await msg.answer(
+            "📊 <b>Check số liệu video TikTok</b>\n\n"
+            "Cú pháp: /checktiktok &lt;link video&gt;\n"
+            "Ví dụ: /checktiktok https://www.tiktok.com/@user/video/123...\n\n"
+            "Bot sẽ đọc số lượt xem, tim, bình luận, chia sẻ, lượt lưu.",
+            parse_mode="HTML",
+        )
+        return
+    await process_tiktok_video_check(msg, parts[1].strip().split()[0])
 
 @router.message(Command("ig"))
 async def on_ig(msg: Message):
@@ -290,6 +356,25 @@ async def on_trackmenu_tiktok_input(msg: Message, state: FSMContext):
     except Exception as e:
         await state.clear()
         await wait.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+
+@router.message(TrackMenuState.waiting_tiktok_video_check)
+async def on_trackmenu_tiktokv_check_input(msg: Message, state: FSMContext):
+    """Nhận link video TikTok từ nút '📊 Check video' -> check số liệu 1 lần."""
+    if _is_cancel(msg.text):
+        await state.clear()
+        await msg.answer("Đã hủy.", reply_markup=_trackmenu_main_kb())
+        return
+    video_url = (msg.text or "").strip().split()[0]
+    # Validate trước khi clear state: link sai thì GIỮ state để user gửi lại
+    # (nếu clear vội, tin tiếp theo rơi vào handler check username chung)
+    from ..tiktok import parse_video_id, resolve_tiktok_url
+    resolved = await resolve_tiktok_url(video_url)
+    if not parse_video_id(resolved) and "tiktok.com" not in (video_url or "").lower():
+        await msg.answer("❌ Link không phải TikTok. Gửi lại link video, hoặc /huy để hủy.")
+        return
+    await state.clear()
+    await process_tiktok_video_check(msg, resolved)
+
 
 @router.message(TrackMenuState.waiting_tiktok_video)
 async def on_trackmenu_tiktokv_input(msg: Message, state: FSMContext):
