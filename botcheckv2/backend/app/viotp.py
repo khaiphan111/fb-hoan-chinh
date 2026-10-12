@@ -39,7 +39,12 @@ _services_cache: dict = {"at": 0, "country": "", "items": []}
 SERVICES_TTL = 3600  # 1 giờ
 
 
-class ViotpError(Exception):
+from .rental_providers.base import RentalProviderError
+
+
+class ViotpError(RentalProviderError):
+    """Lỗi ViOTP — là con của RentalProviderError nên code mới bắt lỗi chung
+    vẫn bắt được, code cũ except ViotpError không đổi hành vi (GĐ1)."""
     pass
 
 

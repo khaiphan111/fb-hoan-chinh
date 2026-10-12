@@ -1011,13 +1011,13 @@ async def viotp_services(_=Depends(auth)):
     Nay gọi hàm async thật `get_services()` (đã có cache 1 giờ trong viotp.py).
     """
     import json as _json
-    from . import viotp as _viotp
+    from .rental_providers import default_provider as _dp
     try:
-        items = await _viotp.get_services()
+        items = await _dp().get_services()
     except Exception as _e:
         log.warning("viotp get_services lỗi, dùng cache: %s", _e)
         try:
-            items = _viotp._services_cache.get("items", [])
+            items = _dp().get_cached_services()
         except Exception:
             items = []
     disabled_raw = db.get_setting("viotp_disabled_services", "[]")

@@ -282,7 +282,8 @@ async def settle_order(order: dict) -> bool:
     tg_id = int(order["tg_id"])
     amount = int(order["amount"])
     try:
-        res = db.settle_payos_order(order_code)
+        # Fail-fast 2026-10-12: DB call chạy thread riêng, không kẹt event loop
+        res = await db.db_to_thread(db.settle_payos_order, order_code)
     except Exception as e:
         log.error("settle_payos_order thất bại cho đơn %s: %s", order_code, e)
         return False
@@ -293,7 +294,7 @@ async def settle_order(order: dict) -> bool:
     for key, level in (("f1", 1), ("f2", 2)):
         info = res.get(key)
         if info:
-            db.notify_commission_bonus(info[0], info[1], level)
+            await db.db_to_thread(db.notify_commission_bonus, info[0], info[1], level)
     log.info("PayOS: đã cộng %s vào ví %s cho user %s (đơn %s)", amount, target, tg_id, order_code)
     await _notify_paid(tg_id, amount, order_code, target)
     return True
@@ -306,7 +307,8 @@ async def check_pending_once() -> dict:
     if not is_configured():
         return stats
     now = int(time.time())
-    for row in db.get_pending_payos_orders(ORDER_TTL):
+    # Fail-fast 2026-10-12: mọi DB call trong poll async chạy thread riêng
+    for row in await db.db_to_thread(db.get_pending_payos_orders, ORDER_TTL):
         order = dict(row)
         order_code = int(order["order_code"])
         try:
@@ -321,7 +323,7 @@ async def check_pending_once() -> dict:
                 if await settle_order(order):
                     stats["paid"] += 1
             elif status in ("CANCELLED", "EXPIRED"):
-                db.mark_payos_status(order_code, status)
+                await db.db_to_thread(db.mark_payos_status, order_code, status)
                 stats["cancelled"] += 1
             else:  # PENDING / PROCESSING
                 if now - int(order["created_at"]) > ORDER_TTL:
@@ -329,17 +331,17 @@ async def check_pending_once() -> dict:
                         await cancel_payment_link(order_code, "Hết hạn thanh toán")
                     except Exception:
                         pass
-                    db.mark_payos_status(order_code, "EXPIRED")
+                    await db.db_to_thread(db.mark_payos_status, order_code, "EXPIRED")
                     stats["expired"] += 1
                 else:
-                    db.touch_payos_order(order_code)
+                    await db.db_to_thread(db.touch_payos_order, order_code)
         except Exception as e:
             log.error("Xử lý đơn %s lỗi: %s", order_code, e)
             stats["errors"] += 1
     # Đơn PENDING quá TTL: get_pending_payos_orders() không trả về nữa nên quét
     # riêng ở đây, đánh dấu EXPIRED để vòng "kiểm tra lần cuối" bên dưới vẫn
     # bắt được trường hợp khách trả trễ.
-    for row in db.get_overdue_pending_payos_orders(ORDER_TTL):
+    for row in await db.db_to_thread(db.get_overdue_pending_payos_orders, ORDER_TTL):
         order = dict(row)
         order_code = int(order["order_code"])
         try:
@@ -347,13 +349,13 @@ async def check_pending_once() -> dict:
                 await cancel_payment_link(order_code, "Hết hạn thanh toán")
             except Exception:
                 pass
-            if db.mark_payos_expired_if_pending(order_code):
+            if await db.db_to_thread(db.mark_payos_expired_if_pending, order_code):
                 stats["expired"] += 1
         except Exception as e:
             log.error("Xử lý đơn quá hạn %s lỗi: %s", order_code, e)
             stats["errors"] += 1
     # Kiểm tra lần cuối đơn EXPIRED trong 24h: khách trả trễ nhưng PayOS vẫn ghi PAID
-    for row in db.get_recently_expired_payos_orders(24 * 3600):
+    for row in await db.db_to_thread(db.get_recently_expired_payos_orders, 24 * 3600):
         order = dict(row)
         order_code = int(order["order_code"])
         try:
@@ -369,7 +371,7 @@ async def check_pending_once() -> dict:
             log.error("Xử lý đơn hết hạn %s lỗi: %s", order_code, e)
             stats["errors"] += 1
         finally:
-            db.mark_payos_final_checked(order_code)
+            await db.db_to_thread(db.mark_payos_final_checked, order_code)
     return stats
 
 

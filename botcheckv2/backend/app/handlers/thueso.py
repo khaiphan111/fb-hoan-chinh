@@ -31,7 +31,8 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
-from .. import db, viotp
+from .. import db
+from ..rental_providers import default_provider, RentalProviderError
 from ..util import vnd
 from .core import router
 
@@ -73,9 +74,10 @@ def _enabled() -> bool:
     return db.get_setting("viotp_enabled", "1") == "1"
 
 
-def _token() -> str:
-    # Token lấy từ Secure Vault (custom.viotp) trong app/viotp.py
-    return ""
+def _prov():
+    # GĐ1: shop /thueso luôn dùng provider mặc định (ViOTP) — hành vi không đổi.
+    # GĐ3 sẽ chọn provider theo cấu hình (tự động rẻ-trước / khách chọn / admin gán).
+    return default_provider()
 
 
 def _menu_kb(country: str = DEFAULT_COUNTRY) -> InlineKeyboardMarkup:
@@ -122,12 +124,12 @@ async def _services_or_error(obj, state=None) -> list | None:
     """Lấy danh sách dịch vụ; trả None + báo lỗi nếu không được."""
     country = await _get_country(state) if state else DEFAULT_COUNTRY
     try:
-        items = await viotp.get_services(country=country)
+        items = await _prov().get_services(country=country)
         disabled = _disabled_service_ids()
         if disabled:
             items = [s for s in items if s.get("id") not in disabled]
         return items
-    except viotp.ViotpError as e:
+    except RentalProviderError as e:
         txt = f"⚠️ Không lấy được danh sách dịch vụ: {html.escape(str(e))}"
         if isinstance(obj, CallbackQuery):
             await obj.answer("Lỗi kết nối ViOTP", show_alert=True)
@@ -217,7 +219,7 @@ async def on_ts_country_pick(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Quốc gia không hợp lệ", show_alert=True)
         return
     await state.update_data(ts_country=code)
-    viotp.clear_services_cache()
+    _prov().clear_services_cache()
     await cb.answer(f"Đã chọn {_country_name(code)}")
     await cb.message.edit_text(
         "📱 <b>SHOP THUÊ SỐ OTP</b>\nChọn dịch vụ bên dưới nhé:",
@@ -426,7 +428,7 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
     # 2. Gọi API thuê số — lỗi sau khi trừ tiền thì HOÀN TIỀN (chống mất tiền)
     try:
         country = await _get_country(state)
-        rent = await viotp.rent_number(_token(), sid, country=country)
+        rent = await _prov().rent_number(sid, country=country)
     except Exception as e:
         db.rent_adjust_balance(tg_id, sell, "hoan_tien_thue_so_loi")
         log.error("thue so that bai sau khi tru tien tg=%s: %s", tg_id, e)
@@ -441,7 +443,7 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
     try:
         rid = db.viotp_rental_create(
             tg_id, rent["request_id"], rent["phone_number"], sid,
-            s["name"], country, cost, sell)
+            s["name"], country, cost, sell, provider=_prov().name)
     except Exception as e:
         db.rent_adjust_balance(tg_id, sell, "hoan_tien_tao_don_loi")
         log.error("tao don thue so that bai sau khi tru tien tg=%s: %s", tg_id, e)
@@ -509,8 +511,8 @@ async def on_ts_check(cb: CallbackQuery):
         return
     await cb.answer("Đang kiểm tra...")
     try:
-        sess = await viotp.get_session(_token(), r["request_id"])
-    except viotp.ViotpError as e:
+        sess = await _prov().get_session(r["request_id"])
+    except RentalProviderError as e:
         await cb.message.answer(f"⚠️ Lỗi kiểm tra OTP: {html.escape(str(e))}")
         return
     if sess["status"] == 1 and sess["code"]:

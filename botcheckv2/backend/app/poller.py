@@ -1421,7 +1421,8 @@ class FollowerPoller:
         while True:
             try:
                 now_ts = int(time.time())
-                camps = [dict(c) for c in db.get_campaigns(status="pending")]
+                # Fail-fast 2026-10-12: DB call trong poll async chạy thread riêng
+                camps = [dict(c) for c in await db.db_to_thread(db.get_campaigns, status="pending")]
                 
                 # Lấy bot instance từ self._bot hoặc fallback sang manager.bot
                 bot_inst = self._bot
@@ -1443,7 +1444,7 @@ class FollowerPoller:
                         continue # Chưa tới giờ gửi
 
                     # Cập nhật trạng thái đang chạy
-                    db.update_campaign_status(camp["id"], "running")
+                    await db.db_to_thread(db.update_campaign_status, camp["id"], "running")
 
                     text = camp.get("text_content", "") or ""
                     image = camp.get("image_url", "")
@@ -1493,7 +1494,7 @@ class FollowerPoller:
                     if target_type == "specific" and target_users_str.strip():
                         users = [{"tg_id": t.strip()} for t in target_users_str.split(",") if t.strip()]
                     else:
-                        users = db.list_users()
+                        users = await db.db_to_thread(db.list_users)
 
                     success_count = 0
                     last_error = ""
@@ -1525,8 +1526,8 @@ class FollowerPoller:
                     if last_error:
                         stats["error"] = last_error
 
-                    db.update_campaign_stats(camp["id"], json.dumps(stats))
-                    db.update_campaign_status(camp["id"], "finished")
+                    await db.db_to_thread(db.update_campaign_stats, camp["id"], json.dumps(stats))
+                    await db.db_to_thread(db.update_campaign_status, camp["id"], "finished")
                     log.info(f"Campaign #{camp['id']} finished! Sent to {success_count} users.")
 
             except Exception as e:
@@ -1592,20 +1593,21 @@ class FollowerPoller:
             await asyncio.sleep(3600)
 
     async def _process_viotp_waiting(self):
-        from . import viotp as _viotp_mod
+        from .rental_providers import default_provider as _dp
         from .util import vnd
-        if db.get_setting("viotp_enabled", "1") != "1":
+        # Fail-fast 2026-10-12: DB call trong poll async chạy thread riêng
+        if await db.db_to_thread(db.get_setting, "viotp_enabled", "1") != "1":
             return
         # 1. Poll các đơn đang chờ trong TTL: săn mã OTP
-        for r in db.viotp_rental_waiting(15):
+        for r in await db.db_to_thread(db.viotp_rental_waiting, 15):
             rid = int(r["id"])
             try:
-                sess = await _viotp_mod.get_session(request_id=r["request_id"])
+                sess = await _dp().get_session(r["request_id"])
             except Exception as e:
                 log.warning("viotp poll #%s lỗi: %s", rid, e)
                 continue
             if sess["status"] == 1 and sess["code"]:
-                db.viotp_rental_set_status(rid, "done", sess["code"])
+                await db.db_to_thread(db.viotp_rental_set_status, rid, "done", sess["code"])
                 await self._deliver_viotp_otp(r, sess["code"])
             elif sess["status"] == 2:
                 # ViOTP báo hết hạn = tiền vốn đã tự về TK ViOTP -> hoàn cho khách
@@ -1614,19 +1616,19 @@ class FollowerPoller:
         alerted = getattr(self, "_viotp_manual_alerted", None)
         if alerted is None:
             alerted = self._viotp_manual_alerted = set()
-        for r in db.viotp_rental_overdue(15):
+        for r in await db.db_to_thread(db.viotp_rental_overdue, 15):
             rid = int(r["id"])
-            if not db.viotp_rental_claim_expire(rid):
+            if not await db.db_to_thread(db.viotp_rental_claim_expire, rid):
                 continue  # tiến trình khác đã xử lý
             try:
-                sess = await _viotp_mod.get_session(request_id=r["request_id"])
+                sess = await _dp().get_session(r["request_id"])
             except Exception as e:
                 # KHÔNG hoàn khi không check được ViOTP -> trả về waiting, thử lại sau
                 log.warning("viotp final-check #%s lỗi, thử lại chu kỳ sau: %s", rid, e)
-                db.viotp_rental_set_status(rid, "waiting")
+                await db.db_to_thread(db.viotp_rental_set_status, rid, "waiting")
                 continue
             if sess["status"] == 1 and sess["code"]:
-                db.viotp_rental_set_status(rid, "done", sess["code"])
+                await db.db_to_thread(db.viotp_rental_set_status, rid, "done", sess["code"])
                 await self._deliver_viotp_otp(r, sess["code"])
             elif sess["status"] == 2:
                 await self._refund_viotp_rental(r, claimed=True)
@@ -1650,7 +1652,7 @@ class FollowerPoller:
                             f"Bot KHÔNG tự hoàn. Admin kiểm tra rồi xử lý tay.")
                     except Exception as e:
                         log.warning("bao admin duyet tay #%s lỗi: %s", rid, e)
-                db.viotp_rental_set_status(rid, "waiting")
+                await db.db_to_thread(db.viotp_rental_set_status, rid, "waiting")
 
     async def _deliver_viotp_otp(self, r: dict, code: str):
         """Gửi mã OTP cho khách + báo admin (dùng chung cho poller và check cuối)."""
@@ -1669,7 +1671,7 @@ class FollowerPoller:
         try:
             from . import viotp_notify as _vn
             from . import notify_router as _nr
-            rr = db.viotp_rental_get(rid)
+            rr = await db.db_to_thread(db.viotp_rental_get, rid)
             await _nr.send("rent", _vn.otp_notify_text(rr))
         except Exception as e:
             log.warning("bao admin OTP #%s lỗi: %s", rid, e)
@@ -1683,9 +1685,9 @@ class FollowerPoller:
         """
         from .util import vnd
         rid = int(r["id"])
-        if db.get_setting("viotp_auto_refund", "1") != "1":
+        if await db.db_to_thread(db.get_setting, "viotp_auto_refund", "1") != "1":
             # Tắt tự động hoàn -> chỉ đánh dấu hết hạn, admin xử lý tay
-            db.viotp_rental_set_status(rid, "expired")
+            await db.db_to_thread(db.viotp_rental_set_status, rid, "expired")
             try:
                 await self._bot.send_message(
                     int(r["tg_id"]),
@@ -1695,12 +1697,12 @@ class FollowerPoller:
             except Exception:
                 pass
             return False
-        if not claimed and not db.viotp_rental_claim_expire(rid):
+        if not claimed and not await db.db_to_thread(db.viotp_rental_claim_expire, rid):
             return False  # tiến trình khác đã xử lý
         sell = int(r["sell_price"] or 0)
         tg_id = int(r["tg_id"])
         reason = f"hoan_tien_thue_so_het_han:#{rid}"
-        if not db.rent_adjust_balance(tg_id, sell, reason):
+        if not await db.db_to_thread(db.rent_adjust_balance, tg_id, sell, reason):
             # Cộng tiền thất bại (hiếm) -> báo admin, giữ expiring để thử lại
             log.error("hoan tien thue so #%s that bai (tg %s, %sđ)", rid, tg_id, sell)
             try:
@@ -1714,7 +1716,7 @@ class FollowerPoller:
             except Exception:
                 pass
             return False
-        db.viotp_rental_set_status(rid, "refunded")
+        await db.db_to_thread(db.viotp_rental_set_status, rid, "refunded")
         try:
             await self._bot.send_message(
                 tg_id,
@@ -1810,37 +1812,44 @@ class FollowerPoller:
             log.info("buff pending: bỏ qua (bot đang tạm dừng)")
             return
         # Thu hồi đơn kẹt ở 'placing' quá 10 phút (worker crash giữa chừng)
-        try:
+        # Fail-fast 2026-10-12: DB call trong poll async chạy thread riêng
+        def _recover_stuck():
             c = db.get_conn()
             c.execute(
                 "UPDATE buff_orders SET status='pending', updated_at=? "
                 "WHERE status='placing' AND updated_at < ?",
                 (int(time.time()), int(time.time()) - 600))
             c.commit()
+        try:
+            await db.db_to_thread(_recover_stuck)
         except Exception:
             pass
-        pending = db.buff_orders_pending(5)
+        pending = await db.db_to_thread(db.buff_orders_pending, 5)
         for o in pending:
             oid = int(o["id"])
             # Claim nguyên tử: chỉ đứa đầu tiên đổi được pending -> placing
-            try:
+            def _claim():
                 cur = db.get_conn().execute(
                     "UPDATE buff_orders SET status='placing', updated_at=? "
                     "WHERE id=? AND status='pending'",
                     (int(time.time()), oid))
                 db.get_conn().commit()
+                return cur.rowcount
+            try:
+                claimed = await db.db_to_thread(_claim)
             except Exception:
                 continue
-            if cur.rowcount == 0:
+            if claimed == 0:
                 continue
-            order = db.buff_order_get(oid)
+            order = await db.db_to_thread(db.buff_order_get, oid)
             try:
                 res = await buff_worker.place_buff_order(order)
             except Exception as e:
                 log.exception("buff place lỗi")
                 res = {"ok": False, "error": f"lỗi worker: {e}"}
             if res.get("ok"):
-                db.buff_order_update(
+                await db.db_to_thread(
+                    db.buff_order_update,
                     oid, status="running",
                     panel_order_id=str(res.get("panel_order_id") or ""))
                 log.info("buff: đơn %s đã đặt trên panel (%s)",
@@ -1850,7 +1859,7 @@ class FollowerPoller:
                         import datetime
                         _now = datetime.datetime.now() + datetime.timedelta(hours=7)
                         _time_str = _now.strftime("%H:%M %d/%m/%Y")
-                        _svc = db.buff_service_get(int(order["service_id"]))
+                        _svc = await db.db_to_thread(db.buff_service_get, int(order["service_id"]))
                         _svc_name = _svc["name"] if _svc else f"#{order['service_id']}"
                         _link_short = (order["link"][:50] + "...") if len(order["link"]) > 50 else order["link"]
                         await self._bot.send_message(
@@ -1869,9 +1878,10 @@ class FollowerPoller:
                         pass
             else:
                 err = str(res.get("error") or "không rõ")
-                db.buff_order_update(oid, status="failed")
+                await db.db_to_thread(db.buff_order_update, oid, status="failed")
                 # Hoàn tiền vào VÍ BUFF
-                refunded = db.buff_adjust_balance(
+                refunded = await db.db_to_thread(
+                    db.buff_adjust_balance,
                     int(order["tg_id"]), int(order["total_price"]),
                     f"buff_refund:{order['code']}")
                 log.warning("buff: đơn %s thất bại (%s), hoàn tiền: %s",

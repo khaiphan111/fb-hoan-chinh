@@ -138,12 +138,16 @@ async def scan_running_orders(bot=None):
     """
     from . import db
 
-    try:
-        orders = db.get_conn().execute(
+    def _select_running():
+        # Fail-fast 2026-10-12: chạy thread riêng, không kẹt event loop
+        return db.get_conn().execute(
             "SELECT id, code, tg_id, quantity, done_quantity, panel_order_id, status "
             "FROM buff_orders WHERE status IN ('running','pending') "
             "ORDER BY created_at DESC LIMIT 50"
         ).fetchall()
+
+    try:
+        orders = await db.db_to_thread(_select_running)
     except Exception as e:
         log.warning("scan_running_orders: không đọc được DB: %s", e)
         return
@@ -176,12 +180,14 @@ async def _check_one_order(o: dict, bot=None):
 
     if not res.get("ok"):
         # Không đọc được, chỉ cập nhật last_checked để tránh quét liên tục
-        try:
+        def _touch_checked():
             db.get_conn().execute(
                 "UPDATE buff_orders SET last_checked_at=? WHERE id=?",
                 (now, o["id"]),
             )
             db.get_conn().commit()
+        try:
+            await db.db_to_thread(_touch_checked)
         except Exception:
             pass
         return
@@ -197,12 +203,14 @@ async def _check_one_order(o: dict, bot=None):
     elif panel_status in ("cancelled", "failed"):
         new_status = panel_status
 
-    try:
+    def _update_progress():
         db.get_conn().execute(
             "UPDATE buff_orders SET done_quantity=?, status=?, last_checked_at=?, updated_at=? WHERE id=?",
             (new_done, new_status, now, now, o["id"]),
         )
         db.get_conn().commit()
+    try:
+        await db.db_to_thread(_update_progress)
     except Exception as e:
         log.warning("buff_tracker: update DB lỗi %s: %s", code, e)
         return

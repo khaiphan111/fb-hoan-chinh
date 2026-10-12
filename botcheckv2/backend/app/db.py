@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import time
 import re
@@ -54,15 +55,33 @@ _pg_pool_obj = None
 _pg_pool_lock = threading.Lock()
 
 def _get_pg_pool():
-    """Singleton ThreadedConnectionPool (2-10 conn), statement_timeout 30s."""
+    """Singleton ThreadedConnectionPool (2-10 conn), statement_timeout 30s.
+
+    Fail-fast 2026-10-12: connect_timeout 10s->3s để DB call không kẹt event
+    loop quá lâu khi proxy/tunnel blip (kẹt >8s là watchdog kill backend);
+    TCP keepalive để phát hiện sớm conn chết trong pool thay vì treo.
+    """
     global _pg_pool_obj
     if _pg_pool_obj is None:
         with _pg_pool_lock:
             if _pg_pool_obj is None:
                 _pg_pool_obj = _pg_pool.ThreadedConnectionPool(
-                    2, 10, SUPABASE_URL, connect_timeout=10,
+                    2, 10, SUPABASE_URL, connect_timeout=3,
+                    keepalives=1, keepalives_idle=30,
+                    keepalives_interval=10, keepalives_count=5,
                     options="-c statement_timeout=30000")
     return _pg_pool_obj
+
+
+async def db_to_thread(fn, *args, timeout=8.0, **kwargs):
+    """Chạy DB call đồng bộ trong thread riêng, timeout fail-fast.
+
+    Dùng trong các vòng poll async (payos, viotp, campaign, buff tracker):
+    DB kẹt vì proxy/tunnel blip thì event loop được thả sau `timeout` giây
+    thay vì đứng hình — watchdog không kill backend oan nữa.
+    (Bài học 2026-10-12: 12 lần kill/ngày vì DB call kẹt 10s trong loop.)
+    """
+    return await asyncio.wait_for(asyncio.to_thread(fn, *args, **kwargs), timeout)
 
 class PgCursor:
     def __init__(self, conn):
@@ -869,6 +888,8 @@ def init_db() -> None:
             -- Theo dõi tiến độ đơn buff (thêm 2026-10-08)
             ALTER TABLE buff_orders ADD COLUMN IF NOT EXISTS done_quantity BIGINT DEFAULT 0;
             ALTER TABLE buff_orders ADD COLUMN IF NOT EXISTS last_checked_at BIGINT DEFAULT 0;
+            -- GĐ1 2026-10-12: đơn thuê số ghi nhà cung cấp (đơn cũ mặc định 'viotp')
+            ALTER TABLE viotp_rentals ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'viotp';
             CREATE TABLE IF NOT EXISTS buff_link_warehouse (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 tg_id        BIGINT NOT NULL,
@@ -2983,7 +3004,8 @@ def migrate_new_features():
             status       TEXT NOT NULL DEFAULT 'waiting',
             otp_code     TEXT NOT NULL DEFAULT '',
             created_at   BIGINT NOT NULL DEFAULT 0,
-            updated_at   BIGINT NOT NULL DEFAULT 0
+            updated_at   BIGINT NOT NULL DEFAULT 0,
+            provider     TEXT NOT NULL DEFAULT 'viotp'
         )""",
     ]:
         _migrate_one(c, sql, applied)
@@ -7761,15 +7783,18 @@ def viotp_sell_price(cost: int) -> int:
 
 
 def viotp_rental_create(tg_id: int, request_id: str, phone: str, service_id: int,
-                       service_name: str, country: str, cost: int, sell: int) -> int:
+                       service_name: str, country: str, cost: int, sell: int,
+                       provider: str = "viotp") -> int:
     now = int(time.time())
     with _lock:
         c = get_conn()
         cur = c.execute(
             "INSERT INTO viotp_rentals(tg_id, request_id, phone_number, service_id,"
-            " service_name, country, cost_price, sell_price, status, created_at, updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?, 'waiting',?,?)",
-            (tg_id, request_id, phone, service_id, service_name, country, cost, sell, now, now),
+            " service_name, country, cost_price, sell_price, status, created_at, updated_at,"
+            " provider)"
+            " VALUES(?,?,?,?,?,?,?,?, 'waiting',?,?,?)",
+            (tg_id, request_id, phone, service_id, service_name, country, cost, sell, now, now,
+             provider),
         )
         rid = cur.lastrowid
         if hasattr(c, "cursor"):
