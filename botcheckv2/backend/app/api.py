@@ -1042,6 +1042,234 @@ async def grant_sub(tg_id: int, body: MonthsIn, _=Depends(require_role("admin"))
     return {"ok": True, "user": _row(db.get_user(tg_id))}
 
 
+# ============================================================
+# LỊCH SỬ HOẠT ĐỘNG TỪNG USER (trang admin)
+# ============================================================
+
+def _history_paging(limit: int = 20, offset: int = 0):
+    limit = max(1, min(int(limit or 20), 100))
+    offset = max(0, int(offset or 0))
+    return limit, offset
+
+
+@router.get("/users/{tg_id}/history/summary")
+def user_history_summary(tg_id: int, _=Depends(auth)):
+    """4 ô số liệu tổng quan: tổng nạp / tổng chi / số dư / chênh lệch."""
+    user = db.get_user(tg_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Không có user này")
+    c = db.get_conn()
+    # Tổng nạp PayOS thành công
+    r = c.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM payos_orders WHERE tg_id=? AND UPPER(status)='PAID'",
+        (tg_id,)).fetchone()
+    payos_total = int(r[0] or 0)
+    # Tổng nạp tay (admin cộng ví chính qua /topup và /wallet)
+    r = c.execute(
+        "SELECT COALESCE(SUM(CAST(SUBSTR(message, 11) AS INTEGER)),0) FROM logs "
+        "WHERE tg_id=? AND kind='topup'",
+        (tg_id,)).fetchone()
+    # NOTE: message dạng "Admin nạp 50000" -> parse số sau "Admin nạp "
+    manual_total = 0
+    for row in c.execute(
+            "SELECT message FROM logs WHERE tg_id=? AND kind IN ('topup','wallet_adjust')",
+            (tg_id,)).fetchall():
+        import re
+        m = re.search(r"(\d[\d.,]*)", (row["message"] or ""))
+        if m and ("cộng" in row["message"] or "nạp" in row["message"]):
+            try:
+                manual_total += int(m.group(1).replace(".", "").replace(",", ""))
+            except ValueError:
+                pass
+    # Tổng chi
+    r = c.execute("SELECT COALESCE(SUM(price),0) FROM acc_orders WHERE tg_id=?", (tg_id,)).fetchone()
+    acc_total = int(r[0] or 0)
+    r = c.execute("SELECT COALESCE(SUM(total_price),0) FROM buff_orders WHERE tg_id=?", (tg_id,)).fetchone()
+    buff_total = int(r[0] or 0)
+    r = c.execute("SELECT COALESCE(SUM(sell_price),0) FROM viotp_rentals WHERE tg_id=?", (tg_id,)).fetchone()
+    rent_total = int(r[0] or 0)
+    total_in = payos_total + manual_total
+    total_out = acc_total + buff_total + rent_total
+    u = _row(user)
+    balance_now = int(u.get("balance") or 0) + int(u.get("shop_balance") or 0) + \
+        int(u.get("buff_balance") or 0) + int(u.get("rent_balance") or 0)
+    return {
+        "ok": True,
+        "total_topup_payos": payos_total,
+        "total_topup_manual": manual_total,
+        "total_topup": total_in,
+        "total_spent_acc": acc_total,
+        "total_spent_buff": buff_total,
+        "total_spent_rent": rent_total,
+        "total_spent": total_out,
+        "balance_now": balance_now,
+        "diff": total_in - total_out - balance_now,  # lệch sổ (≠0 cần xem lại)
+    }
+
+
+@router.get("/users/{tg_id}/history/topups")
+def user_history_topups(tg_id: int, limit: int = 20, offset: int = 0,
+                        from_ts: int = 0, to_ts: int = 0, _=Depends(auth)):
+    """Lịch sử nạp: PayOS + admin cộng tay."""
+    if not db.get_user(tg_id):
+        raise HTTPException(status_code=404, detail="Không có user này")
+    limit, offset = _history_paging(limit, offset)
+    c = db.get_conn()
+    items = []
+    q = "SELECT order_code, amount, status, created_at, target FROM payos_orders WHERE tg_id=?"
+    params: list = [tg_id]
+    if from_ts:
+        q += " AND created_at>=?"; params.append(from_ts)
+    if to_ts:
+        q += " AND created_at<=?"; params.append(to_ts)
+    q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    for r in c.execute(q, params).fetchall():
+        items.append({
+            "ts": r["created_at"], "amount": r["amount"], "status": r["status"],
+            "code": str(r["order_code"]), "target": r["target"] or "main",
+            "source": "payos",
+        })
+    # Nạp tay từ logs
+    q2 = "SELECT ts, kind, message FROM logs WHERE tg_id=? AND kind IN ('topup','wallet_adjust')"
+    p2: list = [tg_id]
+    if from_ts:
+        q2 += " AND ts>=?"; p2.append(from_ts)
+    if to_ts:
+        q2 += " AND ts<=?"; p2.append(to_ts)
+    q2 += " ORDER BY ts DESC LIMIT ? OFFSET ?"
+    p2 += [limit, offset]
+    import re
+    for r in c.execute(q2, p2).fetchall():
+        m = re.search(r"(\d[\d.,]*)", (r["message"] or ""))
+        amt = 0
+        if m:
+            try:
+                amt = int(m.group(1).replace(".", "").replace(",", ""))
+            except ValueError:
+                pass
+        if ("cộng" in (r["message"] or "") or "nạp" in (r["message"] or "")) and amt > 0:
+            items.append({
+                "ts": r["ts"], "amount": amt, "status": "PAID",
+                "code": "", "target": "main", "source": "manual",
+                "note": r["message"],
+            })
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return {"ok": True, "items": items[:limit]}
+
+
+@router.get("/users/{tg_id}/history/acc-orders")
+def user_history_acc(tg_id: int, limit: int = 20, offset: int = 0,
+                     from_ts: int = 0, to_ts: int = 0, _=Depends(auth)):
+    """Lịch sử mua acc."""
+    if not db.get_user(tg_id):
+        raise HTTPException(status_code=404, detail="Không có user này")
+    limit, offset = _history_paging(limit, offset)
+    c = db.get_conn()
+    q = "SELECT id, price, uid, created_at FROM acc_orders WHERE tg_id=?"
+    params: list = [tg_id]
+    if from_ts:
+        q += " AND created_at>=?"; params.append(from_ts)
+    if to_ts:
+        q += " AND created_at<=?"; params.append(to_ts)
+    q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    items = [{"ts": r["created_at"], "id": r["id"], "price": r["price"],
+              "uid": r["uid"]} for r in c.execute(q, params).fetchall()]
+    return {"ok": True, "items": items}
+
+
+@router.get("/users/{tg_id}/history/buff-orders")
+def user_history_buff(tg_id: int, limit: int = 20, offset: int = 0,
+                      from_ts: int = 0, to_ts: int = 0, _=Depends(auth)):
+    """Lịch sử đơn buff."""
+    if not db.get_user(tg_id):
+        raise HTTPException(status_code=404, detail="Không có user này")
+    limit, offset = _history_paging(limit, offset)
+    c = db.get_conn()
+    q = ("SELECT code, total_price, status, quantity, link, created_at "
+         "FROM buff_orders WHERE tg_id=?")
+    params: list = [tg_id]
+    if from_ts:
+        q += " AND created_at>=?"; params.append(from_ts)
+    if to_ts:
+        q += " AND created_at<=?"; params.append(to_ts)
+    q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    items = [{"ts": r["created_at"], "code": r["code"], "price": r["total_price"],
+              "status": r["status"], "quantity": r["quantity"],
+              "link": (r["link"] or "")[:60]} for r in c.execute(q, params).fetchall()]
+    return {"ok": True, "items": items}
+
+
+@router.get("/users/{tg_id}/history/rentals")
+def user_history_rentals(tg_id: int, limit: int = 20, offset: int = 0,
+                         from_ts: int = 0, to_ts: int = 0, _=Depends(auth)):
+    """Lịch sử thuê số OTP."""
+    if not db.get_user(tg_id):
+        raise HTTPException(status_code=404, detail="Không có user này")
+    limit, offset = _history_paging(limit, offset)
+    c = db.get_conn()
+    q = ("SELECT phone_number, service_name, sell_price, status, created_at "
+         "FROM viotp_rentals WHERE tg_id=?")
+    params: list = [tg_id]
+    if from_ts:
+        q += " AND created_at>=?"; params.append(from_ts)
+    if to_ts:
+        q += " AND created_at<=?"; params.append(to_ts)
+    q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    items = [{"ts": r["created_at"], "phone": r["phone_number"],
+              "service": r["service_name"], "price": r["sell_price"],
+              "status": r["status"]} for r in c.execute(q, params).fetchall()]
+    return {"ok": True, "items": items}
+
+
+@router.get("/users/{tg_id}/history/wallet")
+def user_history_wallet(tg_id: int, limit: int = 20, offset: int = 0,
+                        from_ts: int = 0, to_ts: int = 0, _=Depends(auth)):
+    """Lịch sử ví: chuyển nội bộ + điều chỉnh tay từng ví."""
+    if not db.get_user(tg_id):
+        raise HTTPException(status_code=404, detail="Không có user này")
+    limit, offset = _history_paging(limit, offset)
+    c = db.get_conn()
+    items = []
+    q = ("SELECT src, dst, amount, status, created_at FROM wallet_transfer_requests "
+         "WHERE tg_id=?")
+    params: list = [tg_id]
+    if from_ts:
+        q += " AND created_at>=?"; params.append(from_ts)
+    if to_ts:
+        q += " AND created_at<=?"; params.append(to_ts)
+    q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params += [limit, offset]
+    for r in c.execute(q, params).fetchall():
+        items.append({"ts": r["created_at"], "kind": "transfer",
+                      "src": r["src"], "dst": r["dst"],
+                      "amount": r["amount"], "status": r["status"]})
+    q2 = "SELECT ts, message FROM logs WHERE tg_id=? AND kind='wallet_adjust'"
+    p2: list = [tg_id]
+    if from_ts:
+        q2 += " AND ts>=?"; p2.append(from_ts)
+    if to_ts:
+        q2 += " AND ts<=?"; p2.append(to_ts)
+    q2 += " ORDER BY ts DESC LIMIT ? OFFSET ?"
+    p2 += [limit, offset]
+    import re
+    for r in c.execute(q2, p2).fetchall():
+        m = re.search(r"(\d[\d.,]*)", (r["message"] or ""))
+        amt = 0
+        if m:
+            try:
+                amt = int(m.group(1).replace(".", "").replace(",", ""))
+            except ValueError:
+                pass
+        items.append({"ts": r["ts"], "kind": "adjust",
+                      "note": r["message"], "amount": amt})
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return {"ok": True, "items": items[:limit]}
+
+
 @router.get("/watches")
 def watches(_=Depends(auth)):
     return [_row(w) for w in db.all_watches()]

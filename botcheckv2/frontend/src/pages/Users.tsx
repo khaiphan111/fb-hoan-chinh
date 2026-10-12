@@ -1,8 +1,9 @@
 // FB Live/Die Checker — Tác giả: @nhanxp | Hỗ trợ: Telegram/Facebook nhanxp
-import { IconRefresh, IconCalendarPlus, IconGift, IconTrash, IconPlus, IconMinus } from "@tabler/icons-react";
+import { IconRefresh, IconCalendarPlus, IconGift, IconTrash, IconPlus, IconMinus, IconHistory } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { Badge, Button, Card, CardContent, Input } from "../components/ui";
+import UserHistory from "../components/UserHistory";
 import { api } from "../lib/api";
 import { fromNow, vnd } from "../lib/utils";
 
@@ -18,6 +19,7 @@ export default function Users() {
   const [users, setUsers] = useState<any[]>([]);
   const [days, setDays] = useState<Record<number, string>>({});
   const [wamt, setWamt] = useState<Record<string, string>>({}); // key `${tg_id}:${wallet}`
+  const [historyUser, setHistoryUser] = useState<any>(null);
 
   async function walletAdjust(tg_id: number, wallet: string, sign: 1 | -1) {
     const k = `${tg_id}:${wallet}`;
@@ -199,6 +201,9 @@ export default function Users() {
                   <Button size="sm" variant="danger" onClick={() => resetUser(u.tg_id)} title="Reset Dữ Liệu">
                     Reset
                   </Button>
+                  <Button size="sm" variant="outline" onClick={() => setHistoryUser(u)} title="Xem lịch sử hoạt động">
+                    <IconHistory size={16} /> Lịch sử
+                  </Button>
                   <Button size="sm" variant="danger" onClick={() => deleteUser(u.tg_id)} title="Xóa người dùng" className="bg-red-600/20 text-red-500 hover:bg-red-600 hover:text-white border-none">
                     <IconTrash size={16} />
                   </Button>
@@ -208,6 +213,14 @@ export default function Users() {
           );
         })}
       </div>
+
+      {historyUser && (
+        <UserHistory
+          tg_id={historyUser.tg_id}
+          name={historyUser.name || historyUser.username || String(historyUser.tg_id)}
+          onClose={() => setHistoryUser(null)}
+        />
+      )}
     </div>
   );
 }
