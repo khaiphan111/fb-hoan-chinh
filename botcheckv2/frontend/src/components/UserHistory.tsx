@@ -23,7 +23,32 @@ const TIME_FILTERS = [
 ];
 
 function tsToDate(ts: number) {
-  return new Date(ts * 1000).toLocaleString("vi-VN");
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+const WALLET_NAMES: Record<string, string> = {
+  main: "Ví chính", shop: "Ví shop", buff: "Ví buff", rent: "Ví thuê số",
+};
+function walletName(k: string) { return WALLET_NAMES[k] || k; }
+
+function StatusBadge({ s }: { s: string }) {
+  const up = (s || "").toUpperCase();
+  const ok = ["PAID", "DONE", "COMPLETED", "SUCCESS", "APPROVED", "DELIVERED"].includes(up);
+  const bad = ["CANCELLED", "FAILED", "EXPIRED", "REJECTED"].includes(up);
+  const cls = ok ? "text-green-600" : bad ? "text-red-500" : "text-yellow-600";
+  return <span className={`text-xs font-medium ${cls}`}>[{s || "?"}]</span>;
+}
+
+function Detail({ label, value }: { label: string; value: any }) {
+  if (value === undefined || value === null || value === "") return null;
+  return (
+    <div className="text-xs text-muted-foreground">
+      <span className="font-medium">{label}:</span> {String(value)}
+    </div>
+  );
 }
 
 function timeRange(filter: string): { from: number; to: number } {
@@ -134,39 +159,75 @@ export default function UserHistory({ tg_id, name, onClose }: {
               )}
               {data.items?.map((it: any, i: number) => (
                 <Card key={i}><CardContent className="py-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm">
+                  {/* Dòng 1: số tiền + trạng thái */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium">
                       {tab === "topups" && (
-                        <><span className="font-medium text-green-600">+{vnd(it.amount)}</span>
-                          <span className="text-muted-foreground ml-2">
-                            {it.source === "payos" ? "💳 PayOS" : "👤 Nạp tay"} {it.code && `(${it.code})`}
-                          </span>
-                          {it.note && <div className="text-xs">{it.note}</div>}</>
+                        <span className="text-green-600">+{vnd(it.amount)}</span>
                       )}
-                      {tab === "acc" && (
-                        <><span className="font-medium text-red-500">−{vnd(it.price)}</span>
-                          <span className="text-muted-foreground ml-2">Acc #{it.id} | UID: {it.uid}</span></>
+                      {(tab === "acc" || tab === "buff" || tab === "rent") && (
+                        <span className="text-red-500">−{vnd(it.price)}</span>
                       )}
-                      {tab === "buff" && (
-                        <><span className="font-medium text-red-500">−{vnd(it.price)}</span>
-                          <span className="text-muted-foreground ml-2">{it.code} | SL: {it.quantity} | {it.status}</span></>
-                      )}
-                      {tab === "rent" && (
-                        <><span className="font-medium text-red-500">−{vnd(it.price)}</span>
-                          <span className="text-muted-foreground ml-2">{it.phone} ({it.service}) | {it.status}</span></>
-                      )}
-                      {tab === "wallet" && it.kind === "transfer" && (
-                        <><span className="font-medium">{vnd(it.amount)}</span>
-                          <span className="text-muted-foreground ml-2">Chuyển {it.src} → {it.dst} | {it.status}</span></>
-                      )}
-                      {tab === "wallet" && it.kind === "adjust" && (
-                        <><span className="font-medium">{vnd(it.amount)}</span>
-                          <span className="text-muted-foreground ml-2">{it.note}</span></>
+                      {tab === "wallet" && (
+                        <span>{vnd(it.amount)}</span>
                       )}
                     </div>
-                    <div className="text-xs text-muted-foreground whitespace-nowrap ml-2">
-                      {tsToDate(it.ts)}
-                    </div>
+                    <StatusBadge s={it.status} />
+                  </div>
+                  {/* Dòng 2: thời gian đầy đủ */}
+                  <div className="text-xs mt-1">
+                    🕐 <span className="font-medium">{tsToDate(it.ts)}</span>
+                    {it.paid_ts && it.paid_ts !== it.ts && (
+                      <span className="text-muted-foreground"> → thanh toán: {tsToDate(it.paid_ts)}</span>
+                    )}
+                    {it.updated_ts && it.updated_ts !== it.ts && (
+                      <span className="text-muted-foreground"> → cập nhật: {tsToDate(it.updated_ts)}</span>
+                    )}
+                    {it.delivered_ts && (
+                      <span className="text-muted-foreground"> → giao: {tsToDate(it.delivered_ts)}</span>
+                    )}
+                    {it.decided_ts && (
+                      <span className="text-muted-foreground"> → duyệt: {tsToDate(it.decided_ts)}</span>
+                    )}
+                  </div>
+                  {/* Dòng 3+: chi tiết từng loại */}
+                  <div className="mt-1 flex flex-col gap-0.5">
+                    {tab === "topups" && it.source === "payos" && (<>
+                      <Detail label="Kênh" value="💳 PayOS" />
+                      <Detail label="Mã đơn" value={it.code} />
+                      <Detail label="Vào ví" value={walletName(it.target)} />
+                    </>)}
+                    {tab === "topups" && it.source === "manual" && (<>
+                      <Detail label="Kênh" value="👤 Nạp tay (admin)" />
+                      <div className="text-xs">{it.note}</div>
+                    </>)}
+                    {tab === "acc" && (<>
+                      <Detail label="Đơn" value={`#${it.id}`} />
+                      <Detail label="Loại acc" value={it.cat_name} />
+                      <Detail label="UID" value={it.uid} />
+                    </>)}
+                    {tab === "buff" && (<>
+                      <Detail label="Mã đơn" value={it.code} />
+                      <Detail label="Gói" value={it.service} />
+                      <Detail label="Tiến độ" value={`${it.done_quantity}/${it.quantity}`} />
+                      <Detail label="Mã panel" value={it.panel_order_id} />
+                      <Detail label="Link" value={it.link} />
+                    </>)}
+                    {tab === "rent" && (<>
+                      <Detail label="Đơn" value={`#${it.id}`} />
+                      <Detail label="SĐT" value={it.phone} />
+                      <Detail label="Dịch vụ" value={`${it.service}${it.country ? ` (${it.country})` : ""}`} />
+                      <Detail label="Mã thuê" value={it.request_id} />
+                      <Detail label="OTP" value={it.has_otp ? `đã về (${it.otp_masked})` : "chưa về"} />
+                    </>)}
+                    {tab === "wallet" && it.kind === "transfer" && (<>
+                      <Detail label="Yêu cầu" value={`#${it.id}`} />
+                      <Detail label="Chuyển" value={`${walletName(it.src)} → ${walletName(it.dst)}`} />
+                      {it.decided_by && <Detail label="Người duyệt" value={it.decided_by} />}
+                    </>)}
+                    {tab === "wallet" && it.kind === "adjust" && (
+                      <div className="text-xs">{it.note}</div>
+                    )}
                   </div>
                 </CardContent></Card>
               ))}

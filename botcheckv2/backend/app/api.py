@@ -1116,7 +1116,7 @@ def user_history_topups(tg_id: int, limit: int = 20, offset: int = 0,
     limit, offset = _history_paging(limit, offset)
     c = db.get_conn()
     items = []
-    q = "SELECT order_code, amount, status, created_at, target FROM payos_orders WHERE tg_id=?"
+    q = "SELECT order_code, amount, status, created_at, updated_at, target FROM payos_orders WHERE tg_id=?"
     params: list = [tg_id]
     if from_ts:
         q += " AND created_at>=?"; params.append(from_ts)
@@ -1126,9 +1126,9 @@ def user_history_topups(tg_id: int, limit: int = 20, offset: int = 0,
     params += [limit, offset]
     for r in c.execute(q, params).fetchall():
         items.append({
-            "ts": r["created_at"], "amount": r["amount"], "status": r["status"],
-            "code": str(r["order_code"]), "target": r["target"] or "main",
-            "source": "payos",
+            "ts": r["created_at"], "paid_ts": r["updated_at"], "amount": r["amount"],
+            "status": r["status"], "code": str(r["order_code"]),
+            "target": r["target"] or "main", "source": "payos",
         })
     # Nạp tay từ logs
     q2 = "SELECT ts, kind, message FROM logs WHERE tg_id=? AND kind IN ('topup','wallet_adjust')"
@@ -1166,7 +1166,9 @@ def user_history_acc(tg_id: int, limit: int = 20, offset: int = 0,
         raise HTTPException(status_code=404, detail="Không có user này")
     limit, offset = _history_paging(limit, offset)
     c = db.get_conn()
-    q = "SELECT id, price, uid, created_at FROM acc_orders WHERE tg_id=?"
+    q = ("SELECT o.id, o.price, o.uid, o.created_at, o.delivered_at, "
+         "c.name AS cat_name FROM acc_orders o "
+         "LEFT JOIN acc_categories c ON c.id=o.cat_id WHERE o.tg_id=?")
     params: list = [tg_id]
     if from_ts:
         q += " AND created_at>=?"; params.append(from_ts)
@@ -1174,8 +1176,9 @@ def user_history_acc(tg_id: int, limit: int = 20, offset: int = 0,
         q += " AND created_at<=?"; params.append(to_ts)
     q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
-    items = [{"ts": r["created_at"], "id": r["id"], "price": r["price"],
-              "uid": r["uid"]} for r in c.execute(q, params).fetchall()]
+    items = [{"ts": r["created_at"], "delivered_ts": r["delivered_at"],
+              "id": r["id"], "price": r["price"], "uid": r["uid"],
+              "cat_name": r["cat_name"] or ""} for r in c.execute(q, params).fetchall()]
     return {"ok": True, "items": items}
 
 
@@ -1187,8 +1190,11 @@ def user_history_buff(tg_id: int, limit: int = 20, offset: int = 0,
         raise HTTPException(status_code=404, detail="Không có user này")
     limit, offset = _history_paging(limit, offset)
     c = db.get_conn()
-    q = ("SELECT code, total_price, status, quantity, link, created_at "
-         "FROM buff_orders WHERE tg_id=?")
+    q = ("SELECT o.code, o.total_price, o.status, o.quantity, o.link, o.created_at, "
+         "o.updated_at, o.panel_order_id, o.done_quantity, "
+         "s.platform_name, s.name AS svc_name "
+         "FROM buff_orders o LEFT JOIN buff_services s ON s.id=o.service_id "
+         "WHERE o.tg_id=?")
     params: list = [tg_id]
     if from_ts:
         q += " AND created_at>=?"; params.append(from_ts)
@@ -1196,9 +1202,13 @@ def user_history_buff(tg_id: int, limit: int = 20, offset: int = 0,
         q += " AND created_at<=?"; params.append(to_ts)
     q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
-    items = [{"ts": r["created_at"], "code": r["code"], "price": r["total_price"],
+    items = [{"ts": r["created_at"], "updated_ts": r["updated_at"],
+              "code": r["code"], "price": r["total_price"],
               "status": r["status"], "quantity": r["quantity"],
-              "link": (r["link"] or "")[:60]} for r in c.execute(q, params).fetchall()]
+              "done_quantity": r["done_quantity"] or 0,
+              "panel_order_id": r["panel_order_id"] or "",
+              "service": f"{r['platform_name'] or ''} {r['svc_name'] or ''}".strip(),
+              "link": (r["link"] or "")[:80]} for r in c.execute(q, params).fetchall()]
     return {"ok": True, "items": items}
 
 
@@ -1210,7 +1220,8 @@ def user_history_rentals(tg_id: int, limit: int = 20, offset: int = 0,
         raise HTTPException(status_code=404, detail="Không có user này")
     limit, offset = _history_paging(limit, offset)
     c = db.get_conn()
-    q = ("SELECT phone_number, service_name, sell_price, status, created_at "
+    q = ("SELECT id, request_id, phone_number, service_name, country, sell_price, "
+         "status, otp_code, created_at, updated_at "
          "FROM viotp_rentals WHERE tg_id=?")
     params: list = [tg_id]
     if from_ts:
@@ -1219,9 +1230,18 @@ def user_history_rentals(tg_id: int, limit: int = 20, offset: int = 0,
         q += " AND created_at<=?"; params.append(to_ts)
     q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
-    items = [{"ts": r["created_at"], "phone": r["phone_number"],
-              "service": r["service_name"], "price": r["sell_price"],
-              "status": r["status"]} for r in c.execute(q, params).fetchall()]
+    items = []
+    for r in c.execute(q, params).fetchall():
+        otp = r["otp_code"] or ""
+        items.append({
+            "ts": r["created_at"], "updated_ts": r["updated_at"],
+            "id": r["id"], "request_id": r["request_id"] or "",
+            "phone": r["phone_number"], "service": r["service_name"],
+            "country": r["country"] or "", "price": r["sell_price"],
+            "status": r["status"],
+            "has_otp": bool(otp),
+            "otp_masked": (otp[:2] + "•••") if otp else "",
+        })
     return {"ok": True, "items": items}
 
 
@@ -1234,8 +1254,8 @@ def user_history_wallet(tg_id: int, limit: int = 20, offset: int = 0,
     limit, offset = _history_paging(limit, offset)
     c = db.get_conn()
     items = []
-    q = ("SELECT src, dst, amount, status, created_at FROM wallet_transfer_requests "
-         "WHERE tg_id=?")
+    q = ("SELECT id, src, dst, amount, status, created_at, decided_at, decided_by "
+         "FROM wallet_transfer_requests WHERE tg_id=?")
     params: list = [tg_id]
     if from_ts:
         q += " AND created_at>=?"; params.append(from_ts)
@@ -1244,9 +1264,11 @@ def user_history_wallet(tg_id: int, limit: int = 20, offset: int = 0,
     q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
     for r in c.execute(q, params).fetchall():
-        items.append({"ts": r["created_at"], "kind": "transfer",
+        items.append({"ts": r["created_at"], "decided_ts": r["decided_at"],
+                      "kind": "transfer", "id": r["id"],
                       "src": r["src"], "dst": r["dst"],
-                      "amount": r["amount"], "status": r["status"]})
+                      "amount": r["amount"], "status": r["status"],
+                      "decided_by": r["decided_by"]})
     q2 = "SELECT ts, message FROM logs WHERE tg_id=? AND kind='wallet_adjust'"
     p2: list = [tg_id]
     if from_ts:
