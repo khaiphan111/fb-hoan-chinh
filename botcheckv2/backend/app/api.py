@@ -1171,10 +1171,10 @@ def user_history_acc(tg_id: int, limit: int = 20, offset: int = 0,
          "LEFT JOIN acc_categories c ON c.id=o.cat_id WHERE o.tg_id=?")
     params: list = [tg_id]
     if from_ts:
-        q += " AND created_at>=?"; params.append(from_ts)
+        q += " AND o.created_at>=?"; params.append(from_ts)
     if to_ts:
-        q += " AND created_at<=?"; params.append(to_ts)
-    q += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        q += " AND o.created_at<=?"; params.append(to_ts)
+    q += " ORDER BY o.created_at DESC LIMIT ? OFFSET ?"
     params += [limit, offset]
     items = [{"ts": r["created_at"], "delivered_ts": r["delivered_at"],
               "id": r["id"], "price": r["price"], "uid": r["uid"],
