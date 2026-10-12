@@ -20,7 +20,9 @@ def _ensure_registered() -> None:
     global _registered
     if not _registered:
         from .viotp_adapter import ViotpProvider
+        from .otpvn_adapter import OtpvnProvider
         register(ViotpProvider())
+        register(OtpvnProvider())
         _registered = True
 
 

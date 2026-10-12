@@ -966,7 +966,9 @@ def viotp_overview(_=Depends(auth)):
         "data": {
             "stats": db.viotp_stats(),
             "enabled": db.get_setting("viotp_enabled", "1") == "1",
+            "enabled_otpvn": db.get_setting("otpvn_enabled", "1") == "1",
             "markup_pct": db.get_setting("viotp_markup_pct", "50"),
+            "markup_pct_otpvn": db.get_setting("otpvn_markup_pct", "50"),
             "auto_refund": db.get_setting("viotp_auto_refund", "1") == "1",
             "has_notify_bot": _viotp_notify_configured(),
         },
@@ -980,11 +982,12 @@ class ViotpCfgIn(BaseModel):
 
 @router.post("/viotp/config")
 def viotp_config_set(body: ViotpCfgIn, admin=Depends(require_role("super_admin"))):
-    """Đổi cấu hình: viotp_enabled (0/1), viotp_markup_pct, viotp_auto_refund (0/1)."""
-    allowed = {"viotp_enabled", "viotp_markup_pct", "viotp_auto_refund"}
+    """Đổi cấu hình: viotp_enabled/otpvn_enabled (0/1), viotp_markup_pct, otpvn_markup_pct, viotp_auto_refund (0/1)."""
+    allowed = {"viotp_enabled", "otpvn_enabled", "viotp_markup_pct", "otpvn_markup_pct",
+               "viotp_auto_refund"}
     if body.key not in allowed:
         return {"ok": False, "error": "key không hợp lệ"}
-    if body.key == "viotp_markup_pct":
+    if body.key in ("viotp_markup_pct", "otpvn_markup_pct"):
         try:
             pct = int(body.value)
             if not 0 <= pct <= 500:

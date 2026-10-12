@@ -54,12 +54,27 @@ def daily_profit(day_ts=None):
         (start, end))
     buff = {"don": int(r[0]), "doanh_thu": int(r[1]), "von": int(r[2])}
 
-    # Thuê số (chỉ đơn done)
+    # Thuê số (chỉ đơn done) — GĐ3: tách lãi theo từng nhà cung cấp
     r = _one(
         "SELECT COUNT(*), COALESCE(SUM(sell_price),0), COALESCE(SUM(cost_price),0) "
         "FROM viotp_rentals WHERE created_at>=? AND created_at<? AND status='done'",
         (start, end))
     thueso = {"don": int(r[0]), "doanh_thu": int(r[1]), "von": int(r[2])}
+    thueso["theo_nha"] = {}
+    try:
+        c = db.get_conn()
+        for prow in c.execute(
+                "SELECT COALESCE(provider,'viotp'), COUNT(*), "
+                "COALESCE(SUM(sell_price),0), COALESCE(SUM(cost_price),0) "
+                "FROM viotp_rentals WHERE created_at>=? AND created_at<? "
+                "AND status='done' GROUP BY 1",
+                (start, end)).fetchall():
+            pn = str(prow[0])
+            d, dt, von = int(prow[1]), int(prow[2]), int(prow[3])
+            thueso["theo_nha"][pn] = {
+                "don": d, "doanh_thu": dt, "von": von, "lai": dt - von}
+    except Exception:
+        pass
 
     # Dòng tiền
     r = _one(
@@ -81,9 +96,19 @@ def daily_profit(day_ts=None):
 
 
 def _fmt_sec(icon, name, sec):
-    return (f"{icon} <b>{name}</b>: {sec['don']} đơn\n"
+    base = (f"{icon} <b>{name}</b>: {sec['don']} đơn\n"
             f"   DT: {sec['doanh_thu']:,}đ — Vốn: {sec['von']:,}đ\n"
             f"   Lãi: <b>{sec['lai']:,}đ</b>")
+    # GĐ3: chi tiết từng nhà cung cấp thuê số
+    theo_nha = sec.get("theo_nha") or {}
+    if theo_nha:
+        lines = [base]
+        for pn in sorted(theo_nha):
+            s = theo_nha[pn]
+            lines.append(
+                f"   └ {pn}: {s['don']} đơn — Lãi <b>{s['lai']:,}đ</b>")
+        return "\n".join(lines)
+    return base
 
 
 def format_report(data):

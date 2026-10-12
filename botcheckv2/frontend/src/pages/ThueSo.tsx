@@ -20,6 +20,7 @@ export default function ThueSo() {
   const [tab, setTab] = useState<"rentals" | "services">("rentals");
   const [stats, setStats] = useState<any>({});
   const [enabled, setEnabled] = useState(true);
+  const [enabledOtpvn, setEnabledOtpvn] = useState(true);
   const [markup, setMarkup] = useState("50");
   const [autoRefund, setAutoRefund] = useState(true);
   const [hasNotifyBot, setHasNotifyBot] = useState(false);
@@ -37,6 +38,7 @@ export default function ThueSo() {
       const d = o.data || {};
       setStats(d.stats || {});
       setEnabled(!!d.enabled);
+      setEnabledOtpvn(!!d.enabled_otpvn);
       setMarkup(String(d.markup_pct ?? "50"));
       setAutoRefund(!!d.auto_refund);
       setHasNotifyBot(!!d.has_notify_bot);
@@ -134,13 +136,23 @@ export default function ThueSo() {
         <CardHeader><CardTitle>Cấu hình</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="flex items-center gap-3">
-            <Label className="w-40">Trạng thái shop</Label>
+            <Label className="w-40">ViOTP</Label>
             <Button
               size="sm"
               variant={enabled ? "default" : "outline"}
               onClick={() => saveCfg("viotp_enabled", enabled ? "0" : "1")}
             >
               {enabled ? "🟢 Đang bật" : "🔴 Đang tắt"}
+            </Button>
+          </div>
+          <div className="flex items-center gap-3">
+            <Label className="w-40">OTPVN</Label>
+            <Button
+              size="sm"
+              variant={enabledOtpvn ? "default" : "outline"}
+              onClick={() => saveCfg("otpvn_enabled", enabledOtpvn ? "0" : "1")}
+            >
+              {enabledOtpvn ? "🟢 Đang bật" : "🔴 Đang tắt"}
             </Button>
           </div>
           <div className="flex items-center gap-3">

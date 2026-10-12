@@ -1593,16 +1593,20 @@ class FollowerPoller:
             await asyncio.sleep(3600)
 
     async def _process_viotp_waiting(self):
-        from .rental_providers import default_provider as _dp
+        from .rental_providers import get_provider
+        from .rental_providers.merge import any_provider_enabled
         from .util import vnd
         # Fail-fast 2026-10-12: DB call trong poll async chạy thread riêng
-        if await db.db_to_thread(db.get_setting, "viotp_enabled", "1") != "1":
+        # GĐ3: nghỉ khi cả 2 nhà đều tắt
+        if not await db.db_to_thread(any_provider_enabled):
             return
         # 1. Poll các đơn đang chờ trong TTL: săn mã OTP
+        # GĐ3: mỗi đơn poll đúng nhà cung cấp đã thuê (cột provider)
         for r in await db.db_to_thread(db.viotp_rental_waiting, 15):
             rid = int(r["id"])
             try:
-                sess = await _dp().get_session(r["request_id"])
+                prov = get_provider(r.get("provider") or "viotp")
+                sess = await prov.get_session(r["request_id"])
             except Exception as e:
                 log.warning("viotp poll #%s lỗi: %s", rid, e)
                 continue
@@ -1621,9 +1625,10 @@ class FollowerPoller:
             if not await db.db_to_thread(db.viotp_rental_claim_expire, rid):
                 continue  # tiến trình khác đã xử lý
             try:
-                sess = await _dp().get_session(r["request_id"])
+                prov = get_provider(r.get("provider") or "viotp")
+                sess = await prov.get_session(r["request_id"])
             except Exception as e:
-                # KHÔNG hoàn khi không check được ViOTP -> trả về waiting, thử lại sau
+                # KHÔNG hoàn khi không check được nhà cung cấp -> trả về waiting, thử lại sau
                 log.warning("viotp final-check #%s lỗi, thử lại chu kỳ sau: %s", rid, e)
                 await db.db_to_thread(db.viotp_rental_set_status, rid, "waiting")
                 continue

@@ -890,6 +890,14 @@ def init_db() -> None:
             ALTER TABLE buff_orders ADD COLUMN IF NOT EXISTS last_checked_at BIGINT DEFAULT 0;
             -- GĐ1 2026-10-12: đơn thuê số ghi nhà cung cấp (đơn cũ mặc định 'viotp')
             ALTER TABLE viotp_rentals ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'viotp';
+            -- 2026-10-12: giá bán cố định từng dịch vụ (ghi đè % lãi)
+            CREATE TABLE IF NOT EXISTS rent_service_prices (
+                provider   TEXT NOT NULL DEFAULT 'viotp',
+                service_id INTEGER NOT NULL,
+                sell_price INTEGER NOT NULL DEFAULT 0,
+                updated_at BIGINT NOT NULL DEFAULT 0,
+                UNIQUE(provider, service_id)
+            );
             CREATE TABLE IF NOT EXISTS buff_link_warehouse (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 tg_id        BIGINT NOT NULL,
@@ -7772,14 +7780,68 @@ VIOTP_STATUS_LABEL = {
 }
 
 
-def viotp_sell_price(cost: int) -> int:
-    """Giá bán = giá vốn + markup% (setting viotp_markup_pct, mặc định 50), làm tròn 100đ."""
+def rent_price_get(provider: str, service_id: int) -> int | None:
+    """Giá bán cố định đã đặt cho dịch vụ (None = chưa đặt, dùng % lãi)."""
+    c = get_conn()
+    r = c.execute(
+        "SELECT sell_price FROM rent_service_prices WHERE provider=? AND service_id=?",
+        (provider, int(service_id))).fetchone()
+    return int(r[0]) if r else None
+
+
+def rent_price_set(provider: str, service_id: int, sell_price: int) -> None:
+    """Đặt giá bán cố định cho dịch vụ. sell_price<=0 -> xóa (về % lãi)."""
+    now = int(time.time())
+    with _lock:
+        c = get_conn()
+        if int(sell_price) <= 0:
+            c.execute(
+                "DELETE FROM rent_service_prices WHERE provider=? AND service_id=?",
+                (provider, int(service_id)))
+        else:
+            if SUPABASE_URL:
+                c.execute(
+                    "INSERT INTO rent_service_prices(provider, service_id, sell_price, updated_at)"
+                    " VALUES(?,?,?,?)"
+                    " ON CONFLICT(provider, service_id) DO UPDATE SET sell_price=EXCLUDED.sell_price,"
+                    " updated_at=EXCLUDED.updated_at",
+                    (provider, int(service_id), int(sell_price), now))
+            else:
+                c.execute(
+                    "INSERT OR REPLACE INTO rent_service_prices(provider, service_id, sell_price, updated_at)"
+                    " VALUES(?,?,?,?)",
+                    (provider, int(service_id), int(sell_price), now))
+        c.commit()
+
+
+def rent_price_list(provider: str) -> list:
+    """Danh sách giá cố định đã đặt của 1 nhà: [{service_id, sell_price}]."""
+    c = get_conn()
+    rows = c.execute(
+        "SELECT service_id, sell_price FROM rent_service_prices WHERE provider=? ORDER BY service_id",
+        (provider,)).fetchall()
+    return [{"service_id": int(r[0]), "sell_price": int(r[1])} for r in rows]
+
+
+def rent_sell_price(cost: int, provider: str = "viotp", service_id: int | None = None) -> int:
+    """Giá bán dịch vụ thuê số:
+    1. Có giá cố định đã đặt (rent_service_prices) -> dùng luôn.
+    2. Chưa đặt -> giá vốn + markup% riêng từng nhà ({provider}_markup_pct, mặc định 50), làm tròn 100đ."""
+    if service_id is not None:
+        override = rent_price_get(provider, service_id)
+        if override is not None:
+            return override
     try:
-        pct = int(get_setting("viotp_markup_pct", "50") or 50)
+        pct = int(get_setting(f"{provider}_markup_pct", "50") or 50)
     except ValueError:
         pct = 50
     sell = int(cost) * (100 + max(0, pct)) / 100
     return int(round(sell / 100) * 100)
+
+
+def viotp_sell_price(cost: int) -> int:
+    """Wrapper giữ tương thích cũ (ViOTP)."""
+    return rent_sell_price(cost, "viotp")
 
 
 def viotp_rental_create(tg_id: int, request_id: str, phone: str, service_id: int,

@@ -71,7 +71,9 @@ class ThueSoState(StatesGroup):
 
 
 def _enabled() -> bool:
-    return db.get_setting("viotp_enabled", "1") == "1"
+    # GĐ3: shop mở khi còn ít nhất 1 nhà cung cấp đang bật
+    from ..rental_providers.merge import any_provider_enabled
+    return any_provider_enabled()
 
 
 def _prov():
@@ -121,18 +123,24 @@ def _disabled_service_ids() -> set:
 
 
 async def _services_or_error(obj, state=None) -> list | None:
-    """Lấy danh sách dịch vụ; trả None + báo lỗi nếu không được."""
+    """Danh sách dịch vụ GỘP 2 nhà (GĐ3: tự động chọn nhà rẻ trước).
+    Mỗi mục: {key, name, providers: {pname: {service_id, cost}}}.
+    Trả None + báo lỗi nếu không lấy được nhà nào."""
     country = await _get_country(state) if state else DEFAULT_COUNTRY
     try:
-        items = await _prov().get_services(country=country)
+        from ..rental_providers.merge import get_merged_services
+        items = await get_merged_services(country=country)
+        if not items:
+            raise RentalProviderError("cả 2 nhà cung cấp đều không phản hồi")
         disabled = _disabled_service_ids()
         if disabled:
-            items = [s for s in items if s.get("id") not in disabled]
+            items = [s for s in items
+                     if s["providers"].get("viotp", {}).get("service_id") not in disabled]
         return items
     except RentalProviderError as e:
         txt = f"⚠️ Không lấy được danh sách dịch vụ: {html.escape(str(e))}"
         if isinstance(obj, CallbackQuery):
-            await obj.answer("Lỗi kết nối ViOTP", show_alert=True)
+            await obj.answer("Lỗi kết nối nhà cung cấp", show_alert=True)
             await obj.message.answer(txt)
         else:
             await obj.answer(txt)
@@ -144,22 +152,23 @@ def _popular(items: list) -> list:
     low = [(s, s["name"].lower()) for s in items]
     for key in POPULAR_KEYS:
         for s, name in low:
-            if s["id"] in seen:
+            if s["key"] in seen:
                 continue
             if key in name:
                 out.append(s)
-                seen.add(s["id"])
+                seen.add(s["key"])
                 break
     return out
 
 
 def _svc_rows(items: list, page: int, prefix: str) -> InlineKeyboardMarkup:
+    from ..rental_providers.merge import best_sell
     total = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, total - 1))
     chunk = items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
     rows = [[InlineKeyboardButton(
-        text=f"{s['name'][:28]} — {vnd(db.viotp_sell_price(s['price']))}đ",
-        callback_data=f"ts:svc:{s['id']}:{page}:{prefix}")] for s in chunk]
+        text=f"{s['name'][:28]} — {vnd(best_sell(s))}đ",
+        callback_data=f"ts:svc:{s['key']}:{page}:{prefix}")] for s in chunk]
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(text="⬅️ Trước",
@@ -173,9 +182,9 @@ def _svc_rows(items: list, page: int, prefix: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _svc_by_id(items: list, sid: int) -> dict:
+def _svc_by_key(items: list, key: str) -> dict:
     for s in items:
-        if s["id"] == sid:
+        if s["key"] == key:
             return s
     return {}
 
@@ -296,7 +305,7 @@ async def on_ts_search_input(msg: Message, state: FSMContext):
                          parse_mode="HTML", reply_markup=_back_menu_kb())
         return
     # Lưu kết quả vào FSM để phân trang
-    await state.update_data(search_results=[s["id"] for s in found])
+    await state.update_data(search_results=[s["key"] for s in found])
     await msg.answer(
         f"🔍 Tìm thấy <b>{len(found)}</b> dịch vụ khớp:",
         parse_mode="HTML", reply_markup=_svc_rows(found, 0, "search"))
@@ -306,30 +315,30 @@ async def on_ts_search_input(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("ts:svc:"))
 async def on_ts_svc(cb: CallbackQuery, state: FSMContext):
+    from ..rental_providers.merge import best_sell
     try:
-        _, _, sid_s, page_s, prefix = cb.data.split(":")
-        sid, page = int(sid_s), int(page_s)
+        _, _, key, page_s, prefix = cb.data.split(":")
+        page = int(page_s)
     except (ValueError, IndexError):
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
     items = await _services_or_error(cb, state)
     if items is None:
         return
-    s = _svc_by_id(items, sid)
+    s = _svc_by_key(items, key)
     if not s:
         await cb.answer("Dịch vụ không còn", show_alert=True)
         return
-    cost = s["price"]
-    sell = db.viotp_sell_price(cost)
+    sell = best_sell(s)
     await cb.answer()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"✅ Thuê số — {vnd(sell)}đ",
-                              callback_data=f"ts:rent:{sid}")],
+                              callback_data=f"ts:rent:{key}")],
         [InlineKeyboardButton(text="⬅️ Quay lại", callback_data=f"ts:page:{page}:{prefix}")],
     ])
     await cb.message.edit_text(
         f"📱 <b>{html.escape(s['name'])}</b>\n\n"
-        f"💰 Giá thuê: <b>{vnd(sell)}đ</b>\n"
+        f"💰 Giá thuê: <b>{vnd(sell)}đ</b> (giá tốt nhất)\n"
         f"⏳ Số dùng trong {RENT_TTL_MIN} phút, bot tự chờ mã OTP.\n"
         f"💸 Hết {RENT_TTL_MIN} phút không có mã → tự hoàn tiền vào ví thuê số.\n"
         f"💳 Trừ vào <b>ví thuê số</b>.",
@@ -354,9 +363,9 @@ async def on_ts_page(cb: CallbackQuery, state: FSMContext):
         title = f"📋 <b>Tất cả dịch vụ</b> ({len(lst)} dịch vụ) — chọn để xem giá và thuê số:"
     else:
         data = await state.get_data()
-        ids = data.get("search_results") or []
-        by_id = {s["id"]: s for s in items}
-        lst = [by_id[i] for i in ids if i in by_id]
+        keys = data.get("search_results") or []
+        by_key = {s["key"]: s for s in items}
+        lst = [by_key[k] for k in keys if k in by_key]
         title = "🔍 <b>Kết quả tìm kiếm:</b>"
     await cb.answer()
     await cb.message.edit_text(title, parse_mode="HTML",
@@ -365,24 +374,25 @@ async def on_ts_page(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("ts:rent:"))
 async def on_ts_rent(cb: CallbackQuery, state: FSMContext):
+    from ..rental_providers.merge import best_sell
     try:
-        sid = int(cb.data.split(":")[2])
-    except (ValueError, IndexError):
+        key = cb.data.split(":")[2]
+    except IndexError:
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
     items = await _services_or_error(cb, state)
     if items is None:
         return
-    s = _svc_by_id(items, sid)
+    s = _svc_by_key(items, key)
     if not s:
         await cb.answer("Dịch vụ không còn", show_alert=True)
         return
-    sell = db.viotp_sell_price(s["price"])
+    sell = best_sell(s)
     bal = db.rent_get_balance(cb.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"✅ Xác nhận thuê — {vnd(sell)}đ",
-                              callback_data=f"ts:confirm:{sid}")],
-        [InlineKeyboardButton(text="⬅️ Quay lại", callback_data=f"ts:svc:{sid}:0:hot")],
+                              callback_data=f"ts:confirm:{key}")],
+        [InlineKeyboardButton(text="⬅️ Quay lại", callback_data=f"ts:svc:{key}:0:hot")],
     ])
     await cb.answer()
     await cb.message.edit_text(
@@ -397,14 +407,16 @@ async def on_ts_rent(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("ts:confirm:"))
 async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
+    from ..rental_providers import get_provider
+    from ..rental_providers.merge import offers_sorted
     try:
-        sid = int(cb.data.split(":")[2])
-    except (ValueError, IndexError):
+        key = cb.data.split(":")[2]
+    except IndexError:
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
     tg_id = cb.from_user.id
     # Chống bấm trùng khi mạng delay
-    if not _acquire_lock(tg_id, f"tsconfirm:{sid}"):
+    if not _acquire_lock(tg_id, f"tsconfirm:{key}"):
         await cb.answer("⏳ Đơn đang được xử lý, vui lòng đợi...", show_alert=False)
         return
     try:
@@ -415,47 +427,76 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
     items = await _services_or_error(cb, state)
     if items is None:
         return
-    s = _svc_by_id(items, sid)
+    s = _svc_by_key(items, key)
     if not s:
         await cb.answer("Dịch vụ không còn", show_alert=True)
         return
-    cost, sell = s["price"], db.viotp_sell_price(s["price"])
-    # 1. Trừ ví thuê số (nguyên tử, không đủ -> False)
-    if not db.rent_adjust_balance(tg_id, -sell, f"thue_so:{s['name'][:40]}"):
+    # GĐ3 tự động: thử các nhà theo giá rẻ trước, lỗi thì nhảy sang nhà kia.
+    # offers = [(provider, service_id, cost, sell)] đã sắp rẻ trước.
+    offers = offers_sorted(s)
+    if not offers:
+        await cb.answer("Dịch vụ hiện không có nhà cung cấp nào.", show_alert=True)
+        return
+    country = await _get_country(state)
+    # 1. Trừ ví thuê số theo giá rẻ nhất (nguyên tử, không đủ -> False)
+    first_sell = offers[0][3]
+    if not db.rent_adjust_balance(tg_id, -first_sell, f"thue_so:{s['name'][:40]}"):
         await cb.answer("Ví thuê số không đủ tiền. Nạp thêm bằng /napthueso nhé.",
                         show_alert=True)
         return
-    # 2. Gọi API thuê số — lỗi sau khi trừ tiền thì HOÀN TIỀN (chống mất tiền)
-    try:
-        country = await _get_country(state)
-        rent = await _prov().rent_number(sid, country=country)
-    except Exception as e:
-        db.rent_adjust_balance(tg_id, sell, "hoan_tien_thue_so_loi")
-        log.error("thue so that bai sau khi tru tien tg=%s: %s", tg_id, e)
+    deducted = first_sell
+    rent, used = None, None
+    for pname, psid, cost, sell in offers:
+        # Điều chỉnh số tiền đã trừ cho khớp giá của nhà đang thử
+        diff = sell - deducted
+        if diff > 0:
+            if not db.rent_adjust_balance(tg_id, -diff, f"thue_so_chenh_lech:{pname}"):
+                db.rent_adjust_balance(tg_id, deducted, "hoan_tien_thue_so_loi")
+                log.warning("thue so tg=%s: khong du tien cho nha %s", tg_id, pname)
+                await cb.answer(
+                    "Thuê số thất bại (không đủ tiền cho nhà còn lại), đã hoàn tiền.",
+                    show_alert=True)
+                return
+        elif diff < 0:
+            db.rent_adjust_balance(tg_id, -diff, "hoan_tien_chenh_lech_gia")
+        deducted = sell
+        try:
+            rent = await get_provider(pname).rent_number(psid, country=country)
+            used = (pname, psid, cost, sell)
+            break
+        except Exception as e:
+            log.warning("thue so nha %s that bai, thu nha khac (tg=%s): %s",
+                        pname, tg_id, e)
+            continue
+    # 2. Cả 2 nhà đều lỗi -> HOÀN TIỀN
+    if rent is None or used is None:
+        db.rent_adjust_balance(tg_id, deducted, "hoan_tien_thue_so_loi")
+        log.error("thue so that bai ca 2 nha sau khi tru tien tg=%s", tg_id)
         await cb.answer("Thuê số thất bại, đã hoàn tiền vào ví thuê số.", show_alert=True)
         await cb.message.edit_text(
-            "⚠️ Thuê số thất bại (lỗi nhà cung cấp). "
-            f"Đã hoàn <b>{vnd(sell)}đ</b> vào ví thuê số.",
+            "⚠️ Thuê số thất bại (cả 2 nhà cung cấp đều lỗi). "
+            f"Đã hoàn <b>{vnd(deducted)}đ</b> vào ví thuê số.",
             parse_mode="HTML", reply_markup=_back_menu_kb())
         return
+    pname, psid, cost, sell = used
     # 3. Lưu đơn thuê — lỗi ở đây cũng HOÀN TIỀN (2026-10-05: từng mất tiền
     # vì viotp_rentals.id không tự tăng trên Postgres, tiền trừ mà đơn không tạo)
     try:
         rid = db.viotp_rental_create(
-            tg_id, rent["request_id"], rent["phone_number"], sid,
-            s["name"], country, cost, sell, provider=_prov().name)
+            tg_id, rent["request_id"], rent["phone_number"], psid,
+            s["name"], country, cost, sell, provider=pname)
     except Exception as e:
-        db.rent_adjust_balance(tg_id, sell, "hoan_tien_tao_don_loi")
+        db.rent_adjust_balance(tg_id, deducted, "hoan_tien_tao_don_loi")
         log.error("tao don thue so that bai sau khi tru tien tg=%s: %s", tg_id, e)
         await cb.answer("Lỗi tạo đơn thuê, đã hoàn tiền vào ví thuê số.",
                         show_alert=True)
         await cb.message.edit_text(
             "⚠️ Lỗi tạo đơn thuê số. "
-            f"Đã hoàn <b>{vnd(sell)}đ</b> vào ví thuê số, bạn thử lại nhé.",
+            f"Đã hoàn <b>{vnd(deducted)}đ</b> vào ví thuê số, bạn thử lại nhé.",
             parse_mode="HTML", reply_markup=_back_menu_kb())
         return
     if not rid:
-        db.rent_adjust_balance(tg_id, sell, "hoan_tien_tao_don_loi")
+        db.rent_adjust_balance(tg_id, deducted, "hoan_tien_tao_don_loi")
         log.error("tao don thue so tra ve rid=0 tg=%s", tg_id)
         await cb.answer("Lỗi tạo đơn thuê, đã hoàn tiền vào ví thuê số.",
                         show_alert=True)
@@ -511,7 +552,9 @@ async def on_ts_check(cb: CallbackQuery):
         return
     await cb.answer("Đang kiểm tra...")
     try:
-        sess = await _prov().get_session(r["request_id"])
+        from ..rental_providers import get_provider
+        prov = get_provider(r.get("provider") or "viotp")
+        sess = await prov.get_session(r["request_id"])
     except RentalProviderError as e:
         await cb.message.answer(f"⚠️ Lỗi kiểm tra OTP: {html.escape(str(e))}")
         return
@@ -595,22 +638,32 @@ async def on_ts_detail(cb: CallbackQuery):
 
 class ThueSoAdmState(StatesGroup):
     waiting_for_markup = State()
+    waiting_for_price_search = State()
+    waiting_for_price_input = State()
 
 
 def _thueoadm_kb() -> InlineKeyboardMarkup:
-    enabled = db.get_setting("viotp_enabled", "1") == "1"
-    markup = db.get_setting("viotp_markup_pct", "50")
+    en_viotp = db.get_setting("viotp_enabled", "1") == "1"
+    en_otpvn = db.get_setting("otpvn_enabled", "1") == "1"
+    markup_viotp = db.get_setting("viotp_markup_pct", "50")
+    markup_otpvn = db.get_setting("otpvn_markup_pct", "50")
     auto_refund = db.get_setting("viotp_auto_refund", "1") == "1"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"{'🟢 Đang BẬT' if enabled else '🔴 Đang TẮT'} — bấm để đổi",
-            callback_data="tsadm:toggle")],
-        [InlineKeyboardButton(text=f"💰 Lãi thêm: {markup}% — bấm để đổi",
-                              callback_data="tsadm:markup")],
+            text=f"ViOTP: {'🟢 BẬT' if en_viotp else '🔴 TẮT'} — bấm để đổi",
+            callback_data="tsadm:toggle:viotp"),
+         InlineKeyboardButton(
+            text=f"OTPVN: {'🟢 BẬT' if en_otpvn else '🔴 TẮT'} — bấm để đổi",
+            callback_data="tsadm:toggle:otpvn")],
+        [InlineKeyboardButton(text=f"💰 Lãi ViOTP: {markup_viotp}% — bấm để đổi",
+                              callback_data="tsadm:markup:viotp"),
+         InlineKeyboardButton(text=f"💰 Lãi OTPVN: {markup_otpvn}% — bấm để đổi",
+                              callback_data="tsadm:markup:otpvn")],
         [InlineKeyboardButton(
             text=f"💸 Tự hoàn hết hạn: {'🟢 BẬT' if auto_refund else '🔴 TẮT'} — bấm để đổi",
             callback_data="tsadm:refund")],
         [InlineKeyboardButton(text="📋 10 đơn gần nhất", callback_data="tsadm:recent")],
+        [InlineKeyboardButton(text="🏷️ Giá từng dịch vụ", callback_data="tsadm:prices")],
         [InlineKeyboardButton(text="🤖 Bot báo riêng", callback_data="tsadm:bot")],
         [InlineKeyboardButton(text="🔄 Làm mới", callback_data="tsadm:menu")],
     ])
@@ -618,8 +671,10 @@ def _thueoadm_kb() -> InlineKeyboardMarkup:
 
 def _thueoadm_text() -> str:
     st = db.viotp_stats()
-    enabled = db.get_setting("viotp_enabled", "1") == "1"
-    markup = db.get_setting("viotp_markup_pct", "50")
+    en_viotp = db.get_setting("viotp_enabled", "1") == "1"
+    en_otpvn = db.get_setting("otpvn_enabled", "1") == "1"
+    markup_viotp = db.get_setting("viotp_markup_pct", "50")
+    markup_otpvn = db.get_setting("otpvn_markup_pct", "50")
     auto_refund = db.get_setting("viotp_auto_refund", "1") == "1"
     return (
         "📱 <b>QUẢN LÝ SHOP THUÊ SỐ</b>\n"
@@ -628,7 +683,9 @@ def _thueoadm_text() -> str:
         f"Doanh thu: <b>{vnd(st['revenue'])}đ</b>\n"
         f"💵 Lãi: <b>{vnd(st['profit'])}đ</b> • "
         f"⏳ Đang chờ OTP: <b>{st['waiting']}</b>\n\n"
-        f"Trạng thái: {'🟢 BẬT' if enabled else '🔴 TẮT'} • Lãi thêm: {markup}%\n"
+        f"ViOTP: {'🟢 BẬT' if en_viotp else '🔴 TẮT'} • "
+        f"OTPVN: {'🟢 BẬT' if en_otpvn else '🔴 TẮT'}\n"
+        f"💰 Lãi ViOTP: {markup_viotp}% • Lãi OTPVN: {markup_otpvn}%\n"
         f"💸 Tự hoàn khi hết hạn: {'🟢 BẬT' if auto_refund else '🔴 TẮT'}\n"
         f"🤖 Bot báo riêng: {_viotp_bot_status()}"
     )
@@ -678,8 +735,14 @@ async def on_tsadm_cb(cb: CallbackQuery, state: FSMContext):
         if not is_super(cb.from_user.id):
             await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
             return
-        cur = db.get_setting("viotp_enabled", "1") == "1"
-        db.set_setting("viotp_enabled", "0" if cur else "1")
+        # tsadm:toggle:viotp | tsadm:toggle:otpvn (cũ: tsadm:toggle = ViOTP)
+        parts = cb.data.split(":")
+        pname = parts[2] if len(parts) > 2 else "viotp"
+        if pname not in ("viotp", "otpvn"):
+            pname = "viotp"
+        key = f"{pname}_enabled"
+        cur = db.get_setting(key, "1") == "1"
+        db.set_setting(key, "0" if cur else "1")
         await cb.message.edit_text(_thueoadm_text(), parse_mode="HTML",
                                    reply_markup=_thueoadm_kb())
         return
@@ -703,8 +766,86 @@ async def on_tsadm_cb(cb: CallbackQuery, state: FSMContext):
         if not is_super(cb.from_user.id):
             await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
             return
+        parts = cb.data.split(":")
+        provider = parts[2] if len(parts) > 2 and parts[2] in ("viotp", "otpvn") else "viotp"
+        await state.update_data(markup_provider=provider)
         await state.set_state(ThueSoAdmState.waiting_for_markup)
-        await cb.message.answer("💰 Nhập % lãi thêm mới (0–500, vd: 50):")
+        name = "OTPVN" if provider == "otpvn" else "ViOTP"
+        await cb.message.answer(f"💰 Nhập % lãi thêm mới cho {name} (0–500, vd: 50):")
+        return
+
+    if action == "prices":
+        if not is_super(cb.from_user.id):
+            await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
+            return
+        parts = cb.data.split(":")
+        if len(parts) == 2:
+            # Chọn nhà cung cấp
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="ViOTP", callback_data="tsadm:prices:viotp"),
+                 InlineKeyboardButton(text="OTPVN", callback_data="tsadm:prices:otpvn")],
+                [InlineKeyboardButton(text="⬅️ Quay lại", callback_data="tsadm:menu")],
+            ])
+            await cb.message.edit_text(
+                "🏷️ <b>ĐẶT GIÁ TỪNG DỊCH VỤ</b>\nChọn nhà cung cấp:",
+                parse_mode="HTML", reply_markup=kb)
+            return
+        provider = parts[2] if parts[2] in ("viotp", "otpvn") else "viotp"
+        name = "OTPVN" if provider == "otpvn" else "ViOTP"
+        overrides = db.rent_price_list(provider)
+        lines = [f"🏷️ <b>GIÁ ĐÃ ĐẶT — {name}</b> ({len(overrides)} dịch vụ)\n"]
+        if overrides:
+            try:
+                from ..rental_providers import get_provider as _gp
+                items = await _gp(provider).get_services()
+                names = {s["id"]: s["name"] for s in items}
+            except Exception:
+                names = {}
+            for o in overrides[:30]:
+                nm = names.get(o["service_id"], f"ID {o['service_id']}")
+                lines.append(f"• {html.escape(nm[:30])}: <b>{vnd(o['sell_price'])}đ</b>")
+            if len(overrides) > 30:
+                lines.append(f"<i>…và {len(overrides) - 30} dịch vụ nữa</i>")
+        else:
+            lines.append("<i>Chưa đặt giá riêng dịch vụ nào — đang dùng % lãi.</i>")
+        lines.append("\nNhập tên dịch vụ cần đặt giá (vd: <i>facebook</i>), hoặc /thuesoadm để thoát.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Quay lại", callback_data="tsadm:menu")],
+        ])
+        await state.update_data(price_provider=provider)
+        await state.set_state(ThueSoAdmState.waiting_for_price_search)
+        await cb.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+        return
+
+    if action == "pricepick":
+        if not is_super(cb.from_user.id):
+            await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
+            return
+        parts = cb.data.split(":")
+        if len(parts) < 4:
+            return
+        provider, sid = parts[2], parts[3]
+        if provider not in ("viotp", "otpvn"):
+            return
+        try:
+            from ..rental_providers import get_provider as _gp2
+            items = await _gp2(provider).get_services()
+            s = next((x for x in items if str(x["id"]) == str(sid)), None)
+        except Exception:
+            s = None
+        if not s:
+            await cb.answer("Dịch vụ không còn", show_alert=True)
+            return
+        cur = db.rent_price_get(provider, int(sid))
+        cur_txt = f"{vnd(cur)}đ" if cur else "chưa đặt (dùng % lãi)"
+        await state.update_data(price_provider=provider, price_sid=int(sid),
+                                price_name=s["name"])
+        await state.set_state(ThueSoAdmState.waiting_for_price_input)
+        await cb.message.answer(
+            f"🏷️ <b>{html.escape(s['name'])}</b> ({'OTPVN' if provider == 'otpvn' else 'ViOTP'})\n"
+            f"Giá vốn: {vnd(s['price'])}đ • Giá hiện tại: {cur_txt}\n\n"
+            f"Nhập giá bán mới (đ, vd: 5000). Nhập <b>0</b> để xóa về % lãi.",
+            parse_mode="HTML")
         return
 
     if action == "bot":
@@ -767,7 +908,99 @@ async def on_tsadm_markup_input(msg: Message, state: FSMContext):
     except ValueError:
         await msg.answer("⚠️ Nhập số 0–500 thôi nhé.")
         return
-    db.set_setting("viotp_markup_pct", str(pct))
+    try:
+        data = await state.get_data()
+        provider = data.get("markup_provider", "viotp")
+    except Exception:
+        provider = "viotp"
+    if provider not in ("viotp", "otpvn"):
+        provider = "viotp"
+    db.set_setting(f"{provider}_markup_pct", str(pct))
     await state.clear()
-    await msg.answer(f"✅ Đã đặt lãi thêm <b>{pct}%</b>.", parse_mode="HTML",
+    name = "OTPVN" if provider == "otpvn" else "ViOTP"
+    await msg.answer(f"✅ Đã đặt lãi thêm {name} <b>{pct}%</b>.", parse_mode="HTML",
                      reply_markup=_thueoadm_kb())
+
+
+@router.message(StateFilter(ThueSoAdmState.waiting_for_price_search))
+async def on_tsadm_price_search(msg: Message, state: FSMContext):
+    from .core import _is_admin
+    from ..perms import is_super
+    if not _is_admin(msg.from_user.id) or not is_super(msg.from_user.id):
+        await state.clear()
+        return
+    try:
+        data = await state.get_data()
+        provider = data.get("price_provider", "viotp")
+    except Exception:
+        provider = "viotp"
+    if provider not in ("viotp", "otpvn"):
+        provider = "viotp"
+    q = (msg.text or "").strip().lower()
+    if not q:
+        await msg.answer("Bạn chưa nhập gì cả.")
+        return
+    try:
+        from ..rental_providers import get_provider as _gp3
+        items = await _gp3(provider).get_services()
+    except Exception as e:
+        await state.clear()
+        await msg.answer(f"⚠️ Không lấy được dịch vụ: {html.escape(str(e))}")
+        return
+    _abbr = {"fb": "facebook", "ig": "instagram", "tele": "telegram",
+             "ytb": "youtube", "yt": "youtube", "gg": "google",
+             "zalo": "zalo", "tiktok": "tiktok"}
+    q_norm = _abbr.get(q, q)
+
+    def _match(name_low: str) -> bool:
+        if q_norm in name_low:
+            return True
+        it = iter(name_low)
+        return all(ch in it for ch in q_norm)
+
+    found = [s for s in items if _match(s["name"].lower())][:10]
+    if not found:
+        await msg.answer(f"🔍 Không tìm thấy dịch vụ nào khớp \"{html.escape(q)}\". Thử từ khác nhé.")
+        return
+    rows = []
+    for s in found:
+        cur = db.rent_price_get(provider, s["id"])
+        cur_txt = f" — {vnd(cur)}đ" if cur else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{s['name'][:28]} (vốn {vnd(s['price'])}đ){cur_txt}",
+            callback_data=f"tsadm:pricepick:{provider}:{s['id']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Quay lại", callback_data="tsadm:menu")])
+    await msg.answer("🔍 Kết quả — bấm để đặt giá:",
+                     reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.message(StateFilter(ThueSoAdmState.waiting_for_price_input))
+async def on_tsadm_price_input(msg: Message, state: FSMContext):
+    from .core import _is_admin
+    from ..perms import is_super
+    if not _is_admin(msg.from_user.id) or not is_super(msg.from_user.id):
+        await state.clear()
+        return
+    try:
+        price = int((msg.text or "").strip().replace(".", "").replace(",", ""))
+        if price < 0 or price > 1000000:
+            raise ValueError
+    except ValueError:
+        await msg.answer("⚠️ Nhập số tiền 0–1.000.000 thôi nhé (0 = xóa về % lãi).")
+        return
+    try:
+        data = await state.get_data()
+        provider = data.get("price_provider", "viotp")
+        sid = int(data.get("price_sid", 0))
+        sname = data.get("price_name", f"ID {sid}")
+    except Exception:
+        await state.clear()
+        return
+    db.rent_price_set(provider, sid, price)
+    await state.clear()
+    name = "OTPVN" if provider == "otpvn" else "ViOTP"
+    if price <= 0:
+        txt = f"✅ Đã xóa giá riêng <b>{html.escape(sname)}</b> ({name}) — về % lãi."
+    else:
+        txt = f"✅ Đã đặt giá <b>{html.escape(sname)}</b> ({name}) = <b>{vnd(price)}đ</b>."
+    await msg.answer(txt, parse_mode="HTML", reply_markup=_thueoadm_kb())
