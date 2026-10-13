@@ -339,39 +339,68 @@ async def check_pending_once() -> dict:
             log.error("Xử lý đơn %s lỗi: %s", order_code, e)
             stats["errors"] += 1
     # Đơn PENDING quá TTL: get_pending_payos_orders() không trả về nữa nên quét
-    # riêng ở đây, đánh dấu EXPIRED để vòng "kiểm tra lần cuối" bên dưới vẫn
-    # bắt được trường hợp khách trả trễ.
+    # riêng ở đây.
+    # FIX 2026-10-13 (đơn 179181907691984: khách đã trả 8.116đ lúc 22:31:49
+    # nhưng tối 12/10 mạng VM chập chờn -> get_payment_info lỗi liên tục ->
+    # vòng quét chờ bỏ qua, vòng này đánh EXPIRED mà KHÔNG HỎI PayOS, tiền
+    # khách mất oan): PHẢI hỏi PayOS trước khi kết luận quá hạn.
+    # Lỗi mạng/API -> GIỮ NGUYÊN PENDING để lần sau thử lại, KHÔNG đánh EXPIRED.
     for row in await db.db_to_thread(db.get_overdue_pending_payos_orders, ORDER_TTL):
         order = dict(row)
         order_code = int(order["order_code"])
         try:
-            try:
-                await cancel_payment_link(order_code, "Hết hạn thanh toán")
-            except Exception:
-                pass
-            if await db.db_to_thread(db.mark_payos_expired_if_pending, order_code):
-                stats["expired"] += 1
+            info = await get_payment_info(order_code)
+        except Exception as e:
+            log.warning("Đơn quá hạn %s: chưa đọc được PayOS (%s) — giữ PENDING thử lại",
+                        order_code, e)
+            stats["errors"] += 1
+            continue
+        status = (info.get("status") or "").upper()
+        try:
+            if status == "PAID":
+                if await settle_order(order):
+                    stats["paid"] += 1
+            elif status in ("CANCELLED", "EXPIRED"):
+                await db.db_to_thread(db.mark_payos_status, order_code, status)
+                stats["cancelled"] += 1
+            else:  # PENDING / PROCESSING quá TTL thật -> hủy link, đánh EXPIRED
+                try:
+                    await cancel_payment_link(order_code, "Hết hạn thanh toán")
+                except Exception:
+                    pass
+                if await db.db_to_thread(db.mark_payos_expired_if_pending, order_code):
+                    stats["expired"] += 1
         except Exception as e:
             log.error("Xử lý đơn quá hạn %s lỗi: %s", order_code, e)
             stats["errors"] += 1
-    # Kiểm tra lần cuối đơn EXPIRED trong 24h: khách trả trễ nhưng PayOS vẫn ghi PAID
+    # Kiểm tra lần cuối đơn EXPIRED trong 24h: khách trả trễ nhưng PayOS vẫn ghi PAID.
+    # FIX 2026-10-13: chỉ đóng hồ sơ (final_checked=1) khi đã đọc được trạng thái
+    # THẬT từ PayOS. Lỗi mạng/API -> để lần sau thử lại, không đóng hồ sơ oan
+    # (trước đây finally luôn đánh final_checked=1 kể cả khi get_payment_info lỗi).
     for row in await db.db_to_thread(db.get_recently_expired_payos_orders, 24 * 3600):
         order = dict(row)
         order_code = int(order["order_code"])
         try:
             info = await get_payment_info(order_code)
         except Exception as e:
-            log.warning("Không đọc được đơn hết hạn %s: %s", order_code, e)
+            log.warning("Không đọc được đơn hết hạn %s: %s — giữ lại thử lần sau",
+                        order_code, e)
+            stats["errors"] += 1
             continue
         try:
             if (info.get("status") or "").upper() == "PAID":
                 if await settle_order(order):
                     stats["paid"] += 1
+                else:
+                    # Settle thất bại (lỗi DB, tiền chưa cộng) -> để lần sau thử lại
+                    log.warning("Đơn hết hạn %s PAID nhưng settle thất bại — thử lại sau",
+                                order_code)
+                    stats["errors"] += 1
+                    continue
+            await db.db_to_thread(db.mark_payos_final_checked, order_code)
         except Exception as e:
             log.error("Xử lý đơn hết hạn %s lỗi: %s", order_code, e)
             stats["errors"] += 1
-        finally:
-            await db.db_to_thread(db.mark_payos_final_checked, order_code)
     return stats
 
 
