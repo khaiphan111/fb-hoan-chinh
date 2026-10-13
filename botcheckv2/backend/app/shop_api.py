@@ -1033,16 +1033,73 @@ async def viotp_services(_=Depends(auth)):
     for s in items:
         sid = s.get("id")
         cost = int(s.get("price", 0) or 0)
-        sell = db.viotp_sell_price(cost)
+        sell = db.rent_sell_price(cost, "viotp", sid)
         out.append({
             "id": sid,
             "name": s.get("name", ""),
             "cost": cost,
             "sell": sell,
+            "fixed": db.rent_price_get("viotp", sid),
             "enabled": sid not in disabled,
         })
     out.sort(key=lambda x: x["name"].lower())
     return {"ok": True, "data": out, "markup_pct": markup}
+
+
+@router.get("/viotp/merged_prices")
+async def viotp_merged_prices(_=Depends(auth)):
+    """Danh sách gộp 2 nhà (ViOTP + OTPVN) kèm giá vốn, giá bán thực tế
+    (đã gồm giá cố định từng dịch vụ và % lãi riêng từng nhà) và giá cố định
+    đã đặt (nếu có). Dùng cho tab '💲 Giá cố định' trên web."""
+    import json as _json
+    from .rental_providers import merge as _merge
+    merged = await _merge.get_merged_services()
+    disabled_raw = db.get_setting("viotp_disabled_services", "[]")
+    try:
+        disabled = set(_json.loads(disabled_raw))
+    except Exception:
+        disabled = set()
+    out = []
+    for item in merged:
+        offers = []
+        for pname, psvc in item.get("providers", {}).items():
+            sid = psvc["service_id"]
+            cost = int(psvc.get("cost", 0) or 0)
+            offers.append({
+                "provider": pname,
+                "service_id": sid,
+                "cost": cost,
+                "sell": db.rent_sell_price(cost, pname, sid),
+                "fixed": db.rent_price_get(pname, sid),
+                "enabled": (sid not in disabled) if pname == "viotp" else True,
+            })
+        out.append({
+            "key": item.get("key"),
+            "name": item.get("name"),
+            "offers": offers,
+        })
+    return {"ok": True, "data": out}
+
+
+class ViotpFixedPriceIn(BaseModel):
+    provider: str
+    service_id: int
+    sell_price: int
+
+
+@router.post("/viotp/fixed_price")
+def viotp_fixed_price(body: ViotpFixedPriceIn,
+                      admin=Depends(require_role("super_admin"))):
+    """Đặt/xóa giá bán cố định cho dịch vụ của 1 nhà.
+    sell_price=0 -> xóa, quay về giá theo % lãi riêng của nhà đó."""
+    if body.provider not in ("viotp", "otpvn"):
+        return {"ok": False, "error": "Nhà cung cấp không hợp lệ"}
+    if body.service_id <= 0:
+        return {"ok": False, "error": "service_id không hợp lệ"}
+    if body.sell_price < 0:
+        return {"ok": False, "error": "Giá bán không được âm"}
+    db.rent_price_set(body.provider, body.service_id, body.sell_price)
+    return {"ok": True, "fixed": body.sell_price if body.sell_price > 0 else None}
 
 
 class ViotpSvcToggleIn(BaseModel):

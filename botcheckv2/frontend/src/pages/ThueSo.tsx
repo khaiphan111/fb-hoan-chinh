@@ -17,18 +17,22 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default function ThueSo() {
-  const [tab, setTab] = useState<"rentals" | "services">("rentals");
+  const [tab, setTab] = useState<"rentals" | "services" | "prices">("rentals");
   const [stats, setStats] = useState<any>({});
   const [enabled, setEnabled] = useState(true);
   const [enabledOtpvn, setEnabledOtpvn] = useState(true);
   const [markup, setMarkup] = useState("50");
+  const [markupOtpvn, setMarkupOtpvn] = useState("50");
   const [autoRefund, setAutoRefund] = useState(true);
   const [hasNotifyBot, setHasNotifyBot] = useState(false);
   const [rentals, setRentals] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
   const [svcMarkup, setSvcMarkup] = useState(50);
+  const [merged, setMerged] = useState<any[]>([]);
+  const [priceEdits, setPriceEdits] = useState<Record<string, string>>({});
   const [q, setQ] = useState("");
   const [svcQ, setSvcQ] = useState("");
+  const [priceQ, setPriceQ] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function load() {
@@ -40,6 +44,7 @@ export default function ThueSo() {
       setEnabled(!!d.enabled);
       setEnabledOtpvn(!!d.enabled_otpvn);
       setMarkup(String(d.markup_pct ?? "50"));
+      setMarkupOtpvn(String(d.markup_pct_otpvn ?? "50"));
       setAutoRefund(!!d.auto_refund);
       setHasNotifyBot(!!d.has_notify_bot);
       await loadRentals();
@@ -70,7 +75,35 @@ export default function ThueSo() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  async function loadMerged() {
+    try {
+      const m = await api("/api/viotp/merged_prices");
+      setMerged(m.data || []);
+    } catch (e: any) {
+      // API có thể chưa có nếu backend chưa deploy — bỏ qua lặng lẽ
+    }
+  }
+
+  async function saveFixed(provider: string, serviceId: number, value: string) {
+    const v = parseInt(value, 10);
+    if (isNaN(v) || v < 0) {
+      toast.error("Giá cố định phải là số ≥ 0 (nhập 0 để xóa)");
+      return;
+    }
+    try {
+      await api("/api/viotp/fixed_price", {
+        method: "POST",
+        body: JSON.stringify({ provider, service_id: serviceId, sell_price: v }),
+      });
+      toast.success(v === 0 ? "Đã xóa giá cố định (về % lãi)" : `Đã đặt giá cố định ${vnd(v)}đ`);
+      setPriceEdits((p) => ({ ...p, [`${provider}:${serviceId}`]: "" }));
+      loadMerged();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
+  useEffect(() => { load(); loadMerged(); }, []);
 
   async function saveCfg(key: string, value: string) {
     try {
@@ -156,7 +189,7 @@ export default function ThueSo() {
             </Button>
           </div>
           <div className="flex items-center gap-3">
-            <Label className="w-40">Lãi thêm (%)</Label>
+            <Label className="w-40">Lãi thêm ViOTP (%)</Label>
             <Input
               className="w-32"
               value={markup}
@@ -168,6 +201,21 @@ export default function ThueSo() {
             </Button>
             <span className="text-sm text-muted-foreground">
               Giá bán = giá vốn + {markup}% (làm tròn 100đ)
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <Label className="w-40">Lãi thêm OTPVN (%)</Label>
+            <Input
+              className="w-32"
+              value={markupOtpvn}
+              onChange={(e) => setMarkupOtpvn(e.target.value)}
+              placeholder="50"
+            />
+            <Button size="sm" onClick={() => saveCfg("otpvn_markup_pct", markupOtpvn)}>
+              Lưu
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Giá bán = giá vốn + {markupOtpvn}% (làm tròn 100đ)
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -207,6 +255,13 @@ export default function ThueSo() {
           onClick={() => setTab("services")}
         >
           📱 Dịch vụ ({services.length})
+        </Button>
+        <Button
+          size="sm"
+          variant={tab === "prices" ? "default" : "outline"}
+          onClick={() => { setTab("prices"); loadMerged(); }}
+        >
+          💲 Giá cố định ({merged.length})
         </Button>
       </div>
 
@@ -311,6 +366,80 @@ export default function ThueSo() {
                   {!filteredServices.length && (
                     <tr><td colSpan={5} className="py-4 text-center text-muted-foreground">
                       {services.length ? "Không khớp bộ lọc" : "Chưa tải được danh sách (thử Tải lại)"}
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {tab === "prices" && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>💲 Giá cố định từng dịch vụ</CardTitle>
+              <Input
+                className="w-56"
+                placeholder="Lọc dịch vụ..."
+                value={priceQ}
+                onChange={(e) => setPriceQ(e.target.value)}
+              />
+            </div>
+            <div className="text-sm text-muted-foreground">
+              Đặt giá bán cố định cho từng nhà — nhập <b>0</b> rồi bấm Lưu để xóa (quay về giá theo % lãi).
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b">
+                    <th className="py-2 pr-3">Dịch vụ</th>
+                    <th className="py-2 pr-3">ViOTP</th>
+                    <th className="py-2 pr-3">OTPVN</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {merged
+                    .filter((m: any) => !priceQ || m.name.toLowerCase().includes(priceQ.toLowerCase()))
+                    .map((m: any) => (
+                    <tr key={m.key} className="border-b last:border-0 align-top">
+                      <td className="py-2 pr-3 font-medium">{m.name}</td>
+                      {(["viotp", "otpvn"] as const).map((p: string) => {
+                        const off = m.offers.find((o: any) => o.provider === p);
+                        if (!off) return <td key={p} className="py-2 pr-3 text-muted-foreground">—</td>;
+                        const editKey = `${p}:${off.service_id}`;
+                        return (
+                          <td key={p} className="py-2 pr-3">
+                            <div>
+                              vốn {vnd(off.cost)}đ → <b>{vnd(off.sell)}đ</b>
+                              {off.fixed != null && (
+                                <Badge status="live" className="ml-1">📌 cố định</Badge>
+                              )}
+                              {!off.enabled && <Badge className="ml-1">🔴 tắt</Badge>}
+                            </div>
+                            <div className="flex gap-1 mt-1">
+                              <Input
+                                className="w-28"
+                                placeholder={off.fixed != null ? String(off.fixed) : "Giá mới..."}
+                                value={priceEdits[editKey] ?? ""}
+                                onChange={(e) => setPriceEdits((prev) => ({ ...prev, [editKey]: e.target.value }))}
+                                onKeyDown={(e) => e.key === "Enter" && saveFixed(p, off.service_id, priceEdits[editKey] ?? "")}
+                              />
+                              <Button size="sm" onClick={() => saveFixed(p, off.service_id, priceEdits[editKey] ?? "")}>
+                                Lưu
+                              </Button>
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                  {!merged.length && (
+                    <tr><td colSpan={3} className="py-4 text-center text-muted-foreground">
+                      Chưa tải được danh sách (thử Tải lại)
                     </td></tr>
                   )}
                 </tbody>
