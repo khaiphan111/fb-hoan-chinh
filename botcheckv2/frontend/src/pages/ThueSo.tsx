@@ -76,10 +76,19 @@ export default function ThueSo() {
     }
   }
 
+  const [providersStatus, setProvidersStatus] = useState<any>({});
+
   async function loadMerged() {
     try {
       const m = await api("/api/viotp/merged_prices");
       setMerged(m.data || []);
+      setProvidersStatus(m.providers_status || {});
+      // Cảnh báo nếu 1 nhà lỗi API (vd token sai) — trước đây im lặng nên khó biết
+      for (const [pname, st] of Object.entries<any>(m.providers_status || {})) {
+        if (!st.ok) {
+          toast.error(`⚠️ ${pname.toUpperCase()}: ${st.error || "không lấy được dịch vụ"}`);
+        }
+      }
     } catch (e: any) {
       toast.error("Không tải được giá gộp: " + e.message);
     }

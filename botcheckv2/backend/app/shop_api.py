@@ -1054,6 +1054,8 @@ async def viotp_merged_prices(_=Depends(auth)):
     import json as _json
     from .rental_providers import merge as _merge
     merged = await _merge.get_merged_services()
+    # FIX 2026-10-13: báo trạng thái từng nhà để web hiện cảnh báo khi 1 nhà lỗi API
+    providers_status = await _merge.get_providers_status()
     disabled_raw = db.get_setting("viotp_disabled_services", "[]")
     try:
         disabled = set(_json.loads(disabled_raw))
@@ -1078,7 +1080,7 @@ async def viotp_merged_prices(_=Depends(auth)):
             "name": item.get("name"),
             "offers": offers,
         })
-    return {"ok": True, "data": out}
+    return {"ok": True, "data": out, "providers_status": providers_status}
 
 
 class ViotpFixedPriceIn(BaseModel):

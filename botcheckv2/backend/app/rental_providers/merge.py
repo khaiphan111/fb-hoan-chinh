@@ -48,6 +48,24 @@ async def get_merged_services(country: str = "vn") -> list:
     return sorted(merged.values(), key=lambda e: e["name"].lower())
 
 
+async def get_providers_status(country: str = "vn") -> dict:
+    """Trạng thái từng nhà: {pname: {ok: bool, count: int, error: str|None}}.
+
+    Dùng để web hiện cảnh báo khi 1 nhà lỗi API (trước đây merge im lặng bỏ qua).
+    """
+    status: dict[str, dict] = {}
+    for p in list_providers():
+        if not provider_enabled(p.name):
+            status[p.name] = {"ok": False, "count": 0, "error": "đang tắt"}
+            continue
+        try:
+            items = await p.get_services(country=country)
+            status[p.name] = {"ok": True, "count": len(items), "error": None}
+        except Exception as e:
+            status[p.name] = {"ok": False, "count": 0, "error": str(e)[:200]}
+    return status
+
+
 def offers_sorted(item: dict) -> list:
     """[(provider, service_id, cost, sell)] — rẻ trước (theo giá bán thực tế,
     đã gồm giá cố định từng dịch vụ và % lãi riêng từng nhà)."""
