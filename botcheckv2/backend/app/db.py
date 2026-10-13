@@ -3913,6 +3913,36 @@ def mark_payos_paid(order_code: int) -> bool:
         return cur.rowcount > 0
 
 
+def _borrow_raw_conn():
+    """Lấy raw connection cho transaction thật — đúng cả 2 backend.
+
+    FIX 2026-10-13: từ bản pool DB (064e464), get_conn() trả về PgConnection
+    là wrapper của pool, KHÔNG còn thuộc tính .conn như trước. Mọi hàm dùng
+    mẫu `raw = getattr(c, "conn", None); if raw is None: return/continue`
+    đều chết im lặng trên Postgres: PayOS không tự cộng tiền, job đối soát
+    liệt, duyệt chuyển ví liệt... Hàm này mượn 1 conn riêng từ pool.
+
+    Trả về (raw, putback): caller dùng raw cho transaction rồi PHẢI gọi
+    putback() trong finally (kể cả khi lỗi) để trả conn về pool.
+    Với SQLite dev: putback là None, dùng c.conn trực tiếp như cũ.
+    """
+    c = get_conn()
+    raw = getattr(c, "conn", None)
+    if raw is not None:
+        return raw, None
+    if isinstance(c, PgConnection):
+        pool = _get_pg_pool()
+        conn = pool.getconn()
+        def _putback():
+            try:
+                conn.autocommit = True
+            except Exception:
+                pass
+            pool.putconn(conn)
+        return conn, _putback
+    raise RuntimeError("Không lấy được raw connection cho transaction")
+
+
 def _raw_dict_cursor(raw):
     """Raw cursor cho row dạng dict trên cả Postgres (DictCursor) và SQLite
     (row_factory=sqlite3.Row đã set ở SqliteConnection)."""
@@ -4008,10 +4038,7 @@ def settle_payos_order(order_code: int) -> dict:
     {'ok': False} khi đơn không tồn tại hoặc đã được xử lý trước đó.
     """
     with _lock:
-        c = get_conn()
-        raw = getattr(c, "conn", None)
-        if raw is None:
-            return {"ok": False}
+        raw, _putback = _borrow_raw_conn()
         prev_ac = raw.autocommit
         raw.autocommit = False
         try:
@@ -4046,7 +4073,12 @@ def settle_payos_order(order_code: int) -> dict:
                 pass
             raise
         finally:
-            raw.autocommit = prev_ac
+            try:
+                raw.autocommit = prev_ac
+            except Exception:
+                pass
+            if _putback is not None:
+                _putback()
     out: dict = {"ok": True, "target": target}
     out.update(bonuses)
     return out
@@ -4095,9 +4127,7 @@ def reconcile_payos_paid() -> dict:
                 continue
             # Thiếu txn -> cộng bù trong transaction thật với idempotency key
             # là order_code; lần chạy sau bước (1) sẽ tìm thấy.
-            raw = getattr(c, "conn", None)
-            if raw is None:
-                continue
+            raw, _putback = _borrow_raw_conn()
             prev_ac = raw.autocommit
             raw.autocommit = False
             try:
@@ -4111,7 +4141,12 @@ def reconcile_payos_paid() -> dict:
                 except Exception:
                     pass
             finally:
-                raw.autocommit = prev_ac
+                try:
+                    raw.autocommit = prev_ac
+                except Exception:
+                    pass
+                if _putback is not None:
+                    _putback()
     return {"checked": checked, "fixed": fixed}
 
 
@@ -7406,7 +7441,7 @@ def consign_dispute_decide(did: int, decision: str, refund_amount: int, by_id: i
         o2 = (c.execute("SELECT buyer_tg_id, sell_price FROM consignment_orders WHERE id=?",
                         (d["order_id"],)).fetchone()
               if decision == "refund_buyer" else None)
-        raw = c.conn
+        raw, _putback = _borrow_raw_conn()
         prev_ac = raw.autocommit
         raw.autocommit = False
         try:
@@ -7455,7 +7490,12 @@ def consign_dispute_decide(did: int, decision: str, refund_amount: int, by_id: i
             raw.rollback()
             raise
         finally:
-            raw.autocommit = prev_ac
+            try:
+                raw.autocommit = prev_ac
+            except Exception:
+                pass
+            if _putback is not None:
+                _putback()
 
 
 def consign_promo_create(title: str, detail: str, consignor_id: int = 0) -> int:
@@ -8316,10 +8356,7 @@ def wallet_transfer_request_approve(req_id: int, admin_id: int) -> bool:
     import time
     _wallet_transfer_ensure_table()
     with _lock:
-        c = get_conn()
-        raw = getattr(c, "conn", None)
-        if raw is None:
-            return False
+        raw, _putback = _borrow_raw_conn()
         prev_ac = raw.autocommit
         raw.autocommit = False
         try:
@@ -8379,7 +8416,12 @@ def wallet_transfer_request_approve(req_id: int, admin_id: int) -> bool:
                 pass
             raise
         finally:
-            raw.autocommit = prev_ac
+            try:
+                raw.autocommit = prev_ac
+            except Exception:
+                pass
+            if _putback is not None:
+                _putback()
     try:
         admin_audit_add(admin_id, "", "duyet_chuyen_vi", f"#{req_id} {src}->{dst} {amount}")
     except Exception:
@@ -8425,9 +8467,7 @@ def wallet_transfer_instant(tg_id: int, src: str, dst: str, amount: int,
     with _lock:
         c = get_conn()
         _wallet_transfer_idem_ensure_table(c)
-        raw = getattr(c, "conn", None)
-        if raw is None:
-            return "invalid"  # không lấy được connection thô
+        raw, _putback = _borrow_raw_conn()
         prev_ac = raw.autocommit
         raw.autocommit = False
         try:
@@ -8471,7 +8511,12 @@ def wallet_transfer_instant(tg_id: int, src: str, dst: str, amount: int,
                 pass
             raise
         finally:
-            raw.autocommit = prev_ac
+            try:
+                raw.autocommit = prev_ac
+            except Exception:
+                pass
+            if _putback is not None:
+                _putback()
     try:
         admin_audit_add(tg_id, "", "chuyen_vi",
                         f"{src}->{dst} {amount} [key {idem_key[:40]}]")

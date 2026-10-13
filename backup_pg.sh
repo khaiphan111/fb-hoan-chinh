@@ -14,6 +14,24 @@ OUT="$BACKUP_DIR/fb_pg_$TS.dump"
 # pg_dump phai cung major version voi server (Supabase chay PG17)
 PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
 PG_RESTORE=/usr/lib/postgresql/17/bin/pg_restore
+
+# Tu phuc hoi sau VM rebuild: postgresql-client-17 hay bi xoa (da xay ra 6 lan)
+# -> cai lai tu .deb luu trong vendor-debs (workspace ton tai qua rebuild, sudo khong can pass)
+ensure_pg_dump() {
+  if [ -x "$PG_DUMP" ] || command -v pg_dump >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "pg_dump mat (VM rebuild), dang cai lai tu vendor-debs..."
+  sudo -n dpkg -i "$ROOT"/vendor-debs/*.deb >/dev/null 2>&1
+  if [ -x "$PG_DUMP" ] || command -v pg_dump >/dev/null 2>&1; then
+    echo "cai lai pg_dump OK"
+    return 0
+  fi
+  echo "THAT BAI: khong khoi phuc duoc pg_dump, can cai tay"
+  return 1
+}
+ensure_pg_dump || exit 1
+
 [ -x "$PG_DUMP" ] || PG_DUMP=pg_dump
 [ -x "$PG_RESTORE" ] || PG_RESTORE=pg_restore
 
