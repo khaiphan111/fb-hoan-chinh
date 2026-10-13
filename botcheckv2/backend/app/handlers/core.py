@@ -132,7 +132,8 @@ class AntiSpamMiddleware(BaseMiddleware):
                 "/muagoi", "/checkfile", "/checkcookie", "/dailyreport", "/code",
                 "/stats", "/history", "/top", "/adm", "/daily", "/chuyentien",
                 "/shop", "/damua", "/quay", "/hang", "/doiqua", "/giasi",
-                "/coc", "/huycoc", "/coclist", "/napshop", "/giohang"
+                "/coc", "/huycoc", "/coclist", "/napshop", "/giohang",
+                "/thueso",  # FIX 2026-10-13: shop thuê số phải cho khách xem (như /shop); check ví thuê số ở bước xác nhận thuê
             )
             if cmd not in free_cmds:
                 # Admin (chủ shop + admin phụ) được miễn kiểm tra sub/số dư:
