@@ -51,8 +51,18 @@ def _vault_token() -> str:
     return tok
 
 
+def _resolve_token() -> str:
+    """Token OTPVN: ưu tiên biến môi trường OTPVN_TOKEN (cho web trên Render),
+    rồi mới fallback về Secure Vault (chỉ có trên VM Hatch)."""
+    import os as _os
+    _env = (_os.environ.get("OTPVN_TOKEN") or "").strip()
+    if _env:
+        return _env
+    return _vault_token()
+
+
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {_vault_token()}"}
+    return {"Authorization": f"Bearer {_resolve_token()}"}
 
 
 def _raise_for_body(body, ctx: str):

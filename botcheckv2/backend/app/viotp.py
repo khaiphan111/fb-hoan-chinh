@@ -64,6 +64,12 @@ def _vault_token() -> str:
 def _resolve_token(token: str = "") -> str:
     if token:
         return token
+    # FIX 2026-10-13: web chạy trên Render không có Secure Vault (chỉ có trên VM Hatch).
+    # Cho phép đọc token từ biến môi trường VIOTP_TOKEN trước, rồi mới fallback về vault.
+    import os as _os
+    _env = (_os.environ.get("VIOTP_TOKEN") or "").strip()
+    if _env:
+        return _env
     try:
         return _vault_token()
     except ViotpError:

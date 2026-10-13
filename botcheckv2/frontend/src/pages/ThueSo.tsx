@@ -71,7 +71,8 @@ export default function ThueSo() {
       setServices(s.data || []);
       setSvcMarkup(s.markup_pct ?? 50);
     } catch (e: any) {
-      // API có thể chưa có nếu backend chưa deploy — bỏ qua lặng lẽ
+      // Hiện lỗi để dễ chẩn đoán (trước đây bỏ qua lặng lẽ nên tab hiện (0) khó hiểu)
+      toast.error("Không tải được dịch vụ: " + e.message);
     }
   }
 
@@ -80,7 +81,7 @@ export default function ThueSo() {
       const m = await api("/api/viotp/merged_prices");
       setMerged(m.data || []);
     } catch (e: any) {
-      // API có thể chưa có nếu backend chưa deploy — bỏ qua lặng lẽ
+      toast.error("Không tải được giá gộp: " + e.message);
     }
   }
 
