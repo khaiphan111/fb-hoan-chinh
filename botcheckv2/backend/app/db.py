@@ -5370,7 +5370,7 @@ def spin_add_tickets(tg_id: int, n: int) -> int:
     with _lock:
         c = get_conn()
         c.execute("INSERT INTO spin_tickets(tg_id, tickets) VALUES(?,?) "
-                  "ON CONFLICT(tg_id) DO UPDATE SET tickets = tickets + ?",
+                  "ON CONFLICT(tg_id) DO UPDATE SET tickets = spin_tickets.tickets + ?",
                   (tg_id, n, n))
         c.commit()
         r = c.execute("SELECT tickets FROM spin_tickets WHERE tg_id=?",
@@ -5565,7 +5565,7 @@ def loyalty_add(tg_id: int, delta: int, reason: str = "") -> int:
     with _lock:
         c = get_conn()
         c.execute("INSERT INTO loyalty_points(tg_id, points) VALUES(?,?) "
-                  "ON CONFLICT(tg_id) DO UPDATE SET points = points + ?",
+                  "ON CONFLICT(tg_id) DO UPDATE SET points = loyalty_points.points + ?",
                   (tg_id, delta, delta))
         c.execute("INSERT INTO loyalty_history(tg_id, delta, reason, created_at) "
                   "VALUES(?,?,?,?)", (tg_id, delta, reason or "", now))
