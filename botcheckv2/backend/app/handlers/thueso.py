@@ -46,6 +46,17 @@ POPULAR_KEYS = [
 PAGE_SIZE = 12
 RENT_TTL_MIN = 15  # thời gian chờ OTP mỗi lượt thuê
 
+# Tên hiển thị nhà cung cấp cho khách (user yêu cầu 2026-10-14: đánh số 1/2,
+# khách tự chọn, nhà đã chọn lỗi thì tự chuyển sang nhà còn lại)
+PROVIDER_LABELS = {
+    "viotp": "Nhà cung cấp 1",
+    "otpvn": "Nhà cung cấp 2",
+}
+
+
+def _provider_label(pname: str) -> str:
+    return PROVIDER_LABELS.get(pname, pname)
+
 # Quốc gia hỗ trợ (mã ISO cho API ViOTP)
 COUNTRIES = [
     ("vn", "🇻🇳 Việt Nam"),
@@ -374,7 +385,7 @@ async def on_ts_page(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("ts:rent:"))
 async def on_ts_rent(cb: CallbackQuery, state: FSMContext):
-    from ..rental_providers.merge import best_sell
+    from ..rental_providers.merge import offers_sorted
     try:
         key = cb.data.split(":")[2]
     except IndexError:
@@ -387,21 +398,64 @@ async def on_ts_rent(cb: CallbackQuery, state: FSMContext):
     if not s:
         await cb.answer("Dịch vụ không còn", show_alert=True)
         return
-    sell = best_sell(s)
+    offers = offers_sorted(s)
+    if not offers:
+        await cb.answer("Dịch vụ hiện không có nhà cung cấp nào.", show_alert=True)
+        return
+    bal = db.rent_get_balance(cb.from_user.id)
+    kb_rows = []
+    for pname, psid, cost, sell in offers:
+        kb_rows.append([InlineKeyboardButton(
+            text=f"🏠 {_provider_label(pname)} — {vnd(sell)}đ",
+            callback_data=f"ts:prov:{key}:{pname}")])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Quay lại", callback_data=f"ts:svc:{key}:0:hot")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    await cb.answer()
+    await cb.message.edit_text(
+        f"📱 <b>{html.escape(s['name'])}</b>\n\n"
+        f"👇 Chọn nhà cung cấp:\n"
+        f"👛 Số dư ví thuê số: <b>{vnd(bal)}đ</b>\n\n"
+        f"Nếu nhà bạn chọn không có số, bot sẽ tự chuyển sang nhà còn lại.",
+        parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("ts:prov:"))
+async def on_ts_provider(cb: CallbackQuery, state: FSMContext):
+    from ..rental_providers.merge import offers_sorted
+    try:
+        _, _, key, pname = cb.data.split(":")
+    except (ValueError, IndexError):
+        await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
+        return
+    items = await _services_or_error(cb, state)
+    if items is None:
+        return
+    s = _svc_by_key(items, key)
+    if not s:
+        await cb.answer("Dịch vụ không còn", show_alert=True)
+        return
+    offers = offers_sorted(s)
+    chosen = next((o for o in offers if o[0] == pname), None)
+    if not chosen:
+        await cb.answer("Nhà cung cấp này hiện không có dịch vụ.", show_alert=True)
+        return
+    _, _, _, sell = chosen
     bal = db.rent_get_balance(cb.from_user.id)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"✅ Xác nhận thuê — {vnd(sell)}đ",
-                              callback_data=f"ts:confirm:{key}")],
-        [InlineKeyboardButton(text="⬅️ Quay lại", callback_data=f"ts:svc:{key}:0:hot")],
+                              callback_data=f"ts:confirm:{key}:{pname}")],
+        [InlineKeyboardButton(text="⬅️ Chọn nhà khác", callback_data=f"ts:rent:{key}")],
     ])
     await cb.answer()
     await cb.message.edit_text(
         f"🧾 <b>Xác nhận thuê số</b>\n\n"
         f"📱 Dịch vụ: <b>{html.escape(s['name'])}</b>\n"
+        f"🏠 Nhà cung cấp: <b>{_provider_label(pname)}</b>\n"
         f"💰 Giá: <b>{vnd(sell)}đ</b> (trừ ví thuê số)\n"
         f"👛 Số dư ví thuê số: <b>{vnd(bal)}đ</b>\n\n"
         f"Sau khi thuê, bạn sẽ nhận số điện thoại và bot tự chờ mã OTP trong {RENT_TTL_MIN} phút.\n"
-        f"💸 Hết {RENT_TTL_MIN} phút không có mã → tự hoàn tiền vào ví thuê số.",
+        f"💸 Hết {RENT_TTL_MIN} phút không có mã → tự hoàn tiền vào ví thuê số.\n"
+        f"⚠️ Nếu {_provider_label(pname)} không có số, bot tự chuyển sang nhà còn lại.",
         parse_mode="HTML", reply_markup=kb)
 
 
@@ -410,7 +464,9 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
     from ..rental_providers import get_provider
     from ..rental_providers.merge import offers_sorted
     try:
-        key = cb.data.split(":")[2]
+        parts = cb.data.split(":")
+        key = parts[2]
+        chosen_pname = parts[3] if len(parts) > 3 else None
     except IndexError:
         await cb.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
@@ -431,9 +487,10 @@ async def on_ts_confirm(cb: CallbackQuery, state: FSMContext):
     if not s:
         await cb.answer("Dịch vụ không còn", show_alert=True)
         return
-    # GĐ3 tự động: thử các nhà theo giá rẻ trước, lỗi thì nhảy sang nhà kia.
-    # offers = [(provider, service_id, cost, sell)] đã sắp rẻ trước.
+    # Khách chọn nhà cung cấp: thử nhà đã chọn trước, lỗi thì chuyển sang nhà còn lại.
     offers = offers_sorted(s)
+    if chosen_pname:
+        offers = sorted(offers, key=lambda o: 0 if o[0] == chosen_pname else 1)
     if not offers:
         await cb.answer("Dịch vụ hiện không có nhà cung cấp nào.", show_alert=True)
         return

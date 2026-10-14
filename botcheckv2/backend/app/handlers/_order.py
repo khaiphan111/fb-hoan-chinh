@@ -504,6 +504,7 @@ CALLBACK_ORDER = [
     "on_ts_svc",
     "on_ts_page",
     "on_ts_rent",
+    "on_ts_provider",
     "on_ts_confirm",
     "on_ts_check",
     "on_ts_my",
