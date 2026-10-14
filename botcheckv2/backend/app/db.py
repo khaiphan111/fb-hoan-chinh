@@ -17,6 +17,12 @@ SUPABASE_URL = os.environ.get('SUPABASE_DB_URL')
 
 def _translate_pg_sql(sql):
     """Dịch SQL viết cho SQLite sang Postgres (dùng cho cả pool)."""
+    # FIX 2026-10-14: escape literal % as %% BEFORE ? -> %s.
+    # psycopg2 interprets % as placeholder prefix; a literal % in LIKE patterns
+    # (e.g. 'randpts:%') causes "tuple index out of range" (IndexError).
+    # %% is converted back to % by psycopg2. Must run before ? replacement
+    # so the new %s placeholders are not double-escaped.
+    sql = sql.replace('%', '%%')
     sql = sql.replace('?', '%s')
     sql = sql.replace('BIGINT PRIMARY KEY AUTOINCREMENT', 'BIGSERIAL PRIMARY KEY')
     sql = sql.replace('BIGINT PRIMARY KEY', 'BIGSERIAL PRIMARY KEY')
