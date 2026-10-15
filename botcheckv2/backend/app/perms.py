@@ -84,6 +84,34 @@ def is_super(tg_id) -> bool:
         return False
 
 
+def deputy_ids() -> list:
+    """Telegram ID các phó chủ shop (setting `deputy_admin_ids`, cách nhau dấu phẩy)."""
+    try:
+        raw = (db.get_setting("deputy_admin_ids", "") or "")
+        return [int(x) for x in raw.replace(";", ",").split(",")
+                if x.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def set_deputy_ids(ids) -> None:
+    db.set_setting("deputy_admin_ids",
+                   ",".join(str(int(x)) for x in ids))
+
+
+def is_deputy(tg_id) -> bool:
+    """Phó chủ shop — full quyền như chủ shop, trừ quản lý admin."""
+    try:
+        return int(tg_id) in deputy_ids()
+    except Exception:
+        return False
+
+
+def has_full_access(tg_id) -> bool:
+    """Chủ shop hoặc phó — qua mọi cửa `is_super`, trừ màn quản lý admin."""
+    return is_super(tg_id) or is_deputy(tg_id)
+
+
 def _is_expired(row) -> bool:
     """Admin phụ hết hạn tạm thời -> coi như không còn quyền."""
     try:
@@ -94,8 +122,8 @@ def _is_expired(row) -> bool:
 
 
 def is_admin(tg_id) -> bool:
-    """Super admin hoặc admin phụ (bất kỳ quyền nào, còn hạn)."""
-    if is_super(tg_id):
+    """Super admin, phó chủ shop, hoặc admin phụ (bất kỳ quyền nào, còn hạn)."""
+    if is_super(tg_id) or is_deputy(tg_id):
         return True
     try:
         row = db.extra_admin_get(tg_id)
@@ -105,8 +133,8 @@ def is_admin(tg_id) -> bool:
 
 
 def perms_of(tg_id) -> set:
-    """Tập quyền của user. Super admin -> tất cả. Hết hạn -> rỗng."""
-    if is_super(tg_id):
+    """Tập quyền của user. Super admin / phó -> tất cả. Hết hạn -> rỗng."""
+    if is_super(tg_id) or is_deputy(tg_id):
         return set(PERM_KEYS)
     try:
         row = db.extra_admin_get(tg_id)

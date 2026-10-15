@@ -48,8 +48,9 @@ async def _cb_answer(cb, *args, **kwargs):
 
 
 def _is_super(uid: int) -> bool:
+    """Chủ shop hoặc phó chủ shop (full quyền trừ quản lý admin)."""
     try:
-        return _perms.is_super(uid)
+        return _perms.has_full_access(uid)
     except Exception:
         return str(uid) == str(db.get_setting("admin_tg_id", ""))
 
@@ -1676,7 +1677,7 @@ def _kga_menu():
 @router.message(F.text.startswith("/kyguiadm"))
 async def on_kyguiadm(msg: Message, state: FSMContext):
     if not _is_super(msg.from_user.id):
-        await msg.answer("🚫 Chỉ chủ shop mới dùng được.")
+        await msg.answer("🚫 Chỉ chủ shop/phó mới dùng được.")
         return
     await state.clear()
     st = db.consign_stats()

@@ -255,7 +255,7 @@ async def on_bhdone(msg: Message):
     except Exception:
         _cl = {}
     if db.acc_order_is_consign(_cl.get("order_id") or 0) \
-            and not _perms.is_super(msg.from_user.id):
+            and not _perms.has_full_access(msg.from_user.id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📤 Báo chủ shop",
                                   callback_data=f"kgreport:{_cl.get('order_id')}")]])

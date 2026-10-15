@@ -968,6 +968,7 @@ class AdmMenuState(StatesGroup):
     webhook_key = State()
     webhook_url = State()
     admadd_id = State()
+    depadd_id = State()
     admadd_days = State()
     admexp_days = State()
 
@@ -1350,19 +1351,33 @@ def _admx_exp_text(expires_at) -> str:
 
 def _admx_list_text() -> str:
     rows = db.extra_admin_list()
-    if not rows:
-        return "🛡️ <b>QUẢN LÝ ADMIN</b>\n\nChưa có admin phụ nào.\nBấm <b>➕ Thêm admin</b> để cấp quyền."
     lines = ["🛡️ <b>QUẢN LÝ ADMIN</b>", ""]
-    for r in rows:
-        pl = [ _perms.perm_label(p) for p in (r.get("perms") or "").split(",") if p ]
-        exp = f" ⏳ {_admx_exp_text(r.get('expires_at'))}" if r.get("expires_at") else ""
-        lines.append(f"• <code>{r['tg_id']}</code> {html.escape(r.get('name') or '?')}{exp}\n"
-                     f"  └ {', '.join(pl) or '—'}")
+    deps = _perms.deputy_ids()
+    if deps:
+        lines.append("👑 <b>Phó chủ shop</b> <i>(full quyền như chủ shop, trừ quản lý admin)</i>:")
+        for d in deps:
+            lines.append(f"• <code>{d}</code> {html.escape(_admx_name_of(d))}")
+        lines.append("")
+    if not rows:
+        lines.append("Chưa có admin phụ nào.\nBấm <b>➕ Thêm admin</b> để cấp quyền.")
+    else:
+        for r in rows:
+            pl = [ _perms.perm_label(p) for p in (r.get("perms") or "").split(",") if p ]
+            exp = f" ⏳ {_admx_exp_text(r.get('expires_at'))}" if r.get("expires_at") else ""
+            lines.append(f"• <code>{r['tg_id']}</code> {html.escape(r.get('name') or '?')}{exp}\n"
+                         f"  └ {', '.join(pl) or '—'}")
     return "\n".join(lines)
 
 
 def _admx_list_kb():
-    rows = [[InlineKeyboardButton(text="➕ Thêm admin", callback_data="admx:add")]]
+    rows = [[InlineKeyboardButton(text="➕ Thêm admin", callback_data="admx:add")],
+            [InlineKeyboardButton(text="👑 Thêm phó chủ shop", callback_data="admx:depadd")]]
+    for d in _perms.deputy_ids():
+        nm = _admx_name_of(d)
+        rows.append([
+            InlineKeyboardButton(text=f"🗑️ 👑 {nm}",
+                                 callback_data=f"admx:depdel:{d}"),
+        ])
     for r in db.extra_admin_list():
         nm = r.get("name") or str(r["tg_id"])
         rows.append([
@@ -2778,6 +2793,56 @@ def register_adm_menu(target_router):
             await _cb_answer(cb, )
             return
 
+        # ── Phó chủ shop (chỉ chủ shop thêm/xoá) ──
+        if action == "depadd":
+            await state.clear()
+            await state.set_state(AdmMenuState.depadd_id)
+            await cb.message.edit_text(
+                "👑 <b>THÊM PHÓ CHỦ SHOP</b>\n\n"
+                "Phó có <b>full quyền như chủ shop</b> "
+                "(xem giá vốn/lãi, duyệt ký gửi, cài đặt, /payosset...), "
+                "chỉ <b>không</b> được quản lý admin.\n\n"
+                "Gửi <b>Telegram ID</b> của người cần cấp "
+                "(lấy ID qua @userinfobot).\n\nGõ /huy để huỷ.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Huỷ",
+                                          callback_data="admx:list")]]))
+            await _cb_answer(cb, )
+            return
+
+        if action.startswith("depdeles:"):
+            aid = action[9:]
+            if (aid or "").isdigit():
+                _perms.set_deputy_ids(
+                    [x for x in _perms.deputy_ids() if x != int(aid)])
+                db.admin_audit_add(cb.from_user.id, cb.from_user.full_name,
+                                   "xoa_pho", f"{aid}")
+                await _admx_notify(
+                    cb.bot, int(aid),
+                    "🔔 <b>Thông báo từ shop</b>\n\n"
+                    "Quyền phó chủ shop của bạn đã bị thu hồi.")
+            await state.clear()
+            await cb.message.edit_text(
+                "✅ Đã xoá.\n\n" + _admx_list_text(),
+                parse_mode="HTML", reply_markup=_admx_list_kb())
+            await _cb_answer(cb, )
+            return
+
+        if action.startswith("depdel:"):
+            aid = action[7:]
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🗑️ Xoá luôn",
+                                      callback_data=f"admx:depdeles:{aid}"),
+                 InlineKeyboardButton(text="❌ Huỷ",
+                                      callback_data="admx:list")]])
+            await cb.message.edit_text(
+                f"Xoá quyền <b>phó chủ shop</b> của <code>{aid}</code> "
+                f"({html.escape(_admx_name_of(int(aid)) if (aid or '').isdigit() else aid)})?",
+                parse_mode="HTML", reply_markup=kb)
+            await _cb_answer(cb, )
+            return
+
         await _cb_answer(cb, )
 
     @target_router.message(AdmMenuState.admadd_id)
@@ -2808,6 +2873,41 @@ def register_adm_menu(target_router):
             f"Tick chọn các quyền được phép:",
             parse_mode="HTML",
             reply_markup=_admx_perm_kb(set(), "admx:save", expire_btn=True))
+
+    @target_router.message(AdmMenuState.depadd_id)
+    async def _on_depadd_id(msg: Message, state: FSMContext):
+        if not _perms.is_super(msg.from_user.id):
+            await state.clear()
+            return
+        if (msg.text or "").strip() == "/huy":
+            await state.clear()
+            await msg.answer("Đã huỷ.", reply_markup=_admm_back_kb())
+            return
+        try:
+            aid = int((msg.text or "").strip())
+        except Exception:
+            await msg.answer("⚠️ ID phải là số. Gửi lại hoặc gõ /huy để huỷ.")
+            return
+        if _perms.is_super(aid):
+            await msg.answer("⚠️ Đây là ID chủ shop rồi, không cần thêm. "
+                             "Gửi ID khác hoặc /huy.")
+            return
+        ids = _perms.deputy_ids()
+        if aid in ids:
+            await msg.answer("⚠️ ID này đã là phó rồi. Gửi ID khác hoặc /huy.")
+            return
+        ids.append(aid)
+        _perms.set_deputy_ids(ids)
+        db.admin_audit_add(msg.from_user.id, msg.from_user.full_name,
+                           "them_pho", f"{aid}")
+        await _admx_notify(
+            msg.bot, aid,
+            "🎉 <b>Bạn đã được cấp quyền PHÓ CHỦ SHOP!</b>\n"
+            "Bạn có full quyền như chủ shop (trừ quản lý admin).\n"
+            "Gõ /adm để mở menu quản trị.")
+        await state.clear()
+        await msg.answer("✅ Đã thêm phó chủ shop.\n\n" + _admx_list_text(),
+                         parse_mode="HTML", reply_markup=_admx_list_kb())
 
     @target_router.message(AdmMenuState.admadd_days)
     async def _on_admadd_days(msg: Message, state: FSMContext):

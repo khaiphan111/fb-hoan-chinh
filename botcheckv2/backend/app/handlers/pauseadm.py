@@ -39,8 +39,9 @@ MAX_MINUTES = _pause.MAX_MINUTES
 
 
 def _is_super(uid: int) -> bool:
+    """Chủ shop hoặc phó chủ shop (full quyền trừ quản lý admin)."""
     try:
-        return bool(_perms.is_super(uid))
+        return bool(_perms.has_full_access(uid))
     except Exception:
         return False
 
@@ -57,7 +58,7 @@ async def _cb_answer(cb, *args, **kwargs):
 
 async def _deny_super(msg: Message) -> bool:
     if not _is_super(msg.from_user.id):
-        await msg.answer("🚫 Chỉ chủ shop mới được tạm dừng / mở lại bot.")
+        await msg.answer("🚫 Chủ shop hoặc phó mới được tạm dừng / mở lại bot.")
         return True
     return False
 
@@ -250,7 +251,7 @@ async def start_pause_flow_cb(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("pause:"))
 async def _on_pause_cb(cb: CallbackQuery, state: FSMContext):
     if not _is_admin(cb.from_user.id) or not _is_super(cb.from_user.id):
-        await _cb_answer(cb, "🚫 Chỉ chủ shop mới dùng được.", show_alert=True)
+        await _cb_answer(cb, "🚫 Chỉ chủ shop/phó mới dùng được.", show_alert=True)
         return
     action = (cb.data or "")[6:]
 

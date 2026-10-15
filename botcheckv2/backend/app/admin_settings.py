@@ -834,7 +834,7 @@ def _save(tg_id: int, name: str, key: str, new_val: str, label: str,
 
 
 def _deny(cb: CallbackQuery) -> bool:
-    return not _perms.is_super(cb.from_user.id)
+    return not _perms.has_full_access(cb.from_user.id)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -845,7 +845,7 @@ def register_settings(target_router):
     @target_router.callback_query(F.data.startswith("admset:"))
     async def _on_admset_cb(cb: CallbackQuery, state: FSMContext):
         if _deny(cb):
-            await cb.answer("🚫 Chỉ chủ shop mới dùng được.",
+            await cb.answer("🚫 Chỉ chủ shop/phó mới dùng được.",
                             show_alert=True)
             return
         action = (cb.data or "")[7:]
@@ -1246,7 +1246,7 @@ def register_settings(target_router):
 
     @target_router.message(AdmSetState.value)
     async def _on_admset_value(msg: Message, state: FSMContext):
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         txt = (msg.text or "").strip()
@@ -1299,7 +1299,7 @@ def register_settings(target_router):
 
     @target_router.message(AdmSetState.banks_add)
     async def _on_banks_add(msg: Message, state: FSMContext):
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         if await _cancel_flow(msg, state, "admset:s:banks_list"):
@@ -1327,7 +1327,7 @@ def register_settings(target_router):
 
     @target_router.message(AdmSetState.bank_qr)
     async def _on_bank_qr(msg: Message, state: FSMContext):
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         if await _cancel_flow(msg, state, "admset:banks:qrlist"):
@@ -1362,7 +1362,7 @@ def register_settings(target_router):
 
     @target_router.message(AdmSetState.photo)
     async def _on_photo_msg(msg: Message, state: FSMContext):
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         data = await state.get_data()
@@ -1398,7 +1398,7 @@ def register_settings(target_router):
 
     @target_router.message(AdmSetState.prize_label)
     async def _on_prize_label(msg: Message, state: FSMContext):
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         if await _cancel_flow(msg, state, "admset:s:spin_prizes"):
@@ -1419,7 +1419,7 @@ def register_settings(target_router):
     @target_router.message(AdmSetState.prize_kind)
     async def _on_prize_kind_msg(msg: Message, state: FSMContext):
         # user gửi chữ thay vì bấm nút chọn loại -> nhắc bấm nút
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         if await _cancel_flow(msg, state, "admset:s:spin_prizes"):
@@ -1433,7 +1433,7 @@ def register_settings(target_router):
 
     @target_router.message(AdmSetState.prize_value)
     async def _on_prize_value(msg: Message, state: FSMContext):
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         if await _cancel_flow(msg, state, "admset:s:spin_prizes"):
@@ -1452,7 +1452,7 @@ def register_settings(target_router):
 
     @target_router.message(AdmSetState.prize_weight)
     async def _on_prize_weight(msg: Message, state: FSMContext):
-        if not _perms.is_super(msg.from_user.id):
+        if not _perms.has_full_access(msg.from_user.id):
             await state.clear()
             return
         if await _cancel_flow(msg, state, "admset:s:spin_prizes"):

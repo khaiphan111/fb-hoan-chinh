@@ -1120,7 +1120,7 @@ async def on_gia(msg: Message):
 @router.callback_query(F.data.startswith("giacf:"))
 async def on_giacf_cb(cb: CallbackQuery):
     """Xác nhận đổi giá khi giá mới chênh lệch bất thường."""
-    if not (_perms.is_super(cb.from_user.id)
+    if not (_perms.has_full_access(cb.from_user.id)
             or _perms.has_perm(cb.from_user.id, "price")):
         await cb.answer("🚫 Bạn không có quyền đổi giá.", show_alert=True)
         return
@@ -1376,7 +1376,7 @@ async def on_hienloai(msg: Message):
 async def on_daban(msg: Message):
     """Admin: đánh dấu 1 acc đã bán thủ công (bán ngoài bot).
     Cú pháp: /daban <uid>"""
-    if not (_perms.is_super(msg.from_user.id)
+    if not (_perms.has_full_access(msg.from_user.id)
             or _perms.has_perm(msg.from_user.id, "kho")):
         return
     parts = (msg.text or "").split()
@@ -1415,7 +1415,7 @@ async def on_daban(msg: Message):
 @router.callback_query(F.data.startswith("daban:"))
 async def on_daban_cb(cb: CallbackQuery):
     """Xác nhận đánh dấu acc bán thủ công."""
-    if not (_perms.is_super(cb.from_user.id)
+    if not (_perms.has_full_access(cb.from_user.id)
             or _perms.has_perm(cb.from_user.id, "kho")):
         await cb.answer("🚫 Bạn không có quyền kho.", show_alert=True)
         return
@@ -1662,8 +1662,8 @@ async def on_lo(msg: Message):
     if not _is_admin(msg.from_user.id):
         return
     # Giá vốn/lãi chỉ chủ shop được xem — admin phụ không thấy
-    if not _perms.is_super(msg.from_user.id):
-        await msg.answer("🚫 Chỉ chủ shop mới xem được giá vốn/lãi.",
+    if not _perms.has_full_access(msg.from_user.id):
+        await msg.answer("🚫 Chỉ chủ shop/phó mới xem được giá vốn/lãi.",
                          parse_mode="HTML")
         return
     parts = (msg.text or "").split()

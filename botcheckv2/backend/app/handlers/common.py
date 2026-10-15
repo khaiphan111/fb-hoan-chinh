@@ -215,7 +215,7 @@ async def process_fb_check(msg: Message, uid: str):
 async def _notify_super_subadmin_action(actor_id: int, actor_name: str, text: str):
     """Báo chủ shop khi admin phụ thực hiện thao tác nhạy cảm (duyệt/từ chối rút)."""
     try:
-        if _perms.is_super(actor_id):
+        if _perms.has_full_access(actor_id):
             return
         sid = _perms.super_id()
         if sid and manager.bot:

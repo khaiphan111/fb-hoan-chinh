@@ -152,8 +152,8 @@ async def on_adm(msg: Message, state: FSMContext):
 @router.message(Command("loinhuan"))
 async def on_loinhuan(msg: Message):
     """Báo cáo lãi/lỗ theo ngày — chỉ chủ shop (số liệu nhạy cảm)."""
-    if not _perms.is_super(msg.from_user.id):
-        await msg.answer("🚫 Chỉ chủ shop mới xem được báo cáo này.")
+    if not _perms.has_full_access(msg.from_user.id):
+        await msg.answer("🚫 Chỉ chủ shop/phó mới xem được báo cáo này.")
         return
     from .. import profit_report as _pr
     # /loinhuan [dd/mm/yyyy] — mặc định hôm nay

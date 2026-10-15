@@ -21,7 +21,7 @@ from aiogram.types import (
 
 from .. import db
 from ..util import vnd
-from ..perms import has_perm, is_super
+from ..perms import has_perm, is_super, has_full_access
 from .core import _is_admin, router
 from .common import _notify_admin_smart
 
@@ -478,7 +478,7 @@ def _buffadm_menu_kb(tg_id: int = 0) -> InlineKeyboardMarkup:
     can_price = has_perm(tg_id, "price")
     can_orders = has_perm(tg_id, "orders")
     can_tien = has_perm(tg_id, "tien")
-    super_only = is_super(tg_id)
+    super_only = has_full_access(tg_id)
     if can_price:
         for p in plats:
             row.append(InlineKeyboardButton(
@@ -737,9 +737,9 @@ async def on_buffadm_cb(cb: CallbackQuery, state: FSMContext):
         return False
 
     async def _need_super() -> bool:
-        if is_super(_uid):
+        if has_full_access(_uid):
             return True
-        await cb.message.answer("⛔ Chỉ chủ shop mới dùng được.")
+        await cb.message.answer("⛔ Chỉ chủ shop/phó mới dùng được.")
         return False
 
     if action == "menu":
@@ -1404,7 +1404,7 @@ async def on_buffadm_panel_user_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
         await state.clear()
         return
-    if not is_super(msg.from_user.id):
+    if not has_full_access(msg.from_user.id):
         await state.clear()
         return
     user = (msg.text or "").strip()
@@ -1431,7 +1431,7 @@ async def on_buffadm_panel_pass_input(msg: Message, state: FSMContext):
     if not _is_admin(msg.from_user.id):
         await state.clear()
         return
-    if not is_super(msg.from_user.id):
+    if not has_full_access(msg.from_user.id):
         await state.clear()
         return
     pw = (msg.text or "").strip()
