@@ -63,7 +63,7 @@ async def morning_report() -> bool:
         stock = c.execute(
             "SELECT cat.name nm, COUNT(*) n FROM acc_stock s"
             " JOIN acc_categories cat ON cat.id=s.cat_id"
-            " WHERE s.status='AVAILABLE' GROUP BY s.cat_id ORDER BY n DESC").fetchall()
+            " WHERE s.status='AVAILABLE' GROUP BY s.cat_id, cat.name ORDER BY n DESC").fetchall()
         die_n = c.execute(
             "SELECT COUNT(*) n FROM acc_stock WHERE status IN ('DEAD','DIE')").fetchone()["n"]
         new_users = c.execute(
@@ -79,7 +79,7 @@ async def morning_report() -> bool:
             " LEFT JOIN acc_categories cat ON cat.id=o.cat_id"
             " LEFT JOIN acc_batches b ON b.batch=o.batch"
             " WHERE o.created_at>=? AND o.created_at<?"
-            " GROUP BY o.cat_id ORDER BY rev DESC", (ys, ye)).fetchall()
+            " GROUP BY o.cat_id, cat.name ORDER BY rev DESC", (ys, ye)).fetchall()
     except Exception as e:
         log.warning("morning_report query failed: %s", e)
         return False

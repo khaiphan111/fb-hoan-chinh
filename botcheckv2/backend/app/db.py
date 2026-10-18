@@ -157,7 +157,7 @@ class PgConnection:
                     # Retry 1 lần khi lỗi kết nối (giống execute)
                     try:
                         cur.execute(tsql)
-                    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                    except (psycopg2.DatabaseError, psycopg2.InterfaceError):
                         p.putconn(conn, close=True)
                         conn = p.getconn()
                         conn.autocommit = True
@@ -167,7 +167,7 @@ class PgConnection:
                 tsql = _translate_pg_sql(sql)
                 try:
                     cur.execute(tsql, params)
-                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                except (psycopg2.DatabaseError, psycopg2.InterfaceError):
                     # Conn chết (tunnel rớt...) -> đóng conn hỏng, lấy conn mới retry 1 lần
                     p.putconn(conn, close=True)
                     conn = p.getconn()
