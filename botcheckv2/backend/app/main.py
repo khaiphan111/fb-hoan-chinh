@@ -11,6 +11,7 @@ from .api import router as api_router
 from .campaigns_api import router as campaigns_router
 from .shop_api import router as shop_router
 from .reseller_api import router as reseller_router
+from .license_api import router as license_router
 # Bot managers import LAZY trong start_services() (muc 5: giam boot <10s).
 # aiogram.types mat ~7s de import; health endpoint khong can bot.
 from .keep_alive import start_keep_alive, stop_keep_alive
@@ -39,6 +40,7 @@ app.include_router(api_router)
 app.include_router(campaigns_router, prefix="/api")
 app.include_router(shop_router)
 app.include_router(reseller_router)
+app.include_router(license_router)
 
 from .miniapp import router as miniapp_router
 app.include_router(miniapp_router)
@@ -347,6 +349,12 @@ if os.path.isdir(config.STATIC_DIR):
     assets_dir = os.path.join(config.STATIC_DIR, "assets")
     if os.path.isdir(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    # 2026-10-18: cho download ban update tool Muse Studio Pro (auto-update trong app).
+    # File dat tai data/updates/haohao/..., URL cong khai /downloads/haohao/...
+    updates_dir = os.path.join(os.path.dirname(__file__), "..", "data", "updates")
+    if not os.path.isdir(updates_dir):
+        os.makedirs(updates_dir, exist_ok=True)
+    app.mount("/downloads", StaticFiles(directory=updates_dir), name="downloads")
     # FIX bảo mật: BỎ mount tĩnh công khai cả thư mục data/images. Trước đây ai biết URL
     # đều tải được ảnh QR ngân hàng cá nhân (/images/qr_1.jpg) mà không cần đăng nhập.
     # Ảnh QR nay phục vụ qua GET /api/qr/{filename} (bắt buộc token admin). Khách vẫn

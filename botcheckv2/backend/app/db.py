@@ -1131,7 +1131,11 @@ def migrate_db():
             "ALTER TABLE consignment_batches ADD COLUMN suspend_prev TEXT DEFAULT ''",
             "ALTER TABLE acc_categories ADD COLUMN consign_pending INTEGER DEFAULT 0",
             "ALTER TABLE giftcodes ADD COLUMN wallet TEXT DEFAULT 'main'",
-            "ALTER TABLE promo_codes ADD COLUMN wallet TEXT DEFAULT 'main'"
+            "ALTER TABLE promo_codes ADD COLUMN wallet TEXT DEFAULT 'main'",
+            # 2026-10-18: license server cho tool Muse Studio Pro (key ban quyen gan thiet bi)
+            "CREATE TABLE IF NOT EXISTS licenses (id BIGSERIAL PRIMARY KEY, key_code TEXT UNIQUE NOT NULL, plan TEXT NOT NULL DEFAULT 'monthly', status TEXT NOT NULL DEFAULT 'active', machine_id TEXT DEFAULT '', machine_name TEXT DEFAULT '', customer_name TEXT DEFAULT '', note TEXT DEFAULT '', trial_hours BIGINT DEFAULT 0, activated_at BIGINT DEFAULT 0, expires_at BIGINT DEFAULT 0, last_seen BIGINT DEFAULT 0, app_version TEXT DEFAULT '', reset_count BIGINT DEFAULT 0, created_at BIGINT NOT NULL, created_by BIGINT DEFAULT 0)",
+            "CREATE TABLE IF NOT EXISTS license_activations (id BIGSERIAL PRIMARY KEY, license_id BIGINT NOT NULL, machine_id TEXT NOT NULL, machine_name TEXT DEFAULT '', app_version TEXT DEFAULT '', event TEXT NOT NULL, detail TEXT DEFAULT '', created_at BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS license_admin_log (id BIGSERIAL PRIMARY KEY, admin_id BIGINT, action TEXT NOT NULL, target TEXT DEFAULT '', details TEXT DEFAULT '', created_at BIGINT NOT NULL)"
         ]:
             _migrate_one(c, sql, applied)
         c.commit()

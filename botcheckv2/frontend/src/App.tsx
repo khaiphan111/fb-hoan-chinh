@@ -20,6 +20,7 @@ import {
   IconHeartHandshake,
   IconPlayerPause,
   IconPlayerPlay,
+  IconKey,
 } from "@tabler/icons-react";
 import { useEffect, useState } from "react";
 import toast, { Toaster } from "react-hot-toast";
@@ -47,6 +48,7 @@ import Shop from "./pages/Shop";
 import Buff from "./pages/Buff";
 import ThueSo from "./pages/ThueSo";
 import Consign from "./pages/Consign";
+import License from "./pages/License";
 import PauseModal from "./components/PauseModal";
 
 const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
@@ -61,6 +63,7 @@ const NAV: { key: string; label: string; icon: any; roles?: string[] }[] = [
   { key: "buff", label: "Buff tương tác", icon: IconRocket, roles: ["super_admin", "admin"] },
   { key: "thueso", label: "Thuê số OTP", icon: IconDeviceMobile, roles: ["super_admin", "admin"] },
   { key: "consign", label: "Ký gửi", icon: IconHeartHandshake, roles: ["super_admin"] },
+  { key: "license", label: "License Key", icon: IconKey, roles: ["super_admin"] },
   { key: "codes", label: "Kho Code", icon: IconListCheck },
   { key: "proxies", label: "Hệ thống Proxy", icon: IconServer, roles: ["super_admin", "admin"] },
   { key: "logs", label: "Nhật ký", icon: IconHistory },
@@ -301,6 +304,7 @@ export default function App() {
         { tab === "buff" && <Buff /> }
         { tab === "thueso" && <ThueSo /> }
         { tab === "consign" && <Consign /> }
+        { tab === "license" && <License /> }
       </main>
       <PauseModal
         open={pauseModal}
