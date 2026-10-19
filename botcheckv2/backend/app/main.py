@@ -350,8 +350,9 @@ if os.path.isdir(config.STATIC_DIR):
     if os.path.isdir(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
     # 2026-10-18: cho download ban update tool Muse Studio Pro (auto-update trong app).
-    # File dat tai data/updates/haohao/..., URL cong khai /downloads/haohao/...
-    updates_dir = os.path.join(os.path.dirname(__file__), "..", "data", "updates")
+    # 2026-10-19: doi sang backend/updates (data/ bi .dockerignore chan khoi image).
+    # File dat tai backend/updates/haohao/..., URL cong khai /downloads/haohao/...
+    updates_dir = os.path.join(os.path.dirname(__file__), "..", "updates")
     if not os.path.isdir(updates_dir):
         os.makedirs(updates_dir, exist_ok=True)
     app.mount("/downloads", StaticFiles(directory=updates_dir), name="downloads")
