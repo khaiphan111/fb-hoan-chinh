@@ -41,7 +41,7 @@ from ..fb import check_uid, build_fb_caption
 from ..poller import poller
 
 from .core import TienIchState, _SHOP_WALLET_HINT, _is_admin, router
-from .common import AccShopState, _acc_delivery_kb, _do_spin, _doiqua_redeem_acc, _fb_stall_gift_cats, _live_line, _loyalty_random_cfg, _loyalty_random_today, _notify_purchase_admin, _order_total_for_randkey, _pickup_suffix, _sell_live_stock, _spin_kb
+from .common import AccShopState, _acc_delivery_kb, _answer_retry, _do_spin, _doiqua_redeem_acc, _fb_stall_gift_cats, _live_line, _loyalty_random_cfg, _loyalty_random_today, _notify_purchase_admin, _order_total_for_randkey, _pickup_suffix, _sell_live_stock, _spin_kb
 
 _doiqua_processing: set = set()
 
@@ -496,7 +496,7 @@ async def _doiqua_success(bot, answer_target, user, tg_id: int, order, cat_id: i
         f"{_live_line(cat_id)}\n"
         f"{_pickup_suffix()}"
     )
-    await answer_target.answer(text, parse_mode="HTML",
+    await _answer_retry(answer_target, text, parse_mode="HTML",
                                reply_markup=_acc_delivery_kb(order_id))
     await _notify_purchase_admin(bot, user, [order])
 
@@ -690,7 +690,8 @@ async def on_mystery_buy(cb: CallbackQuery):
     if per > 0 and m_price // per:
         db.loyalty_add(tg_id, m_price // per, "mua_hop_mu")
     order = dict(order)
-    await cb.message.answer(
+    await _answer_retry(
+        cb.message,
         f"🎁 <b>MỞ HỘP THÀNH CÔNG!</b>\n"
         f"🍀 Bạn trúng acc loại: <b>{html.escape(cat_name)}</b>\n"
         f"👤 UID: <code>{html.escape(order['uid'] or '')}</code>\n"

@@ -59,7 +59,7 @@ from ..fb import check_uid, build_fb_caption
 from ..poller import poller
 
 from .core import _SHOP_WALLET_HINT, router
-from .common import AccShopState, _acc_after_purchase, _acc_delivery_caption, _acc_delivery_kb, _cart_render, _cat_icon, _cat_live_check, _check_stock_live, _do_deposit, _line_price, _live_line, _mail_app_line, _notify_admin_smart, _notify_die_quarantine, _notify_purchase_admin, _pickup_suffix, _sell_live_stock, _sell_uid_items, _send_merged_acc_file, _shop_bulk_pcts, _shop_list, _shop_stall_picker, _spin_kb, _totp_now, _uid_final_price
+from .common import AccShopState, _acc_after_purchase, _acc_delivery_caption, _acc_delivery_kb, _answer_retry, _cart_render, _cat_icon, _cat_live_check, _check_stock_live, _do_deposit, _line_price, _live_line, _mail_app_line, _notify_admin_smart, _notify_die_quarantine, _notify_purchase_admin, _pickup_suffix, _sell_live_stock, _sell_uid_items, _send_merged_acc_file, _shop_bulk_pcts, _shop_list, _shop_stall_picker, _spin_kb, _totp_now, _uid_final_price
 
 log = logging.getLogger("shop")
 
@@ -1361,9 +1361,11 @@ async def on_cart_confirm(cb: CallbackQuery):
             parse_mode="HTML")
         return
     db.finalize_user_promo(tg_id, promo_code)  # trừ lượt promo SAU khi giao acc thành công
+    cart_failed_delivery = []
     for order in delivered:
         order_id = order["id"]
-        await cb.message.answer(
+        ok = await _answer_retry(
+            cb.message,
             f"🎉 <b>MUA THÀNH CÔNG!</b>\n"
             f"━━━━━━━━━━━━━━\n"
             f"{_cat_icon(order['cat_name'])} <b>{html.escape(order['cat_name'])}</b>\n"
@@ -1374,9 +1376,14 @@ async def on_cart_confirm(cb: CallbackQuery):
             f"━━━━━━━━━━━━━━\n\n"
             f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
+        if not ok:
+            cart_failed_delivery.append(order_id)
         # Báo đối tác ký gửi nếu acc bán được là hàng ký gửi
-        from .. import consign as _consign_mod
-        await _consign_mod.notify_consignor_on_sale(order_id, cb.bot)
+        try:
+            from .. import consign as _consign_mod
+            await _consign_mod.notify_consignor_on_sale(order_id, cb.bot)
+        except Exception:
+            pass
     by_cat = {}
     for o in delivered:
         by_cat.setdefault(o["cat_id"], []).append(o)
@@ -1412,7 +1419,7 @@ async def on_cart_confirm(cb: CallbackQuery):
     summary.append("")
     summary += extras
     rkey = f"c{min(o['id'] for o in delivered)}" if delivered else None
-    await cb.message.answer("\n".join(summary), parse_mode="HTML",
+    await _answer_retry(cb.message, "\n".join(summary), parse_mode="HTML",
                             reply_markup=_spin_kb(rkey, tg_id, paid_total))
     try:
         guide = db.get_setting("postbuy_guide", "") or (
@@ -1440,6 +1447,19 @@ async def on_cart_confirm(cb: CallbackQuery):
     except Exception:
         pass
     await _notify_purchase_admin(cb.bot, cb.from_user, delivered)
+    if cart_failed_delivery:
+        try:
+            await _notify_admin_smart(
+                cb.bot,
+                "⚠️ <b>GIAO ACC GIỎ HÀNG LỖI MẠNG:</b> khách "
+                f"<code>{tg_id}</code> — tin giao các đơn "
+                + ", ".join(f"#{i}" for i in cart_failed_delivery)
+                + " gửi không được sau 3 lần thử (Telegram rớt mạng). "
+                "Acc đã bán + trừ tiền đúng, khách xem lại được ở /damua; "
+                "admin kiểm tra và giao tay nếu khách chưa nhận.",
+                channel="order_acc")
+        except Exception:
+            pass
     # Mua nhiều acc 1 lúc: tự động gửi 1 file gộp
     await _send_merged_acc_file(cb.message, delivered)
     try:

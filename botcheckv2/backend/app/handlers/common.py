@@ -1094,6 +1094,24 @@ def _shop_bulk_pcts() -> tuple[int, int, int]:
             return default
     return _g("shop_bulk_5_pct", 5), _g("shop_bulk_10_pct", 10), _g("shop_bulk_20_pct", 15)
 
+async def _answer_retry(msg, *args, tries: int = 3, **kwargs) -> bool:
+    """Gửi msg.answer có retry khi Telegram rớt mạng tạm thời
+    (ServerDisconnectedError...). Trả True nếu gửi được; hết retry vẫn lỗi
+    thì trả False thay vì raise — để luồng giao acc không gãy giữa chừng
+    (sự cố 20/10/2026: rớt mạng ở tin giao đầu tiên -> khách mất cả đơn,
+    vé quay không được cộng, admin không nhận tin)."""
+    for i in range(tries):
+        try:
+            await msg.answer(*args, **kwargs)
+            return True
+        except Exception:
+            if i == tries - 1:
+                log.exception("_answer_retry: gui tin that bai sau %d lan", tries)
+                return False
+            await asyncio.sleep(2 * (i + 1))
+    return False
+
+
 async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: int,
                               final: int, qty: int, delivered: list,
                               want_upsell: bool = False, upsell_pct_cfg: int = 0,
@@ -1101,9 +1119,12 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
     """Giao acc + qua tang + bao admin sau khi ban thanh cong (dung chung cho
     mua thuong va mua theo UID cu the)."""
     # Giao từng acc — khách chọn cách nhận: hiện thông tin hoặc tải file
+    # Mỗi tin giao có retry + không để 1 tin lỗi làm gãy cả chuỗi phía sau
+    failed_delivery = []
     for order in delivered:
         order_id = order["id"]
-        await msg.answer(
+        ok = await _answer_retry(
+            msg,
             f"🎉 <b>MUA THÀNH CÔNG!</b>\n"
             f"━━━━━━━━━━━━━━\n"
             f"{_cat_icon(order['cat_name'])} <b>{html.escape(order['cat_name'])}</b>\n"
@@ -1114,6 +1135,8 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
             f"━━━━━━━━━━━━━━\n\n"
             f"{_pickup_suffix()}",
             parse_mode="HTML", reply_markup=_acc_delivery_kb(order_id))
+        if not ok:
+            failed_delivery.append(order_id)
         # Báo đối tác ký gửi nếu acc bán được là hàng ký gửi
         try:
             from .. import consign as _consign_mod
@@ -1121,7 +1144,25 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
         except Exception:
             pass
     # Báo admin: thông tin khách + acc đã mua
-    await _notify_purchase_admin(bot, from_user, delivered)
+    try:
+        await _notify_purchase_admin(bot, from_user, delivered)
+    except Exception:
+        log.exception("_acc_after_purchase: notify_purchase_admin failed")
+    # Tin giao nào vẫn lỗi sau retry -> báo admin để giao tay (acc vẫn nằm
+    # trong /damua của khách, tiền đã trừ đúng, không mất acc)
+    if failed_delivery:
+        try:
+            await _notify_admin_smart(
+                bot,
+                "⚠️ <b>GIAO ACC LỖI MẠNG:</b> khách "
+                f"<code>{tg_id}</code> — tin giao các đơn "
+                + ", ".join(f"#{i}" for i in failed_delivery)
+                + " gửi không được sau 3 lần thử (Telegram rớt mạng). "
+                "Acc đã bán + trừ tiền đúng, khách xem lại được ở /damua; "
+                "admin kiểm tra và giao tay nếu khách chưa nhận.",
+                channel="order_acc")
+        except Exception:
+            pass
     # Đơn nhiều acc: nút tải full thông tin tất cả acc (2 định dạng) ở dòng cuối
     # Dùng token ngắn thay vì nhét order ID vào callback (giới hạn 64 bytes Telegram)
     if len(delivered) > 1:
@@ -1137,7 +1178,8 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
                  InlineKeyboardButton(text="📊 Tải full .xlsx (tất cả acc)",
                                       callback_data=f"accfileall:{file_token}:xlsx")],
             ])
-            await msg.answer(
+            await _answer_retry(
+                msg,
                 f"📦 Đơn này có <b>{len(delivered)} acc</b> — tải full thông tin tất cả acc:",
                 parse_mode="HTML", reply_markup=kb_all)
     # Quà tặng kèm: credits + vé quay
@@ -1160,7 +1202,7 @@ async def _acc_after_purchase(bot, msg, from_user, c: dict, cat_id: int, tg_id: 
                       f"đủ điểm đổi acc miễn phí bằng /doiqua")
     if extras:
         rkey = f"o{min(o['id'] for o in delivered)}" if delivered else None
-        await msg.answer("\n".join(extras), parse_mode="HTML",
+        await _answer_retry(msg, "\n".join(extras), parse_mode="HTML",
                                 reply_markup=_spin_kb(rkey, tg_id, final))
     # 4.6 Upsell: gợi ý mua thêm trong 10 phút được giảm thêm
     try:
