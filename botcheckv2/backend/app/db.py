@@ -5130,8 +5130,11 @@ def acc_stock_quarantine(stock_ids) -> int:
 
 
 def acc_stock_die_count(cat_id: int) -> int:
+    # Dem ca 2 trang thai cach ly die: 'DIE' (cach ly cu) va 'DEAD'
+    # (luong check-live/don kho moi danh dau) - truoc day chi dem 'DIE'
+    # nen acc DEAD khong hien trong /kho.
     r = get_conn().execute(
-        "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='DIE'",
+        "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status IN ('DIE','DEAD')",
         (cat_id,)).fetchone()
     return r["n"] if r else 0
 
@@ -5180,10 +5183,10 @@ def acc_stock_delete_die(cat_id=None) -> int:
     with _lock:
         c = get_conn()
         if cat_id is None:
-            cur = c.execute("DELETE FROM acc_stock WHERE status='DIE'")
+            cur = c.execute("DELETE FROM acc_stock WHERE status IN ('DIE','DEAD')")
         else:
             cur = c.execute(
-                "DELETE FROM acc_stock WHERE status='DIE' AND cat_id=?", (cat_id,))
+                "DELETE FROM acc_stock WHERE status IN ('DIE','DEAD') AND cat_id=?", (cat_id,))
         c.commit()
         return cur.rowcount or 0
 

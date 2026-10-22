@@ -102,7 +102,7 @@ def shop_categories(include_inactive: int = 1, _=Depends(auth)):
             "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='AVAILABLE'", (cid,)
         ).fetchone()["n"]
         die = c.execute(
-            "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='DIE'", (cid,)
+            "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status IN ('DIE','DEAD')", (cid,)
         ).fetchone()["n"]
         exists = c.execute(
             "SELECT COUNT(*) n FROM acc_stock WHERE cat_id=? AND status='EXISTS'", (cid,)

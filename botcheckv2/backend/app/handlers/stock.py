@@ -1004,7 +1004,7 @@ async def on_kho(msg: Message):
         lines.append(
             f"#{c['id']} <b>{html.escape(c['name'])}</b> — {vnd(c['price'])} — "
             f"BH {_fmt_warranty(c['warranty_hours'])} — kho: <b>{n}</b>"
-            + (f" 🗑<b>{n_die}</b> die" if n_die else "")
+            + (f" ☠️<b>{n_die}</b> DIE" if n_die else "")
             + (f" 🟡<b>{n_exists}</b> tồn tại" if n_exists else "")
             + (f" 🛒<b>{n_sold}</b> đã bán" if n_sold else "")
             + f"{bonus_txt} — {st}"
@@ -1478,7 +1478,7 @@ async def on_xoadie(msg: Message):
         scope = f"loại #{cid}"
     else:
         total = db.get_conn().execute(
-            "SELECT COUNT(*) n FROM acc_stock WHERE status='DIE'").fetchone()["n"]
+            "SELECT COUNT(*) n FROM acc_stock WHERE status IN ('DIE','DEAD')").fetchone()["n"]
         scope = "toàn bộ các loại"
     if total <= 0:
         await msg.answer("✅ Không có acc DIE nào cần dọn.")
